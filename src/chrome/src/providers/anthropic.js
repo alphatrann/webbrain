@@ -115,6 +115,10 @@ export class AnthropicProvider extends BaseLLMProvider {
                 source: { type: 'base64', media_type: m[1], data: m[2] },
               });
             }
+          } else if (part.type === 'document' && part.source) {
+            // Native PDF passthrough — pdf-tools.js builds these blocks in
+            // exactly Anthropic's expected shape so we forward as-is.
+            blocks.push(part);
           }
         }
         converted.push({ role: msg.role, content: blocks });

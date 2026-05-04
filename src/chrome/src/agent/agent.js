@@ -9,6 +9,13 @@ import {
   downloadResourceFromPage,
   downloadFiles,
 } from '../network/network-tools.js';
+import {
+  isPdfUrl,
+  extractPdfText,
+  providerSupportsPdfPassthrough,
+  buildClaudeDocumentBlock,
+  PDF_PASSTHROUGH_MAX_BYTES,
+} from './pdf-tools.js';
 import * as trace from '../trace/recorder.js';
 
 /**
@@ -658,6 +665,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         delete toolResult._attachImage;
       }
 
+      // Same pattern for `_attachDocument` — Anthropic Claude can natively
+      // consume PDFs as a `document` content block on a user message. We
+      // attach the raw bytes (built into a content block by pdf-tools.js)
+      // here and let Claude see the full layout/images, while the tool
+      // result text still contains the plain-text extraction so the model
+      // can quote/reference specific passages without re-reading.
+      let attachedDocument = null;
+      if (toolResult && typeof toolResult === 'object' && toolResult._attachDocument) {
+        attachedDocument = toolResult._attachDocument;
+        delete toolResult._attachDocument;
+      }
+
       let resultContent = this._limitToolResult(toolResult);
       if (effectiveKind === 'nudge') {
         resultContent = resultContent + '\n' + nudgeWarning;
@@ -687,6 +706,23 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (_runIdForShot) {
           trace.recordScreenshot(_runIdForShot, null, attachedImage, `screenshot-tool:${fnName}`);
         }
+      }
+
+      // Document attachment for Claude PDF passthrough. The block is an
+      // Anthropic `document` content block (built in pdf-tools.js) that we
+      // hand to the model as a user message. anthropic.js translates our
+      // generic message shape into Anthropic's API shape and forwards the
+      // block as-is.
+      if (attachedDocument) {
+        const docTitle = attachedDocument.title || 'document.pdf';
+        const noteText = `[PDF document "${docTitle}" attached from your ${fnName} call. The plain-text extraction is in the tool result above; this attachment lets you also see the original layout, tables, and embedded images. Use both — quote text from the extraction, reference visuals from the document.]`;
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: noteText },
+            attachedDocument,
+          ],
+        });
       }
 
       if (effectiveKind === 'stop') {
@@ -2506,6 +2542,75 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await downloadFiles(args);
     }
 
+    // ─── PDF reader ───────────────────────────────────────────────────
+    // Chrome's built-in PDF viewer is a chrome-extension:// page that our
+    // content scripts cannot inject into, so click / read_page / get_ax
+    // all silently no-op against PDF tabs and the agent click-loops on
+    // the viewer chrome. read_pdf bypasses the viewer entirely: fetches
+    // the binary, parses it with the bundled pdfjs-dist, returns text.
+    if (name === 'read_pdf') {
+      try {
+        let pdfUrl = String(args.url || '').trim();
+        if (!pdfUrl) {
+          // Default to the active tab's URL.
+          try {
+            const tab = await chrome.tabs.get(tabId);
+            pdfUrl = tab?.url || '';
+          } catch {}
+        }
+        if (!pdfUrl) {
+          return { success: false, error: 'read_pdf: no url provided and could not read the active tab URL.' };
+        }
+
+        const result = await extractPdfText(pdfUrl, {
+          fromPage: args.fromPage,
+          toPage: args.toPage,
+          maxChars: args.maxChars,
+        });
+
+        // Tier 2 — Anthropic Claude PDF passthrough. If the active provider
+        // can natively consume PDFs as a `document` content block AND the
+        // file fits under the size cap, attach the raw bytes via
+        // `_attachDocument`. The batch loop strips this field before
+        // stringifying the tool result and pushes the document as a
+        // follow-up user message (analogous to the `_attachImage` path
+        // used by `screenshot`).
+        const provider = this.providerManager.getActive();
+        const bytes = result._pdfBytes;
+        delete result._pdfBytes;
+
+        if (
+          bytes &&
+          providerSupportsPdfPassthrough(provider) &&
+          bytes.length <= PDF_PASSTHROUGH_MAX_BYTES
+        ) {
+          let docName = result.title || '';
+          if (!docName) {
+            try {
+              const u = new URL(pdfUrl);
+              docName = decodeURIComponent(u.pathname.split('/').pop() || 'document.pdf');
+            } catch { docName = 'document.pdf'; }
+          }
+          const docBlock = buildClaudeDocumentBlock(bytes, docName);
+          return {
+            ...result,
+            method: 'pdf_text+claude_document',
+            description: `PDF text extracted (${result.pageCount} pages); raw bytes also attached as Claude document block for full-fidelity reading.`,
+            _attachDocument: docBlock,
+          };
+        }
+
+        // Helpful note for the model when text extraction failed (scanned PDF).
+        if (!result.hasExtractableText) {
+          result.note = 'This PDF appears to have no extractable text layer (likely scanned images). Consider enabling a vision model and using full_page_screenshot, or asking the user for a text-based version.';
+        }
+
+        return { ...result, method: 'pdf_text' };
+      } catch (e) {
+        return { success: false, error: `read_pdf failed: ${e.message}` };
+      }
+    }
+
     if (name === 'full_page_screenshot') {
       try {
         await cdpClient.attach(tabId);
@@ -4084,6 +4189,41 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!action) {
       return { error: `Unknown tool: ${name}` };
     }
+
+    // PDF redirect. Chrome's PDF viewer is a chrome-extension:// page that
+    // our content scripts can't inject into, so read_page / click /
+    // get_accessibility_tree all silently no-op against PDF tabs and the
+    // agent ends up click-looping on the viewer's chrome (sidebar, page
+    // input, etc.). For the read-only path we transparently redirect to
+    // read_pdf so the model gets actual content; for action tools we
+    // surface a clear error so the model stops trying.
+    try {
+      const tabForPdfCheck = await chrome.tabs.get(tabId);
+      const pageUrl = tabForPdfCheck?.url || '';
+      if (isPdfUrl(pageUrl)) {
+        if (name === 'read_page') {
+          const pdfResult = await this.executeTool(tabId, 'read_pdf', { url: pageUrl });
+          return {
+            ...pdfResult,
+            redirectedFrom: 'read_page',
+            warning: 'This tab is a PDF — Chrome\'s PDF viewer is a chrome-extension:// page that content scripts can\'t inject into, so read_page would have returned no content. Redirected to read_pdf which fetches the binary and extracts text directly. To read more pages call read_pdf again with fromPage / toPage.',
+          };
+        }
+        if (
+          name === 'click' || name === 'click_ax' ||
+          name === 'type_text' || name === 'type_ax' || name === 'set_field' ||
+          name === 'press_keys' || name === 'scroll' ||
+          name === 'get_accessibility_tree' || name === 'get_interactive_elements' ||
+          name === 'extract_data' || name === 'wait_for_element' ||
+          name === 'get_selection' || name === 'execute_js'
+        ) {
+          return {
+            success: false,
+            error: `${name} cannot be used on Chrome's built-in PDF viewer (a chrome-extension:// page our scripts cannot reach). Use read_pdf to extract the document's text instead. If you need to read a specific page, pass fromPage/toPage to read_pdf.`,
+          };
+        }
+      }
+    } catch { /* tab lookup failures are non-fatal — fall through */ }
 
     try {
       const response = await chrome.tabs.sendMessage(tabId, {

@@ -8,6 +8,13 @@ import {
   downloadResourceFromPage,
   downloadFiles,
 } from '../network/network-tools.js';
+import {
+  isPdfUrl,
+  extractPdfText,
+  providerSupportsPdfPassthrough,
+  buildClaudeDocumentBlock,
+  PDF_PASSTHROUGH_MAX_BYTES,
+} from './pdf-tools.js';
 import * as trace from '../trace/recorder.js';
 
 /**
@@ -369,6 +376,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         delete toolResult._attachImage;
       }
 
+      // Same pattern for `_attachDocument` — Anthropic Claude consumes PDFs
+      // natively as a `document` content block on a user message. The
+      // tool-result text still has the plain-text extraction so the model
+      // can quote/reference passages without re-reading.
+      let attachedDocument = null;
+      if (toolResult && typeof toolResult === 'object' && toolResult._attachDocument) {
+        attachedDocument = toolResult._attachDocument;
+        delete toolResult._attachDocument;
+      }
+
       let resultContent = this._limitToolResult(toolResult);
       if (effectiveKind === 'nudge') {
         resultContent = resultContent + '\n' + nudgeWarning;
@@ -386,6 +403,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           content: [
             { type: 'text', text: noteText },
             { type: 'image_url', image_url: { url: attachedImage } },
+          ],
+        });
+      }
+      if (attachedDocument) {
+        const docTitle = attachedDocument.title || 'document.pdf';
+        const noteText = `[PDF document "${docTitle}" attached from your ${fnName} call. The plain-text extraction is in the tool result above; this attachment lets you also see the original layout, tables, and embedded images. Use both — quote text from the extraction, reference visuals from the document.]`;
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: noteText },
+            attachedDocument,
           ],
         });
       }
@@ -1524,6 +1552,67 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await downloadFiles(args);
     }
 
+    // ─── PDF reader ───────────────────────────────────────────────────
+    // Firefox's built-in PDF viewer is a privileged page that our content
+    // scripts cannot reach, so click / read_page / get_ax all silently
+    // no-op against PDF tabs and the agent click-loops on the viewer
+    // chrome. read_pdf bypasses the viewer entirely: fetches the binary,
+    // parses it with the bundled pdfjs-dist, returns text.
+    if (name === 'read_pdf') {
+      try {
+        let pdfUrl = String(args.url || '').trim();
+        if (!pdfUrl) {
+          try {
+            const tab = await browser.tabs.get(tabId);
+            pdfUrl = tab?.url || '';
+          } catch {}
+        }
+        if (!pdfUrl) {
+          return { success: false, error: 'read_pdf: no url provided and could not read the active tab URL.' };
+        }
+
+        const result = await extractPdfText(pdfUrl, {
+          fromPage: args.fromPage,
+          toPage: args.toPage,
+          maxChars: args.maxChars,
+        });
+
+        // Tier 2 — Anthropic Claude PDF passthrough.
+        const provider = this.providerManager.getActive();
+        const bytes = result._pdfBytes;
+        delete result._pdfBytes;
+
+        if (
+          bytes &&
+          providerSupportsPdfPassthrough(provider) &&
+          bytes.length <= PDF_PASSTHROUGH_MAX_BYTES
+        ) {
+          let docName = result.title || '';
+          if (!docName) {
+            try {
+              const u = new URL(pdfUrl);
+              docName = decodeURIComponent(u.pathname.split('/').pop() || 'document.pdf');
+            } catch { docName = 'document.pdf'; }
+          }
+          const docBlock = buildClaudeDocumentBlock(bytes, docName);
+          return {
+            ...result,
+            method: 'pdf_text+claude_document',
+            description: `PDF text extracted (${result.pageCount} pages); raw bytes also attached as Claude document block for full-fidelity reading.`,
+            _attachDocument: docBlock,
+          };
+        }
+
+        if (!result.hasExtractableText) {
+          result.note = 'This PDF appears to have no extractable text layer (likely scanned images). Consider enabling a vision model and using full_page_screenshot, or asking the user for a text-based version.';
+        }
+
+        return { ...result, method: 'pdf_text' };
+      } catch (e) {
+        return { success: false, error: `read_pdf failed: ${e.message}` };
+      }
+    }
+
     if (name === 'scratchpad_write') {
       return this._scratchpadWrite(tabId, args);
     }
@@ -1714,6 +1803,38 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!action) {
       return { error: `Unknown tool: ${name}` };
     }
+
+    // PDF redirect. Firefox's built-in PDF viewer is a privileged page
+    // we cannot reach via content scripts — read_page / click /
+    // get_accessibility_tree silently no-op. Redirect read_page to
+    // read_pdf, and reject action tools with a clear error.
+    try {
+      const tabForPdfCheck = await browser.tabs.get(tabId);
+      const pageUrl = tabForPdfCheck?.url || '';
+      if (isPdfUrl(pageUrl)) {
+        if (name === 'read_page') {
+          const pdfResult = await this.executeTool(tabId, 'read_pdf', { url: pageUrl });
+          return {
+            ...pdfResult,
+            redirectedFrom: 'read_page',
+            warning: 'This tab is a PDF — Firefox\'s PDF viewer is a privileged page that content scripts can\'t inject into, so read_page would have returned no content. Redirected to read_pdf which fetches the binary and extracts text directly. To read more pages call read_pdf again with fromPage / toPage.',
+          };
+        }
+        if (
+          name === 'click' || name === 'click_ax' ||
+          name === 'type_text' || name === 'type_ax' || name === 'set_field' ||
+          name === 'press_keys' || name === 'scroll' ||
+          name === 'get_accessibility_tree' || name === 'get_interactive_elements' ||
+          name === 'extract_data' || name === 'wait_for_element' ||
+          name === 'get_selection' || name === 'execute_js'
+        ) {
+          return {
+            success: false,
+            error: `${name} cannot be used on the browser's built-in PDF viewer (a privileged page our scripts cannot reach). Use read_pdf to extract the document's text instead. If you need to read a specific page, pass fromPage/toPage to read_pdf.`,
+          };
+        }
+      }
+    } catch { /* tab lookup failures are non-fatal — fall through */ }
 
     try {
       const response = await browser.tabs.sendMessage(tabId, {

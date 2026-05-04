@@ -160,6 +160,12 @@ The default UI-first rule exists because API actions are invisible (you don't se
 
 ## What's New
 
+### 6.1.0
+
+- **Native PDF reading.** Chrome's and Firefox's built-in PDF viewers are privileged pages our content scripts cannot inject into, so the previous behaviour was for the agent to click-loop on the viewer chrome (sidebar, page-number input) until the user stopped it — one observed run burned 17 steps / 184 seconds / 345k input tokens producing nothing. v6.1.0 fixes this with a new `read_pdf` tool that fetches the PDF binary directly and parses it with a vendored `pdfjs-dist` (~3 MB lazy-loaded on first PDF read). `read_page` against a PDF tab now transparently redirects to `read_pdf`; click / type / get_accessibility_tree return a clear error pointing the model at `read_pdf`.
+- **Claude PDF passthrough (Tier 2).** When the active provider is Anthropic Claude, `read_pdf` ALSO attaches the raw PDF bytes as a native `document` content block on the follow-up user message — the model gets the full layout, tables, and embedded images, not just the plain-text extraction. The text extraction still runs (so the model can quote passages), the document attachment is additive. Capped at 16 MB binary to leave room for the rest of the conversation.
+- **file:// PDFs.** For local PDF files, Chrome requires the user to enable "Allow access to file URLs" at chrome://extensions per-extension; the tool surfaces a descriptive error explaining this rather than silently failing.
+
 ### 6.0.1
 
 - **Firefox parity for the on-page agent indicator and tab grouping.** The pulsing purple border + "Stop WebBrain" floating button now appear on Firefox while the agent is running, identical to the Chrome experience. The browser action click also drops the source tab into a colored "WebBrain" tab group on Firefox 142+ (the version that introduced the `browser.tabGroups` API), and the agent's `new_tab` tool joins spawned tabs to the same group. Older Firefox versions silently skip the grouping step.
