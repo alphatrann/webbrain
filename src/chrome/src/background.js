@@ -79,9 +79,30 @@ chrome.storage.onChanged.addListener((changes) => {
   if (refreshPrompts) agent._refreshSystemPrompts();
 });
 
-// Track which tabs have the panel enabled (per-tab, not global).
-// Persisted to chrome.storage.session so a service worker restart doesn't
-// forget which tabs the user had opened the panel on.
+// ────────────────────────────────────────────────────────────────────────
+// Side-panel visibility model — Claude-for-Chrome style
+//
+// We tie the side panel to a per-window "WebBrain" tab group rather than to
+// individual tabs. When the user clicks the action, the source tab joins
+// (or seeds) a tab group; the panel is enabled only for tabs in that group.
+// Switch to any tab outside the group → panel disabled → Chrome hides it.
+//
+// Why this and not a per-tab Set?
+//
+// Chrome's `sidePanel.setOptions({enabled: false})` doesn't actively close
+// an already-open panel — it only prevents future opens. With a per-tab Set
+// the panel was visible on every tab the user had ever clicked the action
+// on, which mounted up across a session. Group membership is observable to
+// the user (they see the colored group label) and matches the agent's own
+// `_addToWebBrainGroup` behaviour for `new_tab` calls — so a sidebar
+// session, an explicitly-opened new_tab, and a target=_blank redirect all
+// land in the same group.
+//
+// `panelTabs` survives as a fallback for old Chromes without `tabGroups`
+// (pre-89, very rare). On modern Chrome the group map is the source of truth.
+// ────────────────────────────────────────────────────────────────────────
+
+// Legacy per-tab fallback (used only if chrome.tabGroups is unavailable).
 const panelTabs = new Set();
 const PANEL_TABS_KEY = 'panelTabs';
 
@@ -98,26 +119,150 @@ function savePanelTabs() {
 }
 loadPanelTabs();
 
+// Per-window WebBrain group ID. windowId -> tabGroups groupId.
+const webBrainGroupByWindow = new Map();
+const WB_GROUPS_KEY = 'webBrainGroupByWindow';
+
+async function loadWebBrainGroups() {
+  if (!chrome.tabGroups) return;
+  try {
+    const stored = await chrome.storage.session.get(WB_GROUPS_KEY);
+    const arr = stored[WB_GROUPS_KEY];
+    if (Array.isArray(arr)) {
+      // Validate each group still exists before re-adopting — Chrome may
+      // have closed some between sessions / service-worker restarts.
+      for (const [windowId, groupId] of arr) {
+        try {
+          await chrome.tabGroups.get(groupId);
+          webBrainGroupByWindow.set(windowId, groupId);
+        } catch { /* group gone, skip */ }
+      }
+    }
+  } catch { /* session storage unavailable */ }
+}
+function saveWebBrainGroups() {
+  chrome.storage.session?.set({
+    [WB_GROUPS_KEY]: Array.from(webBrainGroupByWindow.entries()),
+  }).catch(() => {});
+}
+loadWebBrainGroups();
+
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
 
-// Because manifest.side_panel.default_path is required by Chrome, the panel
-// is implicitly available on every tab. Disable it pre-emptively on all
-// existing tabs (and any newly created tab) so it only opens where the user
-// has explicitly clicked the action.
-async function disablePanelOnAllTabsExceptOptedIn() {
+/**
+ * Decide whether the side panel should show for `tab`.
+ * Modern Chrome: tab.groupId === window's WebBrain group.
+ * Legacy fallback: panelTabs membership.
+ */
+function shouldEnablePanelForTab(tab) {
+  if (!tab) return false;
+  if (chrome.tabGroups) {
+    const wbGroupId = webBrainGroupByWindow.get(tab.windowId);
+    if (wbGroupId == null) return false;
+    return tab.groupId === wbGroupId;
+  }
+  return panelTabs.has(tab.id);
+}
+
+/**
+ * Apply the current visibility decision to a tab. Cheap; called from any
+ * listener that might have changed the answer (onActivated, onUpdated,
+ * tabGroups.onRemoved, etc.).
+ */
+async function refreshPanelVisibility(tabId) {
+  let tab;
+  try { tab = await chrome.tabs.get(tabId); } catch { return; }
+  if (!tab) return;
+  const enabled = shouldEnablePanelForTab(tab);
+  try {
+    await chrome.sidePanel.setOptions({
+      tabId,
+      ...(enabled ? { path: 'src/ui/sidepanel.html' } : {}),
+      enabled,
+    });
+  } catch { /* ignore */ }
+}
+
+/**
+ * Make sure `tab.windowId` has a WebBrain group AND that `tab` is in it.
+ * Returns the group ID, or -1 on failure / unsupported. Called from the
+ * action.onClicked handler so the sidebar's source tab is always grouped
+ * before the user can switch tabs and break visibility.
+ */
+async function ensureWebBrainGroup(tab) {
+  if (!chrome.tabGroups || !tab?.id || tab.windowId == null) return -1;
+  try {
+    let groupId = webBrainGroupByWindow.get(tab.windowId);
+
+    // Validate the cached group still exists in Chrome (user may have
+    // ungrouped it manually, or the service worker restarted with a
+    // stale stored ID).
+    if (groupId != null) {
+      try {
+        await chrome.tabGroups.get(groupId);
+      } catch {
+        groupId = null;
+        webBrainGroupByWindow.delete(tab.windowId);
+        saveWebBrainGroups();
+      }
+    }
+
+    if (groupId == null) {
+      if (typeof tab.groupId === 'number' && tab.groupId >= 0) {
+        // Source tab is already in some group. Adopt + rebrand it as
+        // WebBrain instead of fragmenting tabs into a second group.
+        groupId = tab.groupId;
+        try {
+          await chrome.tabGroups.update(groupId, {
+            title: 'WebBrain', color: 'blue', collapsed: false,
+          });
+        } catch { /* user may have permission concerns */ }
+      } else {
+        // Source tab is ungrouped — create a fresh WebBrain group.
+        groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+        try {
+          await chrome.tabGroups.update(groupId, {
+            title: 'WebBrain', color: 'blue', collapsed: false,
+          });
+        } catch { /* ignore styling failure */ }
+      }
+      webBrainGroupByWindow.set(tab.windowId, groupId);
+      saveWebBrainGroups();
+    } else if (tab.groupId !== groupId) {
+      // Group exists for this window but source tab isn't in it. Add it.
+      try {
+        await chrome.tabs.group({ groupId, tabIds: [tab.id] });
+      } catch { /* tab might already be moving; ignore */ }
+    }
+    return groupId;
+  } catch {
+    return -1;
+  }
+}
+
+// Disable the panel up-front on every tab. With group-scoped visibility,
+// the panel is OFF by default everywhere — tabs only "earn" the panel by
+// being part of a WebBrain group.
+async function disablePanelOnAllTabs() {
   try {
     const tabs = await chrome.tabs.query({});
     for (const t of tabs) {
-      if (t.id != null && !panelTabs.has(t.id)) {
+      if (t.id == null) continue;
+      const enabled = shouldEnablePanelForTab(t);
+      if (!enabled) {
         chrome.sidePanel.setOptions({ tabId: t.id, enabled: false }).catch(() => {});
       }
     }
-  } catch (e) { /* ignore */ }
+  } catch { /* ignore */ }
 }
-disablePanelOnAllTabsExceptOptedIn();
+disablePanelOnAllTabs();
 
 chrome.tabs.onCreated.addListener((tab) => {
-  if (tab?.id != null && !panelTabs.has(tab.id)) {
+  if (tab?.id == null) return;
+  // New tab inherits "panel off" unless it lands in a WebBrain group
+  // (e.g. agent's `_addToWebBrainGroup` adds it). The onUpdated handler
+  // below will flip the panel on if/when that happens.
+  if (!shouldEnablePanelForTab(tab)) {
     chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false }).catch(() => {});
   }
 });
@@ -127,32 +272,57 @@ chrome.tabs.onCreated.addListener((tab) => {
 // silently refuses to open the panel.
 chrome.action.onClicked.addListener((tab) => {
   if (!tab?.id) return;
+  // Legacy fallback: keep panelTabs in sync for browsers without tabGroups.
   panelTabs.add(tab.id);
   savePanelTabs();
-  // Fire-and-forget; do NOT await — preserves user gesture for open() below
+  // Fire-and-forget; do NOT await — preserves user gesture for open() below.
   chrome.sidePanel.setOptions({
     tabId: tab.id,
     path: 'src/ui/sidepanel.html',
-    enabled: true
+    enabled: true,
   });
   chrome.sidePanel.open({ tabId: tab.id });
+  // Now group the source tab so the visibility scope is established
+  // before the user can switch tabs. Async — we already lost the user-
+  // gesture window for sidePanel.open, but ensureWebBrainGroup doesn't
+  // need it.
+  ensureWebBrainGroup(tab).catch(() => {});
 });
 
-// When switching tabs, explicitly disable the panel on tabs the user didn't
-// open it on. With manifest.default_path removed, the panel is OFF by default
-// — but we still call setOptions({enabled:false}) defensively to make sure
-// Chrome closes the side panel for any window whose new active tab isn't in
-// our opt-in set.
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  if (!panelTabs.has(tabId)) {
-    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {});
-  } else {
-    // Re-affirm enabled state in case service worker restarted between activations.
-    await chrome.sidePanel.setOptions({
-      tabId,
-      path: 'src/ui/sidepanel.html',
-      enabled: true,
-    }).catch(() => {});
+// When the active tab changes, re-check visibility against group membership.
+// This is the path that makes "switch tab → sidebar disappears" actually
+// work, since `setOptions({enabled: false})` told to a non-active tab
+// only takes effect once Chrome re-renders the panel for the next tab.
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  refreshPanelVisibility(tabId).catch(() => {});
+});
+
+// In-place group changes — user dragged the active tab out of the WebBrain
+// group, or the agent's `_addToWebBrainGroup` just dragged it in. Either
+// way, the active tab's panel state may need to flip without a tab switch.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.groupId === undefined) return;
+  refreshPanelVisibility(tabId).catch(() => {});
+});
+
+// User ungrouped (or Chrome auto-collapsed) the WebBrain group entirely.
+// Forget the mapping for that window so the next action click can seed
+// a fresh group rather than try to reuse a dead ID.
+chrome.tabGroups?.onRemoved?.addListener?.((group) => {
+  for (const [windowId, gid] of webBrainGroupByWindow) {
+    if (gid === group.id) {
+      webBrainGroupByWindow.delete(windowId);
+      saveWebBrainGroups();
+      break;
+    }
+  }
+});
+
+// Window closed — drop the per-window mapping.
+chrome.windows?.onRemoved?.addListener?.((windowId) => {
+  if (webBrainGroupByWindow.has(windowId)) {
+    webBrainGroupByWindow.delete(windowId);
+    saveWebBrainGroups();
   }
 });
 
