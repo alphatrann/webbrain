@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WebBrain",
-  "version": "6.0.1",
+  "version": "6.1.0",
   "description": "Open-source AI browser agent — chat with pages, automate tasks, multi-provider LLM support.",
   "permissions": [
     "sidePanel",
@@ -57,5 +57,11 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["vendor/pdfjs/pdf.mjs", "vendor/pdfjs/pdf.worker.mjs"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

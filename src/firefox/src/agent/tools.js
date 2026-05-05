@@ -72,10 +72,39 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'read_page',
-      description: 'Read the current page content including title, URL, text content, links, and forms. Use this to understand what is on the current page.',
+      description: 'Read the current page content including title, URL, text content, links, and forms. Use this to understand what is on the current page. NOTE: if the current tab is a PDF (URL ends in .pdf or content-type is application/pdf), this call auto-redirects to read_pdf since Firefox\'s built-in PDF viewer is a privileged page that we cannot scrape via DOM.',
       parameters: {
         type: 'object',
         properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_pdf',
+      description: 'Extract text from a PDF document. Use this when the current tab URL ends in .pdf or content-type is application/pdf — clicks, scrolls, screenshots, get_accessibility_tree all silently no-op against the browser\'s built-in PDF viewer because it is a privileged page our content scripts cannot inject into. read_pdf fetches the PDF binary and parses it directly with pdfjs-dist, returning per-page text plus a `hasExtractableText` flag. Default reads pages 1–50; for longer PDFs paginate with fromPage/toPage. If `hasExtractableText` is false, the PDF is a scanned image and text extraction returned empty — only a vision-capable model can read it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'Absolute http(s) or file:// URL of the PDF. Defaults to the current tab URL if omitted — usually what you want.',
+          },
+          fromPage: {
+            type: 'number',
+            description: '1-indexed first page to read. Default 1.',
+          },
+          toPage: {
+            type: 'number',
+            description: '1-indexed last page to read (inclusive). Default fromPage+49 capped at totalPages.',
+          },
+          maxChars: {
+            type: 'number',
+            description: 'Hard cap on returned text length. Default 50000.',
+          },
+        },
         required: [],
       },
     },
@@ -470,7 +499,7 @@ export const AGENT_TOOLS = [
  * Read-only tools allowed in Ask mode.
  */
 export const ASK_ONLY_TOOLS = [
-  'read_page', 'screenshot', 'get_interactive_elements', 'scroll',
+  'read_page', 'read_pdf', 'screenshot', 'get_interactive_elements', 'scroll',
   'extract_data', 'get_selection', 'done',
   'fetch_url', 'research_url', 'list_downloads',
 ];

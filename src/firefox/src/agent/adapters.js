@@ -38,7 +38,9 @@ PAYWALLS / SIGN-IN WALLS. Signals: "Subscribe to continue", "X free articles rem
 - STOP and surface the paywall to the user. Report what's actually visible (headline, dek, first paragraphs).
 - DO NOT attempt to bypass: no archive.today / archive.org / 12ft.io, no cookie/localStorage clearing, no disabling JS, no reader-mode tricks, no copy-from-print-view. These are circumvention and not supported.
 - Offer alternatives: (a) search freely available sources for the same story, (b) ask whether the user has a subscription account to sign in with.
-- Never claim to have read the full article when only the preview was available.`;
+- Never claim to have read the full article when only the preview was available.
+
+PDF TABS. If the active tab URL ends in .pdf (or is opened in the browser's built-in PDF viewer), DO NOT use read_page / click / get_accessibility_tree / get_interactive_elements / scroll / screenshot — the PDF viewer is a privileged page our content scripts cannot reach, so those tools either silently no-op or hit the viewer chrome (sidebar, page-number input) and you'll loop. Use \`read_pdf\` instead, which fetches the PDF binary and extracts text directly. By default it returns up to 50 pages / 50,000 chars; pass \`fromPage\`/\`toPage\` to read further.`;
 
 const ADAPTERS = [
   // ─── Code & Dev Tools ─────────────────────────────────────────────────

@@ -72,10 +72,39 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'read_page',
-      description: 'Read the current page as PROSE — title, URL, visible text, links, forms. LEGACY read path; prefer get_accessibility_tree for UI tasks. Use read_page only when the user is asking about long-form text content (articles, READMEs, documentation).',
+      description: 'Read the current page as PROSE — title, URL, visible text, links, forms. LEGACY read path; prefer get_accessibility_tree for UI tasks. Use read_page only when the user is asking about long-form text content (articles, READMEs, documentation). NOTE: if the current tab is a PDF (URL ends in .pdf or content-type is application/pdf), this call auto-redirects to read_pdf since Chrome\'s PDF viewer is a chrome-extension:// page that we cannot scrape via DOM.',
       parameters: {
         type: 'object',
         properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_pdf',
+      description: 'Extract text from a PDF document. Use this when the current tab URL ends in .pdf or content-type is application/pdf — clicks, scrolls, screenshots, get_accessibility_tree all silently no-op against Chrome\'s PDF viewer because it is a chrome-extension:// page our content scripts cannot inject into. read_pdf fetches the PDF binary and parses it directly with pdfjs-dist, returning per-page text plus a `hasExtractableText` flag. Default reads pages 1–50; for longer PDFs paginate with fromPage/toPage. If `hasExtractableText` is false, the PDF is a scanned image and text extraction returned empty — only a vision-capable model can read it. For local file:// URLs, Chrome requires the user to enable "Allow access to file URLs" at chrome://extensions for this extension; the tool returns a descriptive error explaining this if the toggle is off.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: {
+            type: 'string',
+            description: 'Absolute http(s) or file:// URL of the PDF. Defaults to the current tab URL if omitted — usually what you want.',
+          },
+          fromPage: {
+            type: 'number',
+            description: '1-indexed first page to read. Default 1.',
+          },
+          toPage: {
+            type: 'number',
+            description: '1-indexed last page to read (inclusive). Default fromPage+49 capped at totalPages. Pages 51+ require a follow-up call with fromPage advanced.',
+          },
+          maxChars: {
+            type: 'number',
+            description: 'Hard cap on returned text length across all requested pages. Default 50000. Set lower if you only need a summary; the result has `truncated:true` if it hits the cap.',
+          },
+        },
         required: [],
       },
     },
@@ -532,7 +561,7 @@ export const AGENT_TOOLS = [
  * Read-only tools allowed in Ask mode.
  */
 export const ASK_ONLY_TOOLS = [
-  'get_accessibility_tree', 'read_page', 'screenshot',
+  'get_accessibility_tree', 'read_page', 'read_pdf', 'screenshot',
   'get_interactive_elements', 'scroll',
   'extract_data', 'get_selection', 'done',
   // Read-only network tools — safe in Ask mode because they don't modify

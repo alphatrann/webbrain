@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "WebBrain",
-  "version": "6.0.1",
+  "version": "6.1.0",
   "description": "Open-source AI browser agent — chat with pages, automate tasks, multi-provider LLM support.",
   "permissions": [
     "activeTab",
@@ -52,6 +52,10 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
+  "web_accessible_resources": [
+    "vendor/pdfjs/pdf.mjs",
+    "vendor/pdfjs/pdf.worker.mjs"
+  ],
   "browser_specific_settings": {
     "gecko": {
       "id": "webbrain@esokullu.com",
