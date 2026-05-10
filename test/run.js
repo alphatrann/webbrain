@@ -51,6 +51,12 @@ const { resourceBucket: resourceBucketFx, bucketArgsKey: bucketArgsKeyFx } = awa
   'file://' + path.join(ROOT, 'src/firefox/src/agent/loop-bucket.js').replace(/\\/g, '/')
 );
 
+// bump-version.mjs is the version-bump CLI but exports its pure helpers
+// for testing. The CLI body is guarded so importing it is side-effect-free.
+const { bumpSemver, rewriteVersionInJsonText } = await import(
+  'file://' + path.join(ROOT, 'scripts/bump-version.mjs').replace(/\\/g, '/')
+);
+
 // agent.js imports tools.js and cdp-client.js (which uses chrome.*). We need
 // only the loop-detection helpers, so we extract them via a tiny standalone
 // shim that mirrors the relevant Agent methods. Keep this in sync with
@@ -1003,6 +1009,103 @@ test('firefox loop-bucket matches chrome', () => {
     'invalid',
   ]) {
     assert.equal(resourceBucketFx(url), resourceBucket(url), `mismatch on ${url}`);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Version bumping (scripts/bump-version.mjs)
+// ────────────────────────────────────────────────────────────────────────
+
+console.log('\nversion bump');
+
+test('default kind is patch', () => {
+  assert.equal(bumpSemver('7.0.0'), '7.0.1');
+  assert.equal(bumpSemver('1.2.3'), '1.2.4');
+});
+
+test('explicit patch / minor / major', () => {
+  assert.equal(bumpSemver('7.0.0', 'patch'), '7.0.1');
+  assert.equal(bumpSemver('7.0.0', 'minor'), '7.1.0');
+  assert.equal(bumpSemver('7.0.0', 'major'), '8.0.0');
+});
+
+test('minor and major reset lower components', () => {
+  // The semver standard: bumping minor zeroes patch; bumping major
+  // zeroes both minor and patch. Lock that behavior in.
+  assert.equal(bumpSemver('7.4.9', 'minor'), '7.5.0');
+  assert.equal(bumpSemver('7.4.9', 'major'), '8.0.0');
+});
+
+test('explicit MAJOR.MINOR.PATCH override', () => {
+  assert.equal(bumpSemver('7.0.0', '7.2.3'), '7.2.3');
+  assert.equal(bumpSemver('7.0.0', '10.0.0'), '10.0.0');
+});
+
+test('rejects bad current version', () => {
+  assert.throws(() => bumpSemver('not-a-version', 'patch'), /not MAJOR\.MINOR\.PATCH/);
+  assert.throws(() => bumpSemver('1.2', 'patch'), /not MAJOR\.MINOR\.PATCH/);
+  assert.throws(() => bumpSemver('1.2.3.4', 'patch'), /not MAJOR\.MINOR\.PATCH/);
+  assert.throws(() => bumpSemver('1.2.3-beta', 'patch'), /not MAJOR\.MINOR\.PATCH/);
+});
+
+test('rejects bad bump kind', () => {
+  assert.throws(() => bumpSemver('7.0.0', 'huge'), /Unknown bump kind/);
+  assert.throws(() => bumpSemver('7.0.0', ''), /Unknown bump kind/);
+});
+
+test('rewriteVersionInJsonText: replaces only the version field, not other matching strings', () => {
+  // A pathological JSON that mentions the version string in a description
+  // or comment-like field should NOT be touched by the rewrite.
+  const before = `{
+  "name": "webbrain",
+  "version": "7.0.0",
+  "description": "Released after 7.0.0 era; supersedes 7.0.0 tools."
+}`;
+  const after = rewriteVersionInJsonText(before, '7.0.0', '7.0.1');
+  assert.match(after, /"version": "7\.0\.1"/);
+  // The description still mentions 7.0.0 — it must not have been munged.
+  assert.match(after, /Released after 7\.0\.0 era/);
+  assert.match(after, /supersedes 7\.0\.0 tools/);
+});
+
+test('rewriteVersionInJsonText: replaceAll handles package-lock.json shape', () => {
+  // package-lock.json carries "version" twice — top-level and in
+  // packages[""]. Both must update.
+  const before = `{
+  "name": "webbrain",
+  "version": "7.0.0",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "webbrain",
+      "version": "7.0.0"
+    }
+  }
+}`;
+  const after = rewriteVersionInJsonText(before, '7.0.0', '7.0.1', { replaceAll: true });
+  assert.equal((after.match(/"version": "7\.0\.1"/g) || []).length, 2);
+  assert.ok(!after.includes('"version": "7.0.0"'), `stale version remained: ${after}`);
+});
+
+test('rewriteVersionInJsonText: returns input unchanged when oldVersion not present', () => {
+  const before = '{"version": "8.0.0"}';
+  const after = rewriteVersionInJsonText(before, '7.0.0', '7.0.1');
+  assert.equal(after, before);
+});
+
+test('rewriteVersionInJsonText: tolerates varied whitespace in JSON', () => {
+  // Whether the JSON uses 2 spaces, tabs, or compact form, the
+  // version-property pattern should still match.
+  const samples = [
+    '{"version":"7.0.0"}',
+    '{"version": "7.0.0"}',
+    '{ "version" : "7.0.0" }',
+    '{\n\t"version":\t"7.0.0"\n}',
+  ];
+  for (const before of samples) {
+    const after = rewriteVersionInJsonText(before, '7.0.0', '7.0.1');
+    assert.ok(after.includes('"7.0.1'), `failed to update: ${before}`);
+    assert.ok(!after.includes('"7.0.0'), `stale version remained: ${after}`);
   }
 });
 
