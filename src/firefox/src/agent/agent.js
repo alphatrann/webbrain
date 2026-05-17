@@ -1651,6 +1651,71 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await downloadFiles(args);
     }
 
+    if (name === 'download_social_media') {
+      try {
+        // Inject the SocialMediaDownloader library into the page (isolated
+        // content-script world — Firefox MV2 has no MAIN-world option for
+        // executeScript). The script defines window.SocialMediaDownloader,
+        // which subsequent executeScript calls in the same tab can reach.
+        // Idempotent across reinjection.
+        await browser.tabs.executeScript(tabId, {
+          file: 'src/agent/social-media-downloader.js',
+        });
+        const opts = {
+          mode: args.mode || 'auto',
+          all: !!args.scroll,
+          limit: typeof args.limit === 'number' && args.limit > 0
+            ? args.limit
+            : Number.MAX_SAFE_INTEGER,
+        };
+        const code = `
+          (async () => {
+            if (!window.SocialMediaDownloader) {
+              return { success: false, error: 'SocialMediaDownloader did not load on this page (likely a page CSP block).' };
+            }
+            try {
+              const urls = await window.SocialMediaDownloader.run(${JSON.stringify(opts)});
+              const profile = window.SocialMediaDownloader._activeProfile().name;
+              // Total bytes the document_start MSE recorder captured for
+              // this page. Feeds the recommendation builder so we can
+              // tell the agent to call saveMse() when there's actually
+              // a capture worth saving.
+              let mseBytes = 0;
+              try {
+                const rec = window.SocialMediaDownloader.getMseRecording();
+                for (const ms of (rec.mediaSources || [])) {
+                  for (const b of (ms.buffers || [])) mseBytes += (b.bytes || 0);
+                }
+                for (const b of (rec.orphanBuffers || [])) mseBytes += (b.bytes || 0);
+              } catch (_) {}
+              const recommendation = window.SocialMediaDownloader._buildRecommendation({
+                urls, profile, mseBytes, pageUrl: location.href,
+              });
+              return {
+                success: true,
+                site: profile,
+                mode: ${JSON.stringify(opts.mode)},
+                count: urls.length,
+                urls: urls.slice(0, 50),
+                mseBytes,
+                recommendation,
+              };
+            } catch (e) {
+              return { success: false, error: (e && e.message) || String(e) };
+            }
+          })()
+        `;
+        const results = await browser.tabs.executeScript(tabId, { code });
+        const result = (results && results[0]) || null;
+        if (!result) {
+          return { success: false, error: 'download_social_media: no result returned (tab may have navigated away).' };
+        }
+        return result;
+      } catch (e) {
+        return { success: false, error: `download_social_media failed: ${e.message}` };
+      }
+    }
+
     // ─── PDF reader ───────────────────────────────────────────────────
     // Firefox's built-in PDF viewer is a privileged page that our content
     // scripts cannot reach, so click / read_page / get_ax all silently

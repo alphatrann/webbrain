@@ -53,7 +53,7 @@ const { resourceBucket: resourceBucketFx, bucketArgsKey: bucketArgsKeyFx } = awa
 
 // bump-version.mjs is the version-bump CLI but exports its pure helpers
 // for testing. The CLI body is guarded so importing it is side-effect-free.
-const { bumpSemver, rewriteVersionInJsonText } = await import(
+const { bumpSemver, rewriteVersionInJsonText, rewriteVersionByAnchor } = await import(
   'file://' + path.join(ROOT, 'scripts/bump-version.mjs').replace(/\\/g, '/')
 );
 
@@ -1107,6 +1107,45 @@ test('rewriteVersionInJsonText: tolerates varied whitespace in JSON', () => {
     assert.ok(after.includes('"7.0.1'), `failed to update: ${before}`);
     assert.ok(!after.includes('"7.0.0'), `stale version remained: ${after}`);
   }
+});
+
+test('rewriteVersionByAnchor: rewrites EXT_VERSION literal in settings.js', () => {
+  // The actual shape used by src/{chrome,firefox}/src/ui/settings.js.
+  const before = `// Version shown in the subtitle.\nconst EXT_VERSION = '7.0.0';\n`;
+  const after = rewriteVersionByAnchor(
+    before, '7.0.0', '7.0.1', `(EXT_VERSION\\s*=\\s*['"])__OLD__(['"])`
+  );
+  assert.match(after, /const EXT_VERSION = '7\.0\.1';/);
+  assert.ok(!after.includes("'7.0.0'"));
+});
+
+test('rewriteVersionByAnchor: rewrites ARCHITECTURE.md header line', () => {
+  const before = `# WebBrain Chrome Extension — Architecture\n\n> Version 7.0.0 · Manifest V3 · Service Worker background\n`;
+  const after = rewriteVersionByAnchor(
+    before, '7.0.0', '7.1.0', `(>\\s*Version\\s+)__OLD__(\\s*·)`
+  );
+  assert.match(after, /> Version 7\.1\.0 · Manifest V3/);
+  assert.ok(!after.includes('Version 7.0.0'));
+});
+
+test('rewriteVersionByAnchor: returns input unchanged when anchor does not match', () => {
+  // If the file has the old version SOMEWHERE but not at the anchor
+  // location, we must NOT clobber the unrelated occurrence.
+  const before = `// Released after 7.0.0 — see CHANGELOG.\nconst EXT_VERSION = '6.1.0';\n`;
+  const after = rewriteVersionByAnchor(
+    before, '7.0.0', '7.0.1', `(EXT_VERSION\\s*=\\s*['"])__OLD__(['"])`
+  );
+  assert.equal(after, before);
+});
+
+test('rewriteVersionByAnchor: escapes regex metacharacters in oldVersion', () => {
+  // Plain semver never contains regex metas, but the helper should
+  // tolerate them defensively (future-proofing for pre-release tags).
+  const before = `marker[1.0+abc]end`;
+  const after = rewriteVersionByAnchor(
+    before, '1.0+abc', '1.0+xyz', `(marker\\[)__OLD__(\\])`
+  );
+  assert.equal(after, 'marker[1.0+xyz]end');
 });
 
 await run();

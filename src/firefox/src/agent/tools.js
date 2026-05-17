@@ -494,6 +494,32 @@ export const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'download_social_media',
+      description: 'One-shot media downloader for major social sites: Facebook, Instagram, X/Twitter, LinkedIn, Reddit, Pinterest, YouTube (thumbnails only). Auto-detects the active site, picks the main photo/video on single-content pages (/photo/, /p/, /reel/, /status/.../photo/, /pin/, /comments/), or every media item on feeds when scroll:true. Handles per-site DOM quirks, upgrades to max resolution (X name=orig, Pinterest /originals/), pairs Reddit DASH video+audio, stitches HLS (incl. AES-128 encrypted), and falls back to opening in a new tab when a CDN blocks CORS. PREFER this over execute_js / download_file / download_resource_from_page whenever the user asks to "download this image/video", "save this photo", "grab the media" on a supported site — it is a single call instead of figuring DOM selectors out manually. Files land in the browser Downloads folder; call list_downloads afterwards to confirm. RESULT SHAPE: may include a `recommendation` object ({kind, message}) when the in-browser path cannot fully handle the request (YouTube DRM video, MSE blob with nothing buffered yet, unsupported site, empty result). When present, relay `recommendation.message` verbatim to the user — it names the right external CLI tool (yt-dlp or gallery-dl) and includes a copy-pasteable command.',
+      parameters: {
+        type: 'object',
+        properties: {
+          mode: {
+            type: 'string',
+            enum: ['auto', 'main', 'all'],
+            description: '"auto" (default): main media on single-content pages, everything on feeds. "main": force just the primary photo/video on the page. "all": every media item currently in the DOM.',
+          },
+          scroll: {
+            type: 'boolean',
+            description: 'Scroll the feed and collect media as new items lazy-load. Only useful on feed/profile/timeline pages. Default false.',
+          },
+          limit: {
+            type: 'number',
+            description: 'Max number of files to download. Default unlimited.',
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 /**
@@ -595,6 +621,7 @@ Available tools:
 - done: Signal task completion
 - verify_form: Verify form fields before submitting
 - scratchpad_write: Pin a note in context that survives summarization (use on long tasks to remember download IDs, file paths, progress, plans)
+- download_social_media: One-shot image/video download from Facebook, Instagram, X/Twitter, LinkedIn, Reddit, Pinterest, YouTube. Single call — no need to inspect the DOM yourself.
 
 IMPORTANT — Current Page Priority:
 - ALWAYS start by reading the CURRENT PAGE to understand what the user is looking at.
@@ -710,6 +737,12 @@ SCROLLING — read this:
 - When filling forms, scroll down to see ALL fields before starting. Many forms have important fields (price, billing interval, description) below the fold.
 - If you can't find a button or field by text or selector, scroll down before giving up — it may be below the fold.
 - After filling visible fields, always scroll down to check for more fields before submitting.
+
+SOCIAL MEDIA DOWNLOADS — read this:
+- When the user asks to download images or videos from Facebook, Instagram, X/Twitter, LinkedIn, Reddit, Pinterest, or YouTube (thumbnails), call \`download_social_media\` — it is a SINGLE tool call that handles the per-site DOM, picks the right resolution, and saves to the Downloads folder. Do NOT inspect the page with \`get_interactive_elements\` + \`execute_js\` + \`download_file\` to figure it out yourself; the tool already knows.
+- Defaults: on single-content pages (e.g. /photo/, /p/, /reel/, /status/.../photo/, /pin/, /comments/) it grabs the main item; pass \`scroll:true\` to walk a feed/profile/timeline and capture everything that lazy-loads.
+- After it returns, optionally call \`list_downloads\` to surface the saved filenames for the user. Some CDNs (notably media.licdn.com) block CORS and the tool will open the media in a new tab as fallback — that is expected behavior, not a failure.
+- The tool may return a \`recommendation\` field with shape \`{ kind, message }\`. This means SMD knowingly cannot handle the request well — most often YouTube full video (Widevine DRM + signatureCipher), an MSE blob the player hasn't loaded yet, or a site outside SMD's supported list. When it appears, RELAY \`recommendation.message\` to the user verbatim in your reply — it points them at the right external CLI tool (\`yt-dlp\` for video, \`gallery-dl\` for images) with a copy-pasteable command. Do NOT try to work around it with \`execute_js\` or repeated tool calls — the recommendation exists precisely because those paths cannot help. Exception: \`kind: "mse_capture_available"\` is the one case where you SHOULD follow up — it means the MSE recorder buffered bytes while the page was open, and the message tells you to call \`await SocialMediaDownloader.saveMse()\` via \`execute_js\` to download them.
 
 LISTINGS & PAGINATION — read this:
 - Listing / search-result pages (URLs with query params like ?page=, ?p=, ?sd=, ?offset=, ?after=, &cursor=; or pages that show many product/result cards with Next/Sonraki/Suivant/下一页 controls): EXTRACT first, paginate second.

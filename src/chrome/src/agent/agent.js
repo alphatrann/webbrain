@@ -3051,6 +3051,75 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
+    if (name === 'download_social_media') {
+      try {
+        // Inject the SocialMediaDownloader library into the page's main
+        // world so it shares fetch/XHR/cookies with page scripts — same
+        // execution context the script's DevTools-console docs target.
+        // Idempotent: subsequent injections re-define window.SocialMediaDownloader.
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['src/agent/social-media-downloader.js'],
+          world: 'MAIN',
+        });
+        const opts = {
+          mode: args.mode || 'auto',
+          all: !!args.scroll,
+          limit: typeof args.limit === 'number' && args.limit > 0
+            ? args.limit
+            : Number.MAX_SAFE_INTEGER,
+        };
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: 'MAIN',
+          func: async (runOpts) => {
+            if (!window.SocialMediaDownloader) {
+              return { success: false, error: 'SocialMediaDownloader did not load on this page (likely a page CSP block).' };
+            }
+            try {
+              const urls = await window.SocialMediaDownloader.run(runOpts);
+              const profile = window.SocialMediaDownloader._activeProfile().name;
+              // Total bytes the document_start MSE recorder captured
+              // for this page (zero if not on a supported social host
+              // or the player hasn't been played). Feeds the
+              // recommendation builder so we can tell the agent to
+              // call saveMse() when there's actually a capture.
+              let mseBytes = 0;
+              try {
+                const rec = window.SocialMediaDownloader.getMseRecording();
+                for (const ms of (rec.mediaSources || [])) {
+                  for (const b of (ms.buffers || [])) mseBytes += (b.bytes || 0);
+                }
+                for (const b of (rec.orphanBuffers || [])) mseBytes += (b.bytes || 0);
+              } catch (_) { /* recorder optional */ }
+              const recommendation = window.SocialMediaDownloader._buildRecommendation({
+                urls, profile, mseBytes, pageUrl: location.href,
+              });
+              return {
+                success: true,
+                site: profile,
+                mode: runOpts.mode,
+                count: urls.length,
+                urls: urls.slice(0, 50),
+                mseBytes,
+                recommendation,
+              };
+            } catch (e) {
+              return { success: false, error: (e && e.message) || String(e) };
+            }
+          },
+          args: [opts],
+        });
+        const result = results?.[0]?.result;
+        if (!result) {
+          return { success: false, error: 'download_social_media: no result returned (tab may have navigated away).' };
+        }
+        return result;
+      } catch (e) {
+        return { success: false, error: `download_social_media failed: ${e.message}` };
+      }
+    }
+
     if (name === 'download_file') {
       try {
         const result = await cdpClient.downloadFile(tabId, args.url, args.filename);

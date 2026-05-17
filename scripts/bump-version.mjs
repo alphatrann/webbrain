@@ -11,19 +11,24 @@
  * Or via npm:  npm run bump  ·  npm run bump -- minor  ·  npm run bump -- 7.2.3
  *
  * Updates (in lockstep):
- *   package.json              "version"
- *   package-lock.json         top-level "version" + packages[""].version
- *   manifest.json             "version"     (Chrome MV3, repo root)
- *   src/chrome/manifest.json  "version"     (Chrome MV3, in-source)
- *   src/firefox/manifest.json "version"     (Firefox MV2)
+ *   package.json                       "version"
+ *   package-lock.json                  top-level "version" + packages[""].version
+ *   manifest.json                      "version"     (Chrome MV3, repo root)
+ *   src/chrome/manifest.json           "version"     (Chrome MV3, in-source)
+ *   src/firefox/manifest.json          "version"     (Firefox MV2)
+ *   src/chrome/src/ui/settings.js      const EXT_VERSION = '...'   (settings UI)
+ *   src/firefox/src/ui/settings.js     const EXT_VERSION = '...'   (settings UI)
+ *   src/chrome/ARCHITECTURE.md         "> Version X.Y.Z · ..."     (doc header)
+ *   src/firefox/ARCHITECTURE.md        "> Version X.Y.Z · ..."     (doc header)
  *
  * Does NOT commit, push, or rebuild zips — just edits files. The script
  * prints the suggested next steps when it finishes so the operator can
  * decide whether to ship.
  *
- * The pure helper `bumpSemver(current, kind)` is exported for unit tests
- * — the CLI side of the script is guarded by an `import.meta.url` check
- * so importing this file doesn't trigger filesystem writes.
+ * The pure helpers `bumpSemver(current, kind)`, `rewriteVersionInJsonText`,
+ * and `rewriteVersionByAnchor` are exported for unit tests — the CLI side
+ * of the script is guarded by an `import.meta.url` check so importing this
+ * file doesn't trigger filesystem writes.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -83,17 +88,52 @@ export function rewriteVersionInJsonText(text, oldVersion, newVersion, { replace
   return text.replace(pattern, `$1${newVersion}$2`);
 }
 
+/**
+ * Generic version replacement for non-JSON files where the version lives
+ * between two known surrounding strings (a JS literal, a Markdown badge,
+ * a comment marker, etc.). The caller supplies a regex template string
+ * with `__OLD__` as the placeholder for the current version. The template
+ * MUST have exactly two capture groups — one before `__OLD__` and one
+ * after — and the replacement preserves both groups verbatim.
+ *
+ * Examples of useful templates:
+ *   `(EXT_VERSION\\s*=\\s*['"])__OLD__(['"])`     # JS literal
+ *   `(>\\s*Version\\s+)__OLD__(\\s*·)`            # Markdown header
+ *   `(badge/version-)__OLD__(-)`                   # shields.io badge URL
+ *
+ * Returns the input unchanged if the anchor doesn't match — callers
+ * (like the CLI) treat that as a sync error and abort.
+ */
+export function rewriteVersionByAnchor(text, oldVersion, newVersion, anchorTemplate, flags = '') {
+  const escapedOld = oldVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(anchorTemplate.replace('__OLD__', escapedOld), flags);
+  return text.replace(re, `$1${newVersion}$2`);
+}
+
 // ─── CLI ────────────────────────────────────────────────────────────────
 
 const FILES_TO_UPDATE = [
-  // [relative-path, replaceAll?]
+  // JSON files — version is matched via the `"version": "X"` pattern.
   // replaceAll matters for package-lock.json because it carries "version"
   // twice (top-level + packages[""]).
-  ['package.json', false],
-  ['package-lock.json', true],
-  ['manifest.json', false],
-  ['src/chrome/manifest.json', false],
-  ['src/firefox/manifest.json', false],
+  { path: 'package.json', kind: 'json' },
+  { path: 'package-lock.json', kind: 'json', replaceAll: true },
+  { path: 'manifest.json', kind: 'json' },
+  { path: 'src/chrome/manifest.json', kind: 'json' },
+  { path: 'src/firefox/manifest.json', kind: 'json' },
+  // Settings UI subtitle constant. The settings panel shows the version
+  // to the user; if this drifts from the manifest, the UI lies about
+  // which version is installed even when the manifest is correct.
+  { path: 'src/chrome/src/ui/settings.js', kind: 'anchor',
+    anchor: `(EXT_VERSION\\s*=\\s*['"])__OLD__(['"])` },
+  { path: 'src/firefox/src/ui/settings.js', kind: 'anchor',
+    anchor: `(EXT_VERSION\\s*=\\s*['"])__OLD__(['"])` },
+  // ARCHITECTURE.md header line — `> Version X.Y.Z · Manifest V_ · ...`.
+  // Documentation rots if it doesn't track releases.
+  { path: 'src/chrome/ARCHITECTURE.md', kind: 'anchor',
+    anchor: `(>\\s*Version\\s+)__OLD__(\\s*·)` },
+  { path: 'src/firefox/ARCHITECTURE.md', kind: 'anchor',
+    anchor: `(>\\s*Version\\s+)__OLD__(\\s*·)` },
 ];
 
 function runCli() {
@@ -120,21 +160,34 @@ function runCli() {
 
   console.log(`Bumping version ${oldVersion} → ${newVersion}`);
 
-  for (const [rel, replaceAll] of FILES_TO_UPDATE) {
-    const abs = path.join(root, rel);
+  for (const entry of FILES_TO_UPDATE) {
+    const abs = path.join(root, entry.path);
     const before = readFileSync(abs, 'utf8');
-    const after = rewriteVersionInJsonText(before, oldVersion, newVersion, { replaceAll });
+    let after;
+    if (entry.kind === 'json') {
+      after = rewriteVersionInJsonText(before, oldVersion, newVersion,
+        { replaceAll: !!entry.replaceAll });
+    } else if (entry.kind === 'anchor') {
+      after = rewriteVersionByAnchor(before, oldVersion, newVersion, entry.anchor);
+    } else {
+      console.error(`✗ ${entry.path}: unknown kind "${entry.kind}" in FILES_TO_UPDATE.`);
+      process.exit(1);
+    }
     if (before === after) {
-      console.error(`✗ ${rel}: no "version": "${oldVersion}" found — file may be out of sync.`);
+      const where = entry.kind === 'json'
+        ? `no "version": "${oldVersion}" found`
+        : `no match for anchor (current version literal "${oldVersion}" not at the expected location)`;
+      console.error(`✗ ${entry.path}: ${where} — file may be out of sync. ` +
+        `Patch it manually to "${oldVersion}" first, then re-run the bump.`);
       process.exit(1);
     }
     writeFileSync(abs, after);
-    console.log(`  ✓ ${rel}`);
+    console.log(`  ✓ ${entry.path}`);
   }
 
   console.log('');
   console.log('Next steps:');
-  console.log(`  git add ${FILES_TO_UPDATE.map(([f]) => f).join(' ')}`);
+  console.log(`  git add ${FILES_TO_UPDATE.map(f => f.path).join(' ')}`);
   console.log(`  git commit -m "chore: bump version ${oldVersion} → ${newVersion}"`);
   console.log('  npm run build:zip       # rebuild dist/webbrain-{chrome,firefox}-' + newVersion + '.zip');
   console.log('  git rm dist/webbrain-{chrome,firefox}-' + oldVersion + '.zip');

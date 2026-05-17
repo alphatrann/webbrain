@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WebBrain",
-  "version": "7.0.0",
+  "version": "7.1.0",
   "description": "Open-source AI browser agent — chat with pages, automate tasks, multi-provider LLM support.",
   "permissions": [
     "sidePanel",
@@ -42,6 +42,21 @@
         "src/content/agent-visual-indicator.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.facebook.com/*",
+        "*://*.instagram.com/*",
+        "*://*.x.com/*",
+        "*://*.twitter.com/*",
+        "*://*.linkedin.com/*",
+        "*://*.reddit.com/*",
+        "*://*.youtube.com/*",
+        "*://youtu.be/*"
+      ],
+      "js": ["src/agent/social-media-downloader.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "options_page": "src/ui/settings.html",
