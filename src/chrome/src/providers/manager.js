@@ -94,8 +94,9 @@ export class ProviderManager {
         label: 'OpenAI',
         providerName: 'openai',
         baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-5',
+        model: 'gpt-5.5',
         apiKey: '',
+        apiKeyUrl: 'https://platform.openai.com/api-keys',
         enabled: false,
       },
       anthropic: {
@@ -105,6 +106,7 @@ export class ProviderManager {
         baseUrl: 'https://api.anthropic.com',
         model: 'claude-sonnet-4-6',
         apiKey: '',
+        apiKeyUrl: 'https://console.anthropic.com/settings/keys',
         enabled: false,
       },
       // Google Gemini via the OpenAI-compatible endpoint. Pure REST, no
@@ -116,7 +118,7 @@ export class ProviderManager {
         label: 'Google Gemini',
         providerName: 'gemini',
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-        model: 'gemini-2.0-flash',
+        model: 'gemini-3.1-flash',
         apiKey: '',
         enabled: false,
       },
@@ -128,6 +130,7 @@ export class ProviderManager {
         baseUrl: 'https://api.mistral.ai/v1',
         model: 'mistral-large-latest',
         apiKey: '',
+        apiKeyUrl: 'https://console.mistral.ai/api-keys/',
         enabled: false,
       },
       deepseek: {
@@ -138,6 +141,7 @@ export class ProviderManager {
         baseUrl: 'https://api.deepseek.com/v1',
         model: 'deepseek-chat',
         apiKey: '',
+        apiKeyUrl: 'https://platform.deepseek.com/api_keys',
         enabled: false,
       },
       xai: {
@@ -146,8 +150,9 @@ export class ProviderManager {
         label: 'xAI Grok',
         providerName: 'xai',
         baseUrl: 'https://api.x.ai/v1',
-        model: 'grok-4',
+        model: 'grok-4.3',
         apiKey: '',
+        apiKeyUrl: 'https://console.x.ai/',
         enabled: false,
       },
       // Nvidia NIM (cloud / self-hosted inference microservice)
@@ -159,6 +164,7 @@ export class ProviderManager {
         baseUrl: 'https://integrate.api.nvidia.com/v1',
         model: 'meta/llama-3.1-8b-instruct',
         apiKey: '',
+        apiKeyUrl: 'https://build.nvidia.com/',
         enabled: false,
       },
       groq: {
@@ -169,6 +175,7 @@ export class ProviderManager {
         baseUrl: 'https://api.groq.com/openai/v1',
         model: 'llama-3.3-70b-versatile',
         apiKey: '',
+        apiKeyUrl: 'https://console.groq.com/keys',
         enabled: false,
       },
       openrouter: {
@@ -177,8 +184,9 @@ export class ProviderManager {
         label: 'OpenRouter',
         providerName: 'openrouter',
         baseUrl: 'https://openrouter.ai/api/v1',
-        model: 'anthropic/claude-sonnet-4',
+        model: 'anthropic/claude-sonnet-4-6',
         apiKey: '',
+        apiKeyUrl: 'https://openrouter.ai/keys',
         enabled: false,
       },
       // Subscription auth (OAuth) entry, kept distinct from the API-key

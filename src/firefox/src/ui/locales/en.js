@@ -145,6 +145,7 @@ export default {
   'st.providers.load_models': 'Load models',
   'st.providers.loading': 'Loading…',
   'st.providers.models_loaded': '{count} models loaded',
+  'st.providers.get_api_key': 'Get API key',
 
   'st.provider.field.server_url': 'Server URL',
   'st.provider.field.api_base_url': 'API Base URL',

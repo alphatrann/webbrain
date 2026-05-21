@@ -431,14 +431,14 @@ function renderProviders() {
     openai: {
       fields: [
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'sk-...' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gpt-5' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gpt-5.5' },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.openai.com/v1' },
       ],
     },
     openrouter: {
       fields: [
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'sk-or-...' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'anthropic/claude-sonnet-4' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'anthropic/claude-sonnet-4-6' },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://openrouter.ai/api/v1' },
       ],
     },
@@ -452,7 +452,7 @@ function renderProviders() {
     gemini: {
       fields: [
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'AIza...' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gemini-2.0-flash' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gemini-3.1-flash' },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://generativelanguage.googleapis.com/v1beta/openai' },
       ],
     },
@@ -473,8 +473,22 @@ function renderProviders() {
     xai: {
       fields: [
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'xai-...' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'grok-4' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'grok-4.3' },
         { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.x.ai/v1' },
+      ],
+    },
+    nvidia: {
+      fields: [
+        { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'nvapi-...' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'meta/llama-3.1-8b-instruct' },
+        { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://integrate.api.nvidia.com/v1' },
+      ],
+    },
+    groq: {
+      fields: [
+        { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'gsk_...' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'llama-3.3-70b-versatile' },
+        { key: 'baseUrl', labelKey: 'st.provider.field.api_base_url', type: 'text', placeholder: 'https://api.groq.com/openai/v1' },
       ],
     },
     // OAuth-based Claude subscription provider. The card body is rendered
@@ -535,7 +549,7 @@ function renderProviders() {
             <label style="margin:0;cursor:pointer;">${escapeHtml(label)}</label>
           </div>
         `;
-      } else {
+        } else {
         // Local providers expose model-list endpoints. Attach a datalist so
         // users can pick a running/installed model without typing it by hand.
         const localModelProviders = ['llamacpp', 'ollama', 'lmstudio'];
@@ -548,9 +562,12 @@ function renderProviders() {
              <span class="load-models-status" data-provider="${id}"
                    style="margin-left:8px;font-size:12px;color:var(--text2);"></span>`
           : '';
+        const apiKeyLink = (field.key === 'apiKey' && config.apiKeyUrl)
+          ? ` <a href="${escapeHtml(config.apiKeyUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:11px;margin-left:6px;color:var(--accent,#4A90D9);text-decoration:none;">${escapeHtml(t('st.providers.get_api_key'))}</a>`
+          : '';
         fieldsHTML += `
           <div class="field">
-            <label>${escapeHtml(label)}</label>
+            <label>${escapeHtml(label)}${apiKeyLink}</label>
             <input type="${field.type}" data-provider="${id}" data-key="${field.key}" ${listAttr}
                    value="${escapeHtml(config[field.key] || '')}" placeholder="${escapeHtml(placeholder)}">
             ${datalistHTML}
