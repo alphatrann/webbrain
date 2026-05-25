@@ -1803,6 +1803,23 @@
       // — we wrap fetch + XMLHttpRequest in window once per page; we don't
       // see WebSocket frames or chunked SSE. That's fine: the MutationObserver
       // is the load-bearing signal, network-idle is a tightener.
+      // CROSS-WORLD NOTE: page JavaScript runs in the MAIN world; this
+      // content script runs in an ISOLATED world that has its own copies
+      // of `window.fetch` and `XMLHttpRequest.prototype.send`. Patching
+      // those copies here (the previous implementation) observed nothing
+      // — the page calls the MAIN-world fetch we can't reach directly.
+      // To get real network visibility we inject a <script> element with
+      // text patches that run in the page's own world. The injected
+      // counter publishes its value to
+      // `document.documentElement.dataset.__wbInflight`, which crosses
+      // the world boundary via the shared DOM. We read it from here.
+      //
+      // STRICT-CSP FALLBACK: pages with `script-src 'self'` (no inline)
+      // refuse the injected <script>. We detect the failure (the dataset
+      // attribute never gets set) and degrade gracefully: the response
+      // includes `networkObserved: false`, the netIdle gate is bypassed,
+      // and stability is decided on MutationObserver alone. Honest
+      // failure beats a fake "idle" signal.
       'wait_for_stable': () => {
         return new Promise((resolve) => {
           const params = msg.params || {};
@@ -1810,32 +1827,60 @@
           const quietMs = Math.max(100, Math.min(3000, Number(params.quietMs) || 500));
           const checkNetwork = params.checkNetwork !== false; // default on
           let mutationCount = 0;
+          let networkObserved = false;
 
-          // Lazy-install network-idle counter on window. Single-shot per page.
-          if (checkNetwork && !window.__wbNetIdleInstalled) {
+          // Install the MAIN-world counter once per page (per isolated-
+          // world realm — re-injection is a no-op).
+          if (checkNetwork && !window.__wbNetCounterAttempted) {
+            window.__wbNetCounterAttempted = true;
             try {
-              window.__wbNetIdleInstalled = true;
-              window.__wbInFlight = 0;
-              const origFetch = window.fetch;
-              if (typeof origFetch === 'function') {
-                window.fetch = function patchedFetch() {
-                  window.__wbInFlight = (window.__wbInFlight | 0) + 1;
-                  return origFetch.apply(this, arguments).finally(() => {
-                    window.__wbInFlight = Math.max(0, (window.__wbInFlight | 0) - 1);
-                  });
+              const script = document.createElement('script');
+              script.textContent = `(() => {
+                if (window.__wbNetIdleInstalled) return;
+                window.__wbNetIdleInstalled = true;
+                let inFlight = 0;
+                const root = document.documentElement;
+                const publish = () => {
+                  try { root.dataset.__wbInflight = String(inFlight); } catch (_) {}
                 };
-              }
-              const XHR = window.XMLHttpRequest;
-              if (XHR && XHR.prototype && XHR.prototype.send) {
-                const origSend = XHR.prototype.send;
-                XHR.prototype.send = function patchedSend() {
-                  window.__wbInFlight = (window.__wbInFlight | 0) + 1;
-                  const done = () => { window.__wbInFlight = Math.max(0, (window.__wbInFlight | 0) - 1); };
-                  this.addEventListener('loadend', done, { once: true });
-                  return origSend.apply(this, arguments);
-                };
-              }
-            } catch { /* best effort */ }
+                publish();
+                const origFetch = window.fetch;
+                if (typeof origFetch === 'function') {
+                  window.fetch = function() {
+                    inFlight++; publish();
+                    return origFetch.apply(this, arguments).finally(() => {
+                      inFlight = Math.max(0, inFlight - 1); publish();
+                    });
+                  };
+                }
+                const XHR = window.XMLHttpRequest;
+                if (XHR && XHR.prototype && XHR.prototype.send) {
+                  const origSend = XHR.prototype.send;
+                  XHR.prototype.send = function() {
+                    inFlight++; publish();
+                    const done = () => { inFlight = Math.max(0, inFlight - 1); publish(); };
+                    this.addEventListener('loadend', done, { once: true });
+                    return origSend.apply(this, arguments);
+                  };
+                }
+              })();`;
+              (document.head || document.documentElement).appendChild(script);
+              script.remove();
+            } catch { /* CSP or DOM unavailability — networkObserved stays false */ }
+          }
+
+          // Read the MAIN-world counter via the shared DOM attribute.
+          // Returns null when the inject failed (CSP) or hasn't run yet.
+          const readInflight = () => {
+            try {
+              const v = document.documentElement.dataset.__wbInflight;
+              if (v == null) return null;
+              const n = parseInt(v, 10);
+              return Number.isFinite(n) ? n : null;
+            } catch { return null; }
+          };
+          if (checkNetwork) {
+            networkObserved = readInflight() !== null;
           }
 
           const startedAt = Date.now();
@@ -1857,7 +1902,14 @@
             const now = Date.now();
             const quiet = now - quietStart;
             const elapsed = now - startedAt;
-            const netIdle = !checkNetwork || ((window.__wbInFlight | 0) === 0);
+            // Re-check observation status each tick — the injected
+            // script may have started reporting after a delay on a
+            // slow-parsing page.
+            if (checkNetwork && !networkObserved) {
+              networkObserved = readInflight() !== null;
+            }
+            const inFlight = networkObserved ? (readInflight() | 0) : 0;
+            const netIdle = !checkNetwork || !networkObserved || inFlight === 0;
             if (quiet >= quietMs && netIdle) {
               clearInterval(interval);
               observer.disconnect();
@@ -1867,7 +1919,8 @@
                 elapsedMs: elapsed,
                 quietMs: quiet,
                 mutations: mutationCount,
-                inFlightAtExit: window.__wbInFlight | 0,
+                inFlightAtExit: networkObserved ? inFlight : null,
+                networkObserved,
               });
             } else if (elapsed >= timeout) {
               clearInterval(interval);
@@ -1878,8 +1931,11 @@
                 timedOut: true,
                 elapsedMs: elapsed,
                 mutations: mutationCount,
-                inFlightAtExit: window.__wbInFlight | 0,
-                hint: 'Page never went quiet within the timeout. The page may be polling, animating, or streaming — proceed and read the tree anyway, or pass a longer timeout.',
+                inFlightAtExit: networkObserved ? inFlight : null,
+                networkObserved,
+                hint: networkObserved
+                  ? 'Page never went quiet within the timeout. The page may be polling, animating, or streaming — proceed and read the tree anyway, or pass a longer timeout.'
+                  : 'Network activity could not be observed on this page (the in-page <script> inject was blocked, likely by a strict Content Security Policy). Stability was judged on DOM mutations alone, and that never settled. Proceed cautiously.',
               });
             }
           }, 100);

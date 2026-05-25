@@ -117,10 +117,21 @@ export function parseA1(range) {
     throw new Error(`parseA1: incomplete start address in ${JSON.stringify(range)} — for a single cell pass both column and row (e.g. "A1"); for a whole column use "A:A"; for a whole row use "1:1".`);
   }
 
+  // Spreadsheet rows are 1-indexed in A1 notation; anything below 1 is a
+  // typo. parseInt('0', 10) - 1 silently produces -1, which would then
+  // mis-target cells once read_sheet / fill_sheet wire up the backends.
+  // Reject explicitly so the caller sees the error at parse time.
+  const _validateRowStr = (rowStr, which) => {
+    const n = parseInt(rowStr, 10);
+    if (!Number.isFinite(n) || n < 1) {
+      throw new Error(`parseA1: row numbers are 1-indexed; got ${JSON.stringify(which + '=' + rowStr)} in ${JSON.stringify(range)}. Use A1 (not A0), 1:5 (not 0:5).`);
+    }
+    return n - 1;
+  };
   const startCol = sCol ? colLettersToIndex(sCol) : 0;
-  const startRow = sRow ? parseInt(sRow, 10) - 1 : 0;
+  const startRow = sRow ? _validateRowStr(sRow, 'startRow') : 0;
   const endCol = hasEnd && eCol ? colLettersToIndex(eCol) : (hasEnd ? null : startCol);
-  const endRow = hasEnd && eRow ? parseInt(eRow, 10) - 1 : (hasEnd ? null : startRow);
+  const endRow = hasEnd && eRow ? _validateRowStr(eRow, 'endRow') : (hasEnd ? null : startRow);
 
   if (sCol == null && sRow == null) {
     throw new Error(`parseA1: range must specify at least one column or row: ${JSON.stringify(range)}`);

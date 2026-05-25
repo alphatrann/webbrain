@@ -1694,8 +1694,15 @@
         }
       },
       // ── wait_for_stable ────────────────────────────────────────────────────
-      // Pure content-script port (no CDP involved). Same shape as Chrome's
-      // implementation so the agent code can call it identically.
+      // CROSS-WORLD NOTE: Firefox content scripts (like Chrome) run in a
+      // separate JS compartment from the page. Patching `window.fetch` /
+      // `XMLHttpRequest.prototype.send` here observes nothing because the
+      // page's calls happen in the page's own world. Same fix as Chrome:
+      // inject a <script> with text patches, publish the in-flight count
+      // via `document.documentElement.dataset.__wbInflight` (shared DOM
+      // crosses the world boundary), read from here. Page CSP can refuse
+      // the inline-script inject — when that happens we fall back to
+      // MutationObserver-only stability and flag `networkObserved: false`.
       'wait_for_stable': () => {
         return new Promise((resolve) => {
           const params = msg.params || {};
@@ -1703,31 +1710,58 @@
           const quietMs = Math.max(100, Math.min(3000, Number(params.quietMs) || 500));
           const checkNetwork = params.checkNetwork !== false;
           let mutationCount = 0;
-          if (checkNetwork && !window.__wbNetIdleInstalled) {
+          let networkObserved = false;
+
+          if (checkNetwork && !window.__wbNetCounterAttempted) {
+            window.__wbNetCounterAttempted = true;
             try {
-              window.__wbNetIdleInstalled = true;
-              window.__wbInFlight = 0;
-              const origFetch = window.fetch;
-              if (typeof origFetch === 'function') {
-                window.fetch = function patchedFetch() {
-                  window.__wbInFlight = (window.__wbInFlight | 0) + 1;
-                  return origFetch.apply(this, arguments).finally(() => {
-                    window.__wbInFlight = Math.max(0, (window.__wbInFlight | 0) - 1);
-                  });
+              const script = document.createElement('script');
+              script.textContent = `(() => {
+                if (window.__wbNetIdleInstalled) return;
+                window.__wbNetIdleInstalled = true;
+                let inFlight = 0;
+                const root = document.documentElement;
+                const publish = () => {
+                  try { root.dataset.__wbInflight = String(inFlight); } catch (_) {}
                 };
-              }
-              const XHR = window.XMLHttpRequest;
-              if (XHR && XHR.prototype && XHR.prototype.send) {
-                const origSend = XHR.prototype.send;
-                XHR.prototype.send = function patchedSend() {
-                  window.__wbInFlight = (window.__wbInFlight | 0) + 1;
-                  const done = () => { window.__wbInFlight = Math.max(0, (window.__wbInFlight | 0) - 1); };
-                  this.addEventListener('loadend', done, { once: true });
-                  return origSend.apply(this, arguments);
-                };
-              }
+                publish();
+                const origFetch = window.fetch;
+                if (typeof origFetch === 'function') {
+                  window.fetch = function() {
+                    inFlight++; publish();
+                    return origFetch.apply(this, arguments).finally(() => {
+                      inFlight = Math.max(0, inFlight - 1); publish();
+                    });
+                  };
+                }
+                const XHR = window.XMLHttpRequest;
+                if (XHR && XHR.prototype && XHR.prototype.send) {
+                  const origSend = XHR.prototype.send;
+                  XHR.prototype.send = function() {
+                    inFlight++; publish();
+                    const done = () => { inFlight = Math.max(0, inFlight - 1); publish(); };
+                    this.addEventListener('loadend', done, { once: true });
+                    return origSend.apply(this, arguments);
+                  };
+                }
+              })();`;
+              (document.head || document.documentElement).appendChild(script);
+              script.remove();
             } catch {}
           }
+
+          const readInflight = () => {
+            try {
+              const v = document.documentElement.dataset.__wbInflight;
+              if (v == null) return null;
+              const n = parseInt(v, 10);
+              return Number.isFinite(n) ? n : null;
+            } catch { return null; }
+          };
+          if (checkNetwork) {
+            networkObserved = readInflight() !== null;
+          }
+
           const startedAt = Date.now();
           let quietStart = Date.now();
           const observer = new MutationObserver((records) => {
@@ -1746,15 +1780,32 @@
             const now = Date.now();
             const quiet = now - quietStart;
             const elapsed = now - startedAt;
-            const netIdle = !checkNetwork || ((window.__wbInFlight | 0) === 0);
+            if (checkNetwork && !networkObserved) {
+              networkObserved = readInflight() !== null;
+            }
+            const inFlight = networkObserved ? (readInflight() | 0) : 0;
+            const netIdle = !checkNetwork || !networkObserved || inFlight === 0;
             if (quiet >= quietMs && netIdle) {
               clearInterval(interval);
               observer.disconnect();
-              resolve({ success: true, stable: true, elapsedMs: elapsed, quietMs: quiet, mutations: mutationCount, inFlightAtExit: window.__wbInFlight | 0 });
+              resolve({
+                success: true, stable: true,
+                elapsedMs: elapsed, quietMs: quiet, mutations: mutationCount,
+                inFlightAtExit: networkObserved ? inFlight : null,
+                networkObserved,
+              });
             } else if (elapsed >= timeout) {
               clearInterval(interval);
               observer.disconnect();
-              resolve({ success: true, stable: false, timedOut: true, elapsedMs: elapsed, mutations: mutationCount, inFlightAtExit: window.__wbInFlight | 0, hint: 'Page never went quiet within the timeout. Proceed and read the tree anyway, or pass a longer timeout.' });
+              resolve({
+                success: true, stable: false, timedOut: true,
+                elapsedMs: elapsed, mutations: mutationCount,
+                inFlightAtExit: networkObserved ? inFlight : null,
+                networkObserved,
+                hint: networkObserved
+                  ? 'Page never went quiet within the timeout. Proceed and read the tree anyway, or pass a longer timeout.'
+                  : 'Network activity could not be observed on this page (the in-page <script> inject was blocked, likely by a strict Content Security Policy). Stability was judged on DOM mutations alone, and that never settled. Proceed cautiously.',
+              });
             }
           }, 100);
         });

@@ -1596,6 +1596,21 @@ test('parseA1: empty sheet name throws', () => {
 test('parseA1: A (no row, no end) throws — ambiguous', () => {
   assert.throws(() => parseA1('A'), /incomplete start/);
 });
+test('parseA1: A0 throws (rows are 1-indexed)', () => {
+  assert.throws(() => parseA1('A0'), /1-indexed/);
+});
+test('parseA1: A0:B5 throws (start row 0)', () => {
+  assert.throws(() => parseA1('A0:B5'), /1-indexed/);
+});
+test('parseA1: B5:A0 throws (end row 0)', () => {
+  assert.throws(() => parseA1('B5:A0'), /1-indexed/);
+});
+test('parseA1: 0:1 throws (whole-row form with row 0)', () => {
+  assert.throws(() => parseA1('0:1'), /1-indexed/);
+});
+test('parseA1: 1:0 throws (whole-row form with end row 0)', () => {
+  assert.throws(() => parseA1('1:0'), /1-indexed/);
+});
 
 test('colLettersToIndex: A → 0, Z → 25', () => {
   assert.equal(colLettersToIndex('A'), 0);
