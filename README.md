@@ -84,12 +84,22 @@ Click the gear icon or go to the extension's Options page to configure:
 
 **Providers:**
 
-| Provider | Base URL | API Key |
-|----------|----------|---------|
-| llama.cpp | `http://localhost:8080` | Not needed |
-| OpenAI | `https://api.openai.com/v1` | Required |
-| OpenRouter | `https://openrouter.ai/api/v1` | Required |
-| Anthropic | `https://api.anthropic.com` | Required |
+| Provider | Base URL | API Key | Default Model |
+|----------|----------|---------|---------------|
+| llama.cpp | `http://localhost:8080` | Not needed | (your loaded model) |
+| Ollama | `http://localhost:11434/v1` | Not needed | (your loaded model) |
+| LM Studio | `http://localhost:1234/v1` | Not needed | (your loaded model) |
+| OpenAI | `https://api.openai.com/v1` | Required | gpt-5.5 |
+| Anthropic Claude | `https://api.anthropic.com` | Required | claude-sonnet-4-6 |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Required | gemini-3.1-flash |
+| Mistral AI | `https://api.mistral.ai/v1` | Required | mistral-large-latest |
+| DeepSeek | `https://api.deepseek.com/v1` | Required | deepseek-chat |
+| xAI Grok | `https://api.x.ai/v1` | Required | grok-4.3 |
+| Nvidia NIM | `https://integrate.api.nvidia.com/v1` | Required | meta/llama-3.1-8b-instruct |
+| Groq | `https://api.groq.com/openai/v1` | Required | llama-3.3-70b-versatile |
+| MiniMax | `https://api.minimax.chat/v1` | Required | minimax-m2.7 |
+| Alibaba Cloud (Qwen) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Required | qwen-max |
+| OpenRouter | `https://openrouter.ai/api/v1` | Required | minimax/minimax-m2.7 |
 
 ## Architecture
 

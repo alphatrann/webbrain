@@ -84,7 +84,7 @@ export class ProviderManager {
         label: 'Ollama (Local)',
         providerName: 'ollama',
         baseUrl: 'http://localhost:11434/v1',
-        model: 'llama3.1',
+        model: '',
         apiKey: 'ollama',
         supportsVision: true,
         enabled: true,
