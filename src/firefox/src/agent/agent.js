@@ -21,6 +21,32 @@ import * as trace from '../trace/recorder.js';
 import { solveCaptcha, detectCaptcha, injectToken } from './captcha-solver.js';
 
 /**
+ * Tools whose results carry content lifted from the web page / fetched docs —
+ * i.e. attacker-controllable bytes. Their tool results are wrapped in
+ * <untrusted_page_content> markers (see _wrapUntrusted) so the model treats
+ * the bytes as DATA, never as instructions. Control/status tools (click,
+ * navigate, type_text, …) and the user-authored `clarify` reply are NOT in
+ * this set — their results are extension- or user-authored, hence trusted.
+ */
+const UNTRUSTED_CONTENT_TOOLS = new Set([
+  'read_page',
+  'get_accessibility_tree',
+  'get_interactive_elements',
+  'extract_data',
+  'get_selection',
+  'iframe_read',
+  'fetch_url',
+  'research_url',
+  'read_pdf',
+  'read_downloaded_file',
+  'execute_js',
+  'scroll',
+  'wait_for_element',
+  'verify_form',
+  'download_social_media',
+]);
+
+/**
  * The WebBrain Agent — orchestrates multi-step LLM + tool-use loops.
  */
 export class Agent {
@@ -458,7 +484,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         delete toolResult._attachDocument;
       }
 
-      let resultContent = this._limitToolResult(toolResult);
+      // Wrap page-derived results as untrusted DATA BEFORE appending any of
+      // our own trusted notes (the loop nudge), so the nudge stays outside the
+      // <untrusted_page_content> box and is read as an instruction, not data.
+      let resultContent = this._wrapUntrusted(fnName, this._limitToolResult(toolResult));
       if (effectiveKind === 'nudge') {
         resultContent = resultContent + '\n' + nudgeWarning;
         onUpdate('warning', { message: 'Loop detected — nudging the agent.' });
@@ -1376,6 +1405,25 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     // If still too big, just chop the JSON
     return json.slice(0, maxResultChars) + '\n[...result truncated]';
+  }
+
+  /**
+   * Wrap a page-derived tool result in untrusted-content markers so the model
+   * treats it as DATA, not instructions. Only applies to UNTRUSTED_CONTENT_TOOLS;
+   * other (control/status/user) results pass through unchanged.
+   *
+   * Breakout defense: the page can emit a literal closing tag to try to escape
+   * the box, so any <untrusted_page_content …> open/close tag occurring INSIDE
+   * the content is neutralized. A per-call random nonce on the real open/close
+   * tags lets the model anchor on the genuine boundary even if the stripping
+   * is ever bypassed — the nonce is generated here and never exposed to the
+   * page, so it cannot be guessed and spoofed.
+   */
+  _wrapUntrusted(name, content) {
+    if (!UNTRUSTED_CONTENT_TOOLS.has(name)) return content;
+    const nonce = Math.random().toString(36).slice(2, 10);
+    const safe = String(content).replace(/<\/?untrusted_page_content\b[^>]*>/gi, '[markup stripped]');
+    return `<untrusted_page_content id="${nonce}">\n${safe}\n</untrusted_page_content id="${nonce}">`;
   }
 
   /**
