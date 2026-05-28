@@ -42,6 +42,11 @@ const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/markdown-link.js').replace(/\\/g, '/')
 );
 
+// action-gate.js is pure JS (security-critical Layer-3 confirmation logic).
+const { classifyConsequentialAction, isUserAuthorized, actionKey } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/action-gate.js').replace(/\\/g, '/')
+);
+
 // loop-bucket.js is pure JS — the URL-family loop-detector bucketing logic
 // lives here so both agent.js and the tests can exercise the same code.
 const { resourceBucket, bucketArgsKey, URL_FAMILY_TOOLS } = await import(
@@ -1830,6 +1835,87 @@ test('parity: TSV roundtrip identical', () => {
 test('parity: detectSheetSite identical', () => {
   const urls = ['https://docs.google.com/spreadsheets/d/x/edit', 'https://example.com/', 'https://word-edit.officeapps.live.com/x/y'];
   for (const u of urls) assert.equal(detectSheetSite(u), detectSheetSiteFx(u));
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// Layer-3 consequential-action gate (action-gate.js)
+// ────────────────────────────────────────────────────────────────────────
+
+console.log('\naction-gate');
+
+test('benign reads are not gated', () => {
+  assert.equal(classifyConsequentialAction('read_page', {}), null);
+  assert.equal(classifyConsequentialAction('get_accessibility_tree', {}), null);
+  assert.equal(classifyConsequentialAction('fetch_url', { url: 'https://x.com', method: 'GET' }), null);
+  assert.equal(classifyConsequentialAction('click', { text: 'Read more' }), null);
+  assert.equal(classifyConsequentialAction('type_text', { text: 'hello' }), null);
+});
+
+test('generic Submit/Confirm/Save buttons are NOT gated (avoid over-prompting)', () => {
+  assert.equal(classifyConsequentialAction('click', { text: 'Submit' }), null);
+  assert.equal(classifyConsequentialAction('click', { text: 'Confirm' }), null);
+  assert.equal(classifyConsequentialAction('click', { text: 'Save changes' }), null);
+  assert.equal(classifyConsequentialAction('click', { text: 'Continue' }), null);
+});
+
+test('destructive button labels are classified as submit', () => {
+  for (const label of ['Send', 'Send message', 'Delete repository', 'Publish release', 'Pay now', 'Transfer funds', 'Buy', 'Withdraw']) {
+    const c = classifyConsequentialAction('click', { text: label });
+    assert.equal(c && c.kind, 'submit', `expected submit for "${label}"`);
+  }
+});
+
+test('navigate/new_tab classify with registrable host', () => {
+  assert.deepEqual(
+    classifyConsequentialAction('navigate', { url: 'https://www.evil.example/x' }),
+    { kind: 'navigate', target: 'evil.example', detail: 'https://www.evil.example/x' }
+  );
+  assert.equal(classifyConsequentialAction('new_tab', { url: 'https://github.com' }).kind, 'navigate');
+  assert.equal(classifyConsequentialAction('navigate', {}), null);
+});
+
+test('mutation methods + mutation JS are classified', () => {
+  assert.equal(classifyConsequentialAction('fetch_url', { url: 'https://api.x.com', method: 'POST' }).kind, 'mutation');
+  assert.equal(classifyConsequentialAction('fetch_url', { url: 'https://api.x.com', method: 'delete' }).kind, 'mutation');
+  assert.equal(classifyConsequentialAction('execute_js', { code: "fetch('/x', {method:'POST'})" }).kind, 'mutation');
+  assert.equal(classifyConsequentialAction('execute_js', { code: "document.title" }), null);
+});
+
+test('user-named navigation is authorized (no prompt)', () => {
+  const c = classifyConsequentialAction('navigate', { url: 'https://github.com/foo' });
+  assert.equal(isUserAuthorized('go to github and open my repo', c), true);
+  assert.equal(isUserAuthorized('summarize this page', c), false);
+});
+
+test('injected navigation to an unnamed origin is NOT authorized', () => {
+  const c = classifyConsequentialAction('navigate', { url: 'https://attacker-exfil.io/?leak=1' });
+  assert.equal(isUserAuthorized('delete my old tweets', c), false);
+});
+
+test('verb synonyms authorize the matching destructive click', () => {
+  const del = classifyConsequentialAction('click', { text: 'Delete' });
+  assert.equal(isUserAuthorized('please remove my old posts', del), true);
+  const pub = classifyConsequentialAction('click', { text: 'Publish' });
+  assert.equal(isUserAuthorized('post this to my blog', pub), true);
+  const send = classifyConsequentialAction('click', { text: 'Send' });
+  assert.equal(isUserAuthorized('email bob the summary', send), true);
+});
+
+test('a destructive click the user never asked for is NOT authorized', () => {
+  const send = classifyConsequentialAction('click', { text: 'Send' });
+  assert.equal(isUserAuthorized('what does this page say?', send), false);
+});
+
+test('API mutations are never authorized by free text (only /allow-api)', () => {
+  const c = classifyConsequentialAction('fetch_url', { url: 'https://api.x.com', method: 'POST' });
+  assert.equal(isUserAuthorized('use the api to post this', c), false);
+});
+
+test('actionKey is stable per kind+target', () => {
+  const a = classifyConsequentialAction('navigate', { url: 'https://github.com/a' });
+  const b = classifyConsequentialAction('navigate', { url: 'https://github.com/b' });
+  assert.equal(actionKey(a), actionKey(b));
+  assert.notEqual(actionKey(a), actionKey(classifyConsequentialAction('navigate', { url: 'https://x.com' })));
 });
 
 await run();
