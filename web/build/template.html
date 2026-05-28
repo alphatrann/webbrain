@@ -1265,6 +1265,10 @@
       .modes-grid { grid-template-columns: 1fr; }
       .nav-links a:not(.nav-cta) { display: none; }
       .gh-stars { display: none; }
+      /* The theme toggle would overflow the 24px-padded header at phone
+         widths. prefers-color-scheme still auto-picks the right theme
+         on mobile, so visitors aren't stranded — just no manual flip. */
+      .theme-toggle { display: none; }
       .provider-constellation { aspect-ratio: 4 / 5; max-width: 420px; }
       .pn-bubble { width: 46px; height: 46px; font-size: 18px; }
       .pn-label { font-size: 11px; }
