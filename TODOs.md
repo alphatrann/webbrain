@@ -74,10 +74,13 @@ Per-model-class prompt selection wired through `_getActPrompt()`. Tier inferred 
 The Firefox build is meaningfully weaker than Chrome (already noted in the README's "Known Issues"). Some gaps are platform-real (no CDP, no Manifest V3 service worker), but several are just unported features. Worth ticking off one at a time:
 
 - **`upload_file`** — not yet in Firefox. The dispatcher path exists for downloads but not for uploads. Likely a few hours of work; webextensions has the same `<input type="file">` mechanics.
-- **`download_file` (singular)** — Firefox has plural `download_files` only. Trivial port.
 - **Conversation persistence across background restarts** — Chrome persists per-tab chats to `chrome.storage.session`; Firefox keeps them in-memory only. This is why the scratchpad port deliberately skips the `_persist` call. Real fix would persist via `browser.storage.session` + restore on background page reload.
 - **`full_page_screenshot`** — Chrome uses CDP `captureBeyondViewport`; Firefox would need `tabs.captureFullPage` or a scroll-and-stitch fallback. Lower priority.
 - **`shadow_dom_query`** — CDP-dependent. Hardest port; may not be worth it until a concrete user case emerges.
+
+Recently closed Firefox parity items:
+- Firefox now has `downloads` permission and `download_files`; the old singular `download_file` TODO is obsolete because the tool surface was consolidated on plural `download_files`.
+- Firefox Ask mode can access the accessibility tree again (10.0.2).
 
 ---
 
@@ -111,15 +114,18 @@ set.
 
 This makes the "Load unpacked" path easy to get wrong. The root README currently
 needs to be unambiguous about whether developers should load `src/chrome/` or a
-generated release directory. Longer term, add a deterministic package step that
-creates the exact Chrome and Firefox directories used for store submission, then
-document that output as the development/release artifact.
+generated release directory.
+
+Partially fixed already: `npm run build:zip` now creates deterministic Chrome
+and Firefox submission zips from `HEAD:src/<browser>` into `dist/`, so release
+zips no longer depend on ad hoc PowerShell/archive behavior. The remaining work
+is the development install story and the misleading root manifest.
 
 **Concrete next steps:**
 1. Decide whether root `manifest.json` should be deleted, generated, or made a
    thin redirect-free copy of the Chrome manifest.
-2. Add `build:chrome`, `build:firefox`, and `build:all` scripts that produce
-   reproducible extension directories/zips.
+2. Consider adding `build:chrome`, `build:firefox`, and `build:all` scripts that
+   produce unpacked development directories in addition to the existing zips.
 3. Update the README quick-start instructions to point at the canonical
    load-unpacked directory.
 
@@ -134,11 +140,14 @@ surface is large.
 
 Store review and user trust would improve if sensitive capabilities are grouped
 by feature and requested/explained at the moment they are needed where the
-browser APIs permit it. At minimum, settings and docs should explain why each
-high-sensitivity permission exists.
+browser APIs permit it.
+
+Partially fixed already: `docs/security-model.md` now includes a permission risk
+table and `SECURITY.md` points to the detailed security model. The remaining
+work is staging/optionality and in-product explanations.
 
 **Concrete next steps:**
-1. Make a permission-to-feature table for Chrome and Firefox.
+1. Keep the permission-to-feature table current for Chrome and Firefox.
 2. Identify which permissions can be optional or triggered by an explicit
    enablement path.
 3. Add UI copy for high-risk capabilities: debugger control, downloads,
@@ -211,17 +220,3 @@ request fields, non-streaming and streaming runs can behave differently.
 3. Document which provider-specific request fields are intentionally supported.
 
 ---
-
-## 11. Make release builds reproducible
-
-The repo contains built zip files under `dist/`, but `package.json` only exposes
-tests and `build:web`. Extension release artifacts should be generated from
-source by a checked-in command so reviewers and contributors can reproduce them.
-
-**Concrete next steps:**
-1. Add scripts that cleanly assemble Chrome and Firefox release directories.
-2. Zip those directories with deterministic names based on `package.json` /
-   manifest version.
-3. Add a release checklist that runs tests, verifies manifest versions, builds
-   web assets, creates extension zips, and confirms the generated files match
-   the expected store upload layout.
