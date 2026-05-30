@@ -1415,10 +1415,11 @@
     }
 
     const windowScrollable = docScrollHeight() > window.innerHeight + 10;
+    const windowCanMove = canScrollWindow(direction);
     let target = originEl ? findScrollableAncestor(originEl, direction, !windowScrollable) : null;
     let targetSource = target ? 'origin-ancestor' : 'none';
 
-    if (!target && !windowScrollable) {
+    if (!target && !windowCanMove) {
       let best = null;
       let bestArea = 0;
       const candidates = document.querySelectorAll('div, section, main, article, aside, [role="main"], [role="dialog"], [role="region"], [role="listbox"], [role="menu"]');
@@ -1451,7 +1452,7 @@
 
     const movedContainer = target && Math.abs((containerAfter || 0) - (containerBefore || 0)) > 0.5;
     const shouldScrollWindow = params.alsoWindow === true || !movedContainer;
-    if (shouldScrollWindow && canScrollWindow(direction)) {
+    if (shouldScrollWindow && windowCanMove) {
       if (direction === 'down') window.scrollBy(0, amount);
       else if (direction === 'up') window.scrollBy(0, -amount);
       else if (direction === 'top') window.scrollTo(0, 0);
