@@ -1139,6 +1139,14 @@
       return max > 1 && canMove(el.scrollTop, max, dir);
     }
 
+    function scrollElementInstant(el, dir, px) {
+      const max = Math.max(0, el.scrollHeight - el.clientHeight);
+      if (dir === 'down') el.scrollTop = Math.min(max, el.scrollTop + px);
+      else if (dir === 'up') el.scrollTop = Math.max(0, el.scrollTop - px);
+      else if (dir === 'top') el.scrollTop = 0;
+      else if (dir === 'bottom') el.scrollTop = max;
+    }
+
     function isScrollableElement(el, allowHidden = false) {
       if (!el || el === document.body || el === document.documentElement) return false;
       if (el.scrollHeight <= el.clientHeight + 10) return false;
@@ -1257,10 +1265,7 @@
     let containerAfter = null;
     if (target) {
       containerBefore = target.scrollTop;
-      if (direction === 'down') target.scrollBy(0, amount);
-      else if (direction === 'up') target.scrollBy(0, -amount);
-      else if (direction === 'top') target.scrollTo(0, 0);
-      else if (direction === 'bottom') target.scrollTo(0, target.scrollHeight);
+      scrollElementInstant(target, direction, amount);
       containerAfter = target.scrollTop;
     }
 
