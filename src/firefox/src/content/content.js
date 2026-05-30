@@ -1238,7 +1238,7 @@
     const windowScrollable = document.documentElement.scrollHeight > window.innerHeight + 10;
 
     // Strategy 2: find the largest scrollable container on the page.
-    if (!target) {
+    if (!target && (originEl || !windowScrollable)) {
       let best = null;
       let bestArea = 0;
       const candidates = document.querySelectorAll('div, section, main, article, [role="main"], [role="dialog"]');
@@ -1416,7 +1416,7 @@
     let target = originEl ? findScrollableAncestor(originEl, direction, !windowScrollable) : null;
     let targetSource = target ? 'origin-ancestor' : 'none';
 
-    if (!target) {
+    if (!target && (originEl || !windowScrollable)) {
       let best = null;
       let bestArea = 0;
       const candidates = document.querySelectorAll('div, section, main, article, aside, [role="main"], [role="dialog"], [role="region"], [role="listbox"], [role="menu"]');

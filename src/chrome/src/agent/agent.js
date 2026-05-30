@@ -109,7 +109,7 @@ export class Agent {
     // Used to draw an outline onto verification screenshots in `done` so the
     // model can see which element it last touched. Lives for the tab's
     // lifetime; overwritten on each ax interaction, cleared on tab close.
-    this._lastInteractionRect = new Map(); // tabId -> { x, y, w, h, ts }
+    this._lastInteractionRect = new Map(); // tabId -> { x, y, w, h, ts, url }
     // Pending clarify() tool calls awaiting user input. Keyed by tabId →
     // (clarifyId → {resolve, reject}). The clarify tool returns a Promise
     // that resolves when the user submits a response via the side panel
@@ -4275,6 +4275,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           // Snapshot existing tabs first so we can detect a target=_blank
           // link that spawns a background tab instead of navigating in-place
           // (see _redirectTargetBlankClick).
+          const clickUrl = await this._currentUrl(tabId);
           const beforeTabIdsText = new Set((await chrome.tabs.query({})).map(t => t.id));
           await new Promise(r => setTimeout(r, 100));
           await cdpClient.dispatchMouseEvent(tabId, 'mouseMoved', info.x, info.y);
@@ -4357,7 +4358,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           }
           const clickX = Math.round(info.x);
           const clickY = Math.round(info.y);
-          this._lastInteractionRect.set(tabId, { x: clickX, y: clickY, w: 1, h: 1, ts: Date.now() });
+          this._lastInteractionRect.set(tabId, { x: clickX, y: clickY, w: 1, h: 1, ts: Date.now(), url: clickUrl });
           return {
             success: true,
             method: 'cdp-by-text',
@@ -4539,6 +4540,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           const clickX = redir ? redir.x : args.x;
           const clickY = redir ? redir.y : args.y;
 
+          const clickUrl = await this._currentUrl(tabId);
           const beforeTabIdsCoord = new Set((await chrome.tabs.query({})).map(t => t.id));
           await cdpClient.dispatchMouseEvent(tabId, 'mouseMoved', clickX, clickY);
           await cdpClient.dispatchMouseEvent(tabId, 'mousePressed', clickX, clickY);
@@ -4584,6 +4586,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             w: 1,
             h: 1,
             ts: Date.now(),
+            url: clickUrl,
           });
           return { success: true, method: 'cdp-coords', x: args.x, y: args.y };
         }
@@ -5015,8 +5018,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     } catch { /* tab lookup failures are non-fatal — fall through */ }
 
+    const interactionUrl = (
+      name === 'click' || name === 'click_ax' ||
+      name === 'type_ax' || name === 'set_field'
+    ) ? await this._currentUrl(tabId) : '';
+
     if (name === 'scroll') {
-      args = this._augmentScrollArgsWithLastInteraction(tabId, args);
+      args = await this._augmentScrollArgsWithLastInteraction(tabId, args);
     }
 
     try {
@@ -5025,7 +5033,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         action,
         params: args,
       });
-      this._recordInteractionRect(tabId, name, response);
+      this._recordInteractionRect(tabId, name, response, interactionUrl);
       this._annotateCredentialField(name, response);
       return response;
     } catch (e) {
@@ -5043,7 +5051,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           action,
           params: args,
         });
-        this._recordInteractionRect(tabId, name, response);
+        this._recordInteractionRect(tabId, name, response, interactionUrl);
         this._annotateCredentialField(name, response);
         return response;
       } catch (e2) {
@@ -5093,12 +5101,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * `done` verification screenshot can outline the last-touched element.
    * No-op for other tool responses or when the rect is missing/degenerate.
    */
-  _recordInteractionRect(tabId, toolName, response) {
+  _recordInteractionRect(tabId, toolName, response, url = '') {
     if (!response || !response.success) return;
     if (toolName !== 'click' && toolName !== 'click_ax' && toolName !== 'type_ax' && toolName !== 'set_field') return;
     const r = response.rect;
     if (r && r.w && r.h) {
-      this._lastInteractionRect.set(tabId, { x: r.x, y: r.y, w: r.w, h: r.h, ts: Date.now() });
+      this._lastInteractionRect.set(tabId, { x: r.x, y: r.y, w: r.w, h: r.h, ts: Date.now(), url });
       return;
     }
     if (Number.isFinite(Number(response.x)) && Number.isFinite(Number(response.y))) {
@@ -5108,14 +5116,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         w: 1,
         h: 1,
         ts: Date.now(),
+        url,
       });
     }
   }
 
-  _augmentScrollArgsWithLastInteraction(tabId, args = {}) {
+  async _augmentScrollArgsWithLastInteraction(tabId, args = {}) {
     if (!args || args.ref_id != null || args.x != null || args.y != null) return args || {};
     const last = this._lastInteractionRect.get(tabId);
     if (!last || Date.now() - last.ts > 60000) return args;
+    const currentUrl = await this._currentUrl(tabId);
+    if (!last.url || !currentUrl) return args;
+    if (last.url !== currentUrl) {
+      this._lastInteractionRect.delete(tabId);
+      return args;
+    }
     return {
       ...args,
       x: Math.round(last.x + last.w / 2),
