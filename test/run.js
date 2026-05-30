@@ -2028,6 +2028,24 @@ test('record allow/deny, then check returns it without prompting', async () => {
   assert.equal(pm.check('github.com', Capability.TYPE).needsPrompt, true);
 });
 
+test('once-grants are scoped per tab (concurrent runs do not leak/clear)', async () => {
+  const pm = new PermissionManager();
+  await pm.record('a.com', Capability.CLICK, 'allow', 'once', 1); // tab 1
+  // tab 2 must NOT inherit tab 1's once-grant
+  assert.equal(pm.check('a.com', Capability.CLICK, 2).needsPrompt, true);
+  assert.equal(pm.check('a.com', Capability.CLICK, 1).allowed, true);
+  // a new turn in tab 2 must NOT clear tab 1's still-valid grant
+  pm.beginTurn(2);
+  assert.equal(pm.check('a.com', Capability.CLICK, 1).allowed, true);
+  // tab 1's own new turn clears it
+  pm.beginTurn(1);
+  assert.equal(pm.check('a.com', Capability.CLICK, 1).needsPrompt, true);
+
+  // "always" grants stay global across tabs
+  await pm.record('b.com', Capability.TYPE, 'allow', 'always', 1);
+  assert.equal(pm.check('b.com', Capability.TYPE, 999).allowed, true);
+});
+
 test('beginTurn drops once grants but keeps always grants', async () => {
   const pm = new PermissionManager();
   await pm.record('a.com', Capability.CLICK, 'allow', 'once');

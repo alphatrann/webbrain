@@ -799,18 +799,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           let blockedHost = null;
           let aborted = false;
           for (const host of hosts) {
-            const verdict = this.permissions.check(host, capability);
+            const verdict = this.permissions.check(host, capability, tabId);
             if (verdict.allowed) continue;
             const choice = verdict.needsPrompt
               ? await this._promptPermission(tabId, capability, host, onUpdate)
               : 'deny'; // a standing "deny" grant for this (capability, host)
             if (choice === null) { aborted = true; break; }
             if (choice === 'deny') {
-              if (verdict.needsPrompt) await this.permissions.record(host, capability, 'deny', 'once');
+              if (verdict.needsPrompt) await this.permissions.record(host, capability, 'deny', 'once', tabId);
               blockedHost = host;
               break;
             }
-            await this.permissions.record(host, capability, 'allow', choice); // 'once' | 'always'
+            await this.permissions.record(host, capability, 'allow', choice, tabId); // 'once' | 'always'
           }
           if (aborted) {
             onUpdate('warning', { message: 'Stopped by user.' });
@@ -5460,7 +5460,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     await this._hydrate(tabId);
     const messages = this.getConversation(tabId, mode);
     // New user turn: drop transient "allow once" / "deny once" permission grants.
-    this.permissions.beginTurn();
+    this.permissions.beginTurn(tabId);
 
     // Trim context if it's getting too long
     await this._manageContext(tabId, messages);
@@ -5692,7 +5692,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     await this._hydrate(tabId);
     const messages = this.getConversation(tabId, mode);
     // New user turn: drop transient "allow once" / "deny once" permission grants.
-    this.permissions.beginTurn();
+    this.permissions.beginTurn(tabId);
 
     // Trim context if it's getting too long
     await this._manageContext(tabId, messages);

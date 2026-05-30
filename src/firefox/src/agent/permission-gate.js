@@ -285,27 +285,49 @@ export class PermissionManager {
     this._hydrated = true;
   }
 
-  /** Drop transient (once) grants/denies at the start of a new user turn. */
-  beginTurn() {
-    this.permissions = this.permissions.filter(p => p.duration === 'always');
+  /**
+   * Drop a tab's transient (once) grants/denies at the start of a new user
+   * turn. ONLY this tab's — the agent runs tabs concurrently (one shared
+   * PermissionManager), so a new turn in one tab must not wipe a still-running
+   * tab's one-time grant. "always" grants are global and untouched.
+   */
+  beginTurn(tabId) {
+    this.permissions = this.permissions.filter(p => p.duration === 'always' || p.tabId !== tabId);
   }
 
-  /** { allowed, needsPrompt, grant? } for a (host, capability). */
-  check(host, capability) {
+  /**
+   * { allowed, needsPrompt, grant? } for a (host, capability) in a given tab.
+   * "always" grants are global; "once" grants only count for the tab that made
+   * them, so one tab's Allow-once can't silently authorize another tab.
+   */
+  check(host, capability, tabId) {
     if (this._skipAll()) return { allowed: true, needsPrompt: false };
     const h = normalizeHost(host);
-    const g = this.permissions.find(p => p.capability === capability && p.host === h);
+    const g = this.permissions.find(p =>
+      p.capability === capability && p.host === h &&
+      (p.duration === 'always' || p.tabId === tabId));
     if (g) return { allowed: g.action === 'allow', needsPrompt: false, grant: g };
     return { allowed: false, needsPrompt: true };
   }
 
-  /** Record a decision. 'always' grants are persisted. */
-  async record(host, capability, action, duration) {
+  /**
+   * Record a decision. 'always' grants are global + persisted; 'once' grants
+   * are scoped to `tabId` (transient, in-memory).
+   */
+  async record(host, capability, action, duration, tabId) {
     const h = normalizeHost(host);
-    this.permissions = this.permissions.filter(p => !(p.capability === capability && p.host === h));
-    this.permissions.push({ capability, host: h, action, duration, ts: Date.now() });
-    if (duration === 'always' && this._save) {
-      try { await this._save(this.permissions.filter(p => p.duration === 'always')); } catch { /* best-effort */ }
+    if (duration === 'always') {
+      // Global: supersede any prior grant for (capability, host) in any tab.
+      this.permissions = this.permissions.filter(p => !(p.capability === capability && p.host === h));
+      this.permissions.push({ capability, host: h, action, duration: 'always', ts: Date.now() });
+      if (this._save) {
+        try { await this._save(this.permissions.filter(p => p.duration === 'always')); } catch { /* best-effort */ }
+      }
+    } else {
+      // Once: scoped to this tab; supersede a prior once-grant for the same key.
+      this.permissions = this.permissions.filter(p =>
+        !(p.duration !== 'always' && p.capability === capability && p.host === h && p.tabId === tabId));
+      this.permissions.push({ capability, host: h, action, duration: 'once', tabId, ts: Date.now() });
     }
   }
 
