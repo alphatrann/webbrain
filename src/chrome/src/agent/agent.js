@@ -25,7 +25,7 @@ import {
   stopTabRecording as recorderStop,
   getRecordingState as recorderGetState,
 } from '../recorder/host.js';
-import { Capability, CAPABILITY_LABEL, capabilityFor, requiredHosts, frameHostMatches, isNetworkMutation, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
+import { Capability, CAPABILITY_LABEL, capabilitiesFor, requiredHosts, frameHostMatches, isNetworkMutation, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
 
 /**
  * The WebBrain Agent — orchestrates multi-step LLM + tool-use loops.
@@ -780,32 +780,23 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // allow once / always / deny — chosen by the user. No text inspection, no
       // model: language-agnostic and un-injectable (the human is the trust
       // anchor). Read-only tools map to null and pass straight through.
-      const capability = capabilityFor(fnName, fnArgs);
+      // A call may require MORE THAN ONE capability — e.g. set_field({submit})
+      // both types AND submits, so it needs a TYPE grant and a CLICK grant.
+      const capabilities = capabilitiesFor(fnName, fnArgs);
       await this._ensureGateSetting();
-      if (capability && !this._skipPermissionGate) {
+      if (capabilities.length && !this._skipPermissionGate) {
         await this.permissions.hydrate();
-        const apiPreGranted = isNetworkMutation(fnName, fnArgs) && this.apiAllowedTabs.has(tabId);
-        if (!apiPreGranted) {
+        const curUrl = await this._currentUrl(tabId);
+        let blocked = null;     // { capability, host }
+        let aborted = false;
+        let failClosed = false;
+        for (const capability of capabilities) {
+          // /allow-api waives ONLY write-method network egress.
+          if (capability === Capability.NETWORK && isNetworkMutation(fnName, fnArgs) && this.apiAllowedTabs.has(tabId)) continue;
           // Every distinct host the call touches must be granted. Usually one,
-          // but download_files takes a urls[] array that can span many hosts —
-          // each is a separate trust decision.
-          const hosts = requiredHosts(capability, fnArgs, await this._currentUrl(tabId), fnName);
-          if (hosts.length === 0) {
-            // Target host couldn't be identified (e.g. an iframe action with no
-            // urlFilter). Fail closed — never charge it to the current page's grant.
-            messages.push({
-              role: 'tool',
-              tool_call_id: tc.id,
-              content: JSON.stringify({
-                success: false,
-                denied: true,
-                error: `Cannot run ${fnName}: the target frame/host couldn't be identified, so it can't be permission-checked. Pass a urlFilter naming the iframe's domain (read it first with iframe_read / get_accessibility_tree) and retry.`,
-              }),
-            });
-            continue;
-          }
-          let blockedHost = null;
-          let aborted = false;
+          // but download_files takes a urls[] array that can span many hosts.
+          const hosts = requiredHosts(capability, fnArgs, curUrl, fnName);
+          if (hosts.length === 0) { failClosed = true; break; }
           for (const host of hosts) {
             const verdict = this.permissions.check(host, capability, tabId);
             if (verdict.allowed) continue;
@@ -815,27 +806,42 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             if (choice === null) { aborted = true; break; }
             if (choice === 'deny') {
               if (verdict.needsPrompt) await this.permissions.record(host, capability, 'deny', 'once', tabId);
-              blockedHost = host;
+              blocked = { capability, host };
               break;
             }
             await this.permissions.record(host, capability, 'allow', choice, tabId); // 'once' | 'always'
           }
-          if (aborted) {
-            onUpdate('warning', { message: 'Stopped by user.' });
-            return { action: 'return', value: partialAssistantText || '[Stopped by user]' };
-          }
-          if (blockedHost) {
-            messages.push({
-              role: 'tool',
-              tool_call_id: tc.id,
-              content: JSON.stringify({
-                success: false,
-                denied: true,
-                error: `The user denied permission to ${CAPABILITY_LABEL[capability]} ${blockedHost}. Do NOT retry this action on that site. Continue with what you can without it, or ask the user how to proceed.`,
-              }),
-            });
-            continue;
-          }
+          if (aborted || blocked) break;
+        }
+        if (aborted) {
+          onUpdate('warning', { message: 'Stopped by user.' });
+          return { action: 'return', value: partialAssistantText || '[Stopped by user]' };
+        }
+        if (failClosed) {
+          // Target host couldn't be identified (e.g. an iframe action with no
+          // urlFilter). Fail closed — never charge it to the current page's grant.
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              success: false,
+              denied: true,
+              error: `Cannot run ${fnName}: the target frame/host couldn't be identified, so it can't be permission-checked. Pass a urlFilter naming the iframe's domain (read it first with iframe_read / get_accessibility_tree) and retry.`,
+            }),
+          });
+          continue;
+        }
+        if (blocked) {
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify({
+              success: false,
+              denied: true,
+              error: `The user denied permission to ${CAPABILITY_LABEL[blocked.capability]} ${blocked.host}. Do NOT retry this action on that site. Continue with what you can without it, or ask the user how to proceed.`,
+            }),
+          });
+          continue;
         }
       }
 

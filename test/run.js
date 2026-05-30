@@ -43,7 +43,7 @@ const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
 );
 
 // permission-gate.js is pure JS (deterministic capability × origin gate).
-const { Capability, capabilityFor, normalizeHost, hostForCapability, requiredHosts, frameHostMatches, isNetworkMutation, PermissionManager, UNTRUSTED_CONTENT_TOOLS } = await import(
+const { Capability, capabilityFor, capabilitiesFor, normalizeHost, hostForCapability, requiredHosts, frameHostMatches, isNetworkMutation, PermissionManager, UNTRUSTED_CONTENT_TOOLS } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/permission-gate.js').replace(/\\/g, '/')
 );
 const {
@@ -1907,6 +1907,15 @@ test('capabilityFor: no side-effecting tool slips through ungated', () => {
 test('set_field with submit:true requires CLICK, not the weaker TYPE', () => {
   assert.equal(capabilityFor('set_field', { ref_id: 'r', text: 'x' }), Capability.TYPE);
   assert.equal(capabilityFor('set_field', { ref_id: 'r', text: 'x', submit: true }), Capability.CLICK);
+});
+
+test('capabilitiesFor: set_field({submit}) requires BOTH type and click', () => {
+  assert.deepEqual(capabilitiesFor('set_field', { text: 'x' }), [Capability.TYPE]);
+  assert.deepEqual(capabilitiesFor('set_field', { text: 'x', submit: true }), [Capability.TYPE, Capability.CLICK]);
+  // single-capability tools wrap to a 1-element array; read-only → []
+  assert.deepEqual(capabilitiesFor('click', {}), [Capability.CLICK]);
+  assert.deepEqual(capabilitiesFor('fetch_url', { url: 'https://x.com' }), [Capability.NETWORK]);
+  assert.deepEqual(capabilitiesFor('read_page', {}), []);
 });
 
 test('press_keys: Enter is a submit (CLICK); Tab/Escape are benign (null)', () => {

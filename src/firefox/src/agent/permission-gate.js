@@ -168,6 +168,23 @@ export function capabilityFor(name, args) {
   return TOOL_CAPABILITY[name] || null;
 }
 
+/**
+ * The FULL set of capabilities a tool call requires — usually one
+ * (= capabilityFor), but some calls do two consequential things at once.
+ * set_field({submit:true}) both TYPES into a field AND submits it, so it needs
+ * BOTH a TYPE grant (a CLICK grant must not authorize arbitrary typing) AND a
+ * CLICK grant (a TYPE grant must not authorize a submit). The gate checks every
+ * capability in the returned array.
+ */
+export function capabilitiesFor(name, args) {
+  args = args || {};
+  if (name === 'set_field' && args.submit) {
+    return [Capability.TYPE, Capability.CLICK];
+  }
+  const c = capabilityFor(name, args);
+  return c ? [c] : [];
+}
+
 /** Normalize a URL or bare host to a comparable registrable-ish host. */
 export function normalizeHost(input) {
   if (typeof input !== 'string' || !input) return '';
