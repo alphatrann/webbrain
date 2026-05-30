@@ -1,4 +1,4 @@
-import { AGENT_TOOLS, AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT } from './tools.js';
+import { AGENT_TOOLS, AGENT_TOOL_NAMES, COMPACT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT } from './tools.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
 import { isCredentialField, CREDENTIAL_NOTE_STRICT } from './credential-fields.js';
 import { getActiveAdapter, UNIVERSAL_PREAMBLE } from './adapters.js';
@@ -1287,15 +1287,24 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   /**
-   * Get or create a conversation for a tab.
+   * Select the appropriate ACT system prompt based on the active provider.
+   * Small/local models get a compact prompt to save context budget.
    */
+  _getActPrompt() {
+    try {
+      const provider = this.providerManager.getActive();
+      if (provider.useCompactPrompt) return SYSTEM_PROMPT_ACT_COMPACT;
+    } catch { /* provider not ready yet; use full prompt */ }
+    return SYSTEM_PROMPT_ACT;
+  }
+
   /**
    * Compose the full system prompt: base (ASK or ACT) + optional universal
    * cookie/paywall guidance + optional user profile block. Base goes
    * first so prompt-cache prefixes stay stable when user toggles settings.
    */
   _buildSystemPrompt(mode) {
-    let prompt = mode === 'act' ? SYSTEM_PROMPT_ACT : SYSTEM_PROMPT_ASK;
+    let prompt = mode === 'act' ? this._getActPrompt() : SYSTEM_PROMPT_ASK;
     if (this.useSiteAdapters) {
       prompt += `\n\n${UNIVERSAL_PREAMBLE.trim()}`;
     }
@@ -2616,9 +2625,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    *   - call:toolName{key:<|"|>value<|"|>}  (custom quote-token format)
    *   - Bare JSON objects with a known tool name
    * Returns an array of tool call objects in OpenAI format, or [] if nothing
-   * was found. Only tool names present in AGENT_TOOL_NAMES are accepted.
+   * was found. Only tool names present in the allowed-name set are accepted.
    */
-  _tryParseToolCallsFromText(text) {
+  _tryParseToolCallsFromText(text, allowedNames = AGENT_TOOL_NAMES) {
     if (!text || text.length > 10000) return [];
 
     const results = [];
@@ -2635,7 +2644,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // Try JSON first (most common).
         try {
           const obj = JSON.parse(inner);
-          if (obj && obj.name && AGENT_TOOL_NAMES.has(obj.name)) {
+          if (obj && obj.name && allowedNames.has(obj.name)) {
             results.push(obj);
             continue;
           }
@@ -2643,7 +2652,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
         // call:toolName{key:<|"|>value<|"|>, ...} format.
         const callMatch = /^call:(\w+)\s*\{([\s\S]*)\}$/.exec(inner);
-        if (callMatch && AGENT_TOOL_NAMES.has(callMatch[1])) {
+        if (callMatch && allowedNames.has(callMatch[1])) {
           const toolName = callMatch[1];
           let argsBody = callMatch[2]
             .replace(/<\|"\|>/g, '"')
@@ -2665,10 +2674,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const bareRe = /\{[^{}]*"name"\s*:\s*"(\w+)"[^{}]*\}/g;
       let m;
       while ((m = bareRe.exec(text)) !== null) {
-        if (!AGENT_TOOL_NAMES.has(m[1])) continue;
+        if (!allowedNames.has(m[1])) continue;
         try {
           const obj = JSON.parse(m[0]);
-          if (obj && obj.name && AGENT_TOOL_NAMES.has(obj.name)) {
+          if (obj && obj.name && allowedNames.has(obj.name)) {
             results.push(obj);
           }
         } catch { /* skip */ }
@@ -2680,7 +2689,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const callRe = /call:(\w+)\s*\{([\s\S]*?)\}/g;
       let m;
       while ((m = callRe.exec(text)) !== null) {
-        if (!AGENT_TOOL_NAMES.has(m[1])) continue;
+        if (!allowedNames.has(m[1])) continue;
         const toolName = m[1];
         let argsBody = m[2]
           .replace(/<\|"\|>/g, '"')
@@ -2739,7 +2748,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     messages.push(enriched);
 
     const provider = this.providerManager.getActive();
-    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode });
+    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, compact: provider.useCompactPrompt });
     const plannerTemperature = mode === 'act' ? 0.15 : 0.3;
     let steps = 0;
     let finalResponse = '';
@@ -2853,7 +2862,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // Fallback: if the LLM emitted tool calls as raw text instead of
       // using the structured tool_calls field, try to parse them out.
       if ((!result.toolCalls || result.toolCalls.length === 0) && result.content) {
-        const fallback = this._tryParseToolCallsFromText(result.content);
+        const fallback = this._tryParseToolCallsFromText(result.content, (mode === 'act' && provider.useCompactPrompt) ? COMPACT_TOOL_NAMES : undefined);
         if (fallback.length > 0) {
           this._logDebug({ type: 'llm_text_fallback_parse', step: steps, parsed: fallback.map(tc => tc.function.name) });
           result.toolCalls = fallback;
@@ -2957,7 +2966,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     messages.push(enriched);
 
     const provider = this.providerManager.getActive();
-    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode });
+    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, compact: provider.useCompactPrompt });
     const plannerTemperature = mode === 'act' ? 0.15 : 0.3;
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
@@ -3022,7 +3031,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
         // Fallback: parse tool calls from streamed text if structured calls are missing.
         if (!hasToolCalls && fullText) {
-          const fallback = this._tryParseToolCallsFromText(fullText);
+          const fallback = this._tryParseToolCallsFromText(fullText, (mode === 'act' && provider.useCompactPrompt) ? COMPACT_TOOL_NAMES : undefined);
           if (fallback.length > 0) {
             this._logDebug({ type: 'llm_text_fallback_parse', step: steps, parsed: fallback.map(tc => tc.function.name) });
             hasToolCalls = true;
