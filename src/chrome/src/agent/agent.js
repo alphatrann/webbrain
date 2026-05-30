@@ -2756,8 +2756,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // progress. Detect meaningful unsaved state and block unless forced.
       if (!args.force) {
         try {
-          const probe = await cdpClient.evaluate(tabId, `
-            (() => {
+          // Probe via chrome.scripting, NOT CDP: navigate is often reached
+          // after only content-script tools (set_field / type_ax / click via
+          // the content path), which never attach a debugger session. A CDP
+          // evaluate would then throw "Not attached" and the catch would
+          // silently allow the navigation — defeating the guard exactly in
+          // the common form-filling case. scripting.executeScript works
+          // regardless of attach state and shows no debugger banner.
+          const probeResults = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
               let attachedFiles = 0;
               for (const inp of document.querySelectorAll('input[type=file]')) {
                 if (inp.files && inp.files.length) attachedFiles += inp.files.length;
@@ -2769,9 +2777,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 if (el.value && el.value !== el.defaultValue) dirtyFields++;
               }
               return { attachedFiles, dirtyFields };
-            })()
-          `);
-          const d = probe?.result?.value || {};
+            },
+          });
+          const d = probeResults?.[0]?.result || {};
           if (d.attachedFiles > 0 || d.dirtyFields >= 2) {
             const parts = [];
             if (d.attachedFiles > 0) parts.push(`${d.attachedFiles} attached file(s)`);
@@ -2782,7 +2790,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               error: `Navigation blocked: the current page has unsaved changes (${parts.join(', ')}) that leaving will discard. Re-navigating resets forms like GitHub's "New release" page — you would lose the tag, title, and attached binaries, then have to start over. Finish the current action first (e.g. click "Publish release"). If discarding is genuinely intended, call navigate again with force:true.`,
             };
           }
-        } catch { /* probe failed (e.g. chrome:// page) — allow navigation */ }
+        } catch { /* injection failed (chrome:// / PDF viewer / no host perm) — nothing to protect there, allow navigation */ }
       }
 
       await chrome.tabs.update(tabId, { url: rawUrl });
