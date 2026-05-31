@@ -1554,15 +1554,34 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     if (!tooManyMessages && !tooManyChars && !tooManyTokens) return; // context is fine
 
-    // Strategy: keep system prompt + summarize old messages + keep recent messages
+    // Strategy: keep system prompt + ORIGINAL USER TASK (pinned) + summarize
+    // old messages + keep recent messages.
     const systemMsg = messages[0]; // always the system prompt
+    // CRITICAL: the first real user message is the task statement. Folding it
+    // into a synthetic summary makes small models forget what they were doing
+    // ("the previous context was removed"). Always keep it verbatim near the
+    // top — especially important now that the token-budget trigger can fire
+    // mid-run, well before the message/char thresholds, on a long initial
+    // prompt. Skip any seeded site-guidance / trim-notice / scratchpad turns.
+    let originalTaskIdx = -1;
+    for (let i = 1; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role !== 'user') continue;
+      const c = typeof m.content === 'string' ? m.content : '';
+      if (c.startsWith('[Site guidance') || c.startsWith('[Site context changed') || c.startsWith('[Context window was trimmed') || c.startsWith('[Agent scratchpad')) continue;
+      originalTaskIdx = i;
+      break;
+    }
+    const originalTask = originalTaskIdx >= 0 ? messages[originalTaskIdx] : null;
     // Pin the scratchpad alongside system so the model's self-written notes
     // survive summarization. Stripped from old/recent slices below to avoid
     // duplicating it during rebuild.
     const scratchpadIdx = this._findScratchpadIndex(messages);
     const scratchpadMsg = scratchpadIdx >= 0 ? messages[scratchpadIdx] : null;
     const keepRecent = 16; // keep last N messages verbatim
-    const oldMessagesRaw = messages.slice(1, -keepRecent);
+    // Exclude the pinned original task from both summary and recent slices.
+    const afterPin = originalTaskIdx >= 0 ? originalTaskIdx + 1 : 1;
+    const oldMessagesRaw = messages.slice(afterPin, -keepRecent);
     const recentMessagesRaw = messages.slice(-keepRecent);
     const oldMessages = oldMessagesRaw.filter(m => !this._isScratchpadMessage(m));
     const recentMessages = recentMessagesRaw.filter(m => !this._isScratchpadMessage(m));
@@ -1612,12 +1631,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
-    // Rebuild: system + scratchpad (if any) + summary + recent
-    const summaryMsg = { role: 'user', content: `[Context window was trimmed. ${summaryText}]` };
+    // Rebuild: system + pinned original task + scratchpad (if any) + summary + recent
+    const summaryMsg = { role: 'user', content: `[Context window was trimmed to stay within budget. Your ORIGINAL TASK is the user message above — keep working on it. ${summaryText}]` };
     const summaryAck = { role: 'assistant', content: 'Understood, I have the conversation context. Continuing.' };
 
     messages.length = 0;
     messages.push(systemMsg);
+    if (originalTask) messages.push(originalTask);
     if (scratchpadMsg) messages.push(scratchpadMsg);
     messages.push(summaryMsg, summaryAck, ...recentMessages);
 
@@ -1750,6 +1770,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   _emergencyTrim(messages) {
     const systemMsg = messages[0];
+    // Pin the original user task (same logic as _manageContext) so even the
+    // emergency fallback doesn't drop the user's actual objective.
+    let originalTask = null;
+    for (let i = 1; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role !== 'user') continue;
+      const c = typeof m.content === 'string' ? m.content : '';
+      if (c.startsWith('[Site guidance') || c.startsWith('[Site context changed') || c.startsWith('[Context') || c.startsWith('[Agent scratchpad')) continue;
+      originalTask = m;
+      break;
+    }
     // Pin the scratchpad too — even under emergency trim, the model's own
     // notes should survive.
     const scratchpadIdx = this._findScratchpadIndex(messages);
@@ -1769,7 +1800,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const notice = {
       role: 'user',
-      content: '[Context was too large for the model. Older messages were removed. Please continue based on what you can see.]',
+      content: '[Context was too large for the model. Older intermediate steps were removed, but your ORIGINAL TASK is pinned above — keep working on it based on the most recent state you can see.]',
     };
     const ack = {
       role: 'assistant',
@@ -1778,6 +1809,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     messages.length = 0;
     messages.push(systemMsg);
+    if (originalTask) messages.push(originalTask);
     if (scratchpadMsg) messages.push(scratchpadMsg);
     messages.push(notice, ack, ...recent);
 
