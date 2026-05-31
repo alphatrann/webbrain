@@ -2356,6 +2356,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const oldMessages = oldMessagesRaw.filter(m => !this._isScratchpadMessage(m));
     const recentMessages = recentMessagesRaw.filter(m => !this._isScratchpadMessage(m));
 
+    // Boundary fix: the recent slice must not begin in the middle of a
+    // tool-call group. If the cutoff lands right after an assistant
+    // `tool_calls` turn (which then gets summarized into `oldMessages`), the
+    // recent slice would start with orphaned `tool` results — and both
+    // OpenAI-compatible and Anthropic APIs reject a `tool` message that isn't
+    // preceded by the assistant turn that requested it. Mid-run compaction
+    // during tool-heavy autonomous runs makes hitting this boundary common.
+    // Move any leading `tool` results back into the summarized set (their
+    // parent assistant turn already lives there, so the digest stays intact).
+    while (recentMessages.length && recentMessages[0].role === 'tool') {
+      oldMessages.push(recentMessages.shift());
+    }
+
     if (oldMessages.length < 4) return; // not enough to summarize
 
     // Build tool_call_id → name map so each tool result in the summary can be
