@@ -1664,6 +1664,26 @@ test('Agent cost metering still treats public IPv6 URLs as remote', () => {
   }
 });
 
+test('Agent cost extraction honors reported zero-cost usage', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = { config: { inputCostPerMillionUsd: 100, outputCostPerMillionUsd: 100 } };
+    const usage = { prompt_tokens: 1000, completion_tokens: 1000 };
+    assert.equal(agent._extractUsageCostUsd(provider, { ...usage, cost: 0 }), 0);
+    assert.equal(agent._extractUsageCostUsd(provider, { ...usage, cost_usd: '0' }), 0);
+  }
+});
+
+test('Agent cost extraction estimates only when reported cost is missing', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const provider = { config: { inputCostPerMillionUsd: 100, outputCostPerMillionUsd: 100 } };
+    const usage = { prompt_tokens: 1000, completion_tokens: 1000 };
+    assert.equal(agent._extractUsageCostUsd(provider, usage), 0.2);
+    assert.equal(agent._extractUsageCostUsd(provider, { ...usage, cost: '' }), 0.2);
+  }
+});
+
 console.log('\nsheets-tools: A1 parsing');
 
 test('parseA1: single cell A1', () => {

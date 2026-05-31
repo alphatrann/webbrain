@@ -294,8 +294,10 @@ export class Agent {
   _extractUsageCostUsd(provider, usage) {
     if (!usage || typeof usage !== 'object') return 0;
     const raw = usage.cost_usd ?? usage.costUsd ?? usage.total_cost_usd ?? usage.total_cost ?? usage.totalCost ?? usage.cost;
-    const n = typeof raw === 'string' ? Number.parseFloat(raw) : Number(raw);
-    if (Number.isFinite(n) && n > 0) return n;
+    if (raw != null && raw !== '') {
+      const n = typeof raw === 'string' ? Number.parseFloat(raw) : Number(raw);
+      if (Number.isFinite(n) && n >= 0) return n;
+    }
     return this._estimateUsageCostUsd(provider, usage);
   }
 
