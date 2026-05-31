@@ -1534,16 +1534,39 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   /**
+   * Index of the first real user turn — the task statement — skipping any
+   * seeded site-guidance / site-context-changed / trim-notice / scratchpad
+   * user messages. Shared by _manageContext (which pins it) and
+   * _truncateOversizedMessages (which must never truncate it) so the two can't
+   * disagree on what "the original task" is. Returns -1 if none found.
+   */
+  _findOriginalTaskIndex(messages) {
+    for (let i = 1; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role !== 'user') continue;
+      const c = typeof m.content === 'string' ? m.content : '';
+      if (c.startsWith('[Site guidance') || c.startsWith('[Site context changed') || c.startsWith('[Context window was trimmed') || c.startsWith('[Agent scratchpad')) continue;
+      return i;
+    }
+    return -1;
+  }
+
+  /**
    * Shrink oversized tool results / message bodies in place, capping the bloat
    * without dropping any turns. Used as the fallback when we're over the token
    * budget but have too few old messages to summarize (the case most likely to
    * overflow early in a run on a small-window local model). Skips the system
-   * prompt (index 0) and the pinned scratchpad so neither is mangled. Clears
-   * the cached input-token count so the next call re-measures the smaller size.
+   * prompt (index 0), the pinned scratchpad, AND the pinned original user task
+   * so none is mangled — the task in particular often carries the real
+   * instruction at the END of a page-enriched first turn, where head-truncation
+   * would silently drop it. Clears the cached input-token count so the next
+   * call re-measures the smaller size.
    */
   _truncateOversizedMessages(tabId, messages) {
+    const taskIdx = this._findOriginalTaskIndex(messages);
     let trimmed = false;
     for (let i = 1; i < messages.length; i++) {
+      if (i === taskIdx) continue; // never truncate the pinned original task
       const m = messages[i];
       if (this._isScratchpadMessage(m)) continue;
       if (typeof m.content !== 'string') continue; // image/array content handled by _pruneOldImages
@@ -1589,15 +1612,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // top — especially important now that the token-budget trigger can fire
     // mid-run, well before the message/char thresholds, on a long initial
     // prompt. Skip any seeded site-guidance / trim-notice / scratchpad turns.
-    let originalTaskIdx = -1;
-    for (let i = 1; i < messages.length; i++) {
-      const m = messages[i];
-      if (m.role !== 'user') continue;
-      const c = typeof m.content === 'string' ? m.content : '';
-      if (c.startsWith('[Site guidance') || c.startsWith('[Site context changed') || c.startsWith('[Context window was trimmed') || c.startsWith('[Agent scratchpad')) continue;
-      originalTaskIdx = i;
-      break;
-    }
+    // Shared with _truncateOversizedMessages.
+    const originalTaskIdx = this._findOriginalTaskIndex(messages);
     const originalTask = originalTaskIdx >= 0 ? messages[originalTaskIdx] : null;
     // Pin the scratchpad alongside system so the model's self-written notes
     // survive summarization. Stripped from old/recent slices below to avoid
