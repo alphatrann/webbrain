@@ -1603,6 +1603,7 @@ test('_defaultConfigs: chrome and firefox share the same provider set', () => {
 test('OpenAI-compatible streams request usage metadata only for supporting providers', () => {
   for (const Provider of [OpenAIProviderCh, OpenAIProviderFx]) {
     for (const config of [
+      { category: 'cloud', providerName: 'gemini' },
       { category: 'cloud', providerName: 'deepseek' },
       { category: 'router', providerName: 'openrouter' },
       { providerName: 'openai' },

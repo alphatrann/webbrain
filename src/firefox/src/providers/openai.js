@@ -94,7 +94,8 @@ export class OpenAICompatibleProvider extends BaseLLMProvider {
     if (!providerName && this.baseUrl === 'https://api.openai.com/v1') return true;
     return providerName === 'openai'
       || providerName === 'openrouter'
-      || providerName === 'deepseek';
+      || providerName === 'deepseek'
+      || providerName === 'gemini';
   }
 
   _addStreamUsageOptions(body) {

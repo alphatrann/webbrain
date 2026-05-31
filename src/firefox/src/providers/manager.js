@@ -133,6 +133,7 @@ export class ProviderManager {
         providerName: 'gemini',
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
         model: 'gemini-3.1-flash',
+        supportsStreamUsageOptions: true,
         apiKey: '',
         enabled: false,
       },
