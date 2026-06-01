@@ -384,12 +384,22 @@ export class CDPClient {
    * `change` event and then clear or swap the <input>, so reading the TARGET
    * input back can't distinguish "consumed a valid file" from "got a bad
    * path and there was never anything real to upload". We create a throwaway
-   * hidden <input type=file> that has no listeners — it keeps whatever we set
-   * on it — set the path via CDP (which attaches a phantom 0-byte entry for a
-   * missing path instead of throwing), then try to read 1 byte: a real file,
-   * even an empty one, reads fine; a missing/unreadable path rejects. The
-   * probe input is removed immediately. Returns {exists, readable, size}, or
-   * null if the probe could not run (caller should not block on null).
+   * hidden <input type=file> that has no listeners of its own — it keeps
+   * whatever we set on it — set the path via CDP (which attaches a phantom
+   * 0-byte entry for a missing path instead of throwing), then try to read 1
+   * byte: a real file, even an empty one, reads fine; a missing/unreadable
+   * path rejects. The probe input is removed immediately. Returns {exists,
+   * readable, size}, or null if the probe could not run (caller should not
+   * block on null).
+   *
+   * Isolation: DOM.setFileInputFiles synthesizes `input`/`change` events that
+   * BUBBLE, so a page with a delegated handler (e.g. `change` on document/a
+   * form matching any input[type=file], which auto-uploads the selection)
+   * could treat the probe as a real user pick and fire an upload before the
+   * requested element is ever set. To prevent that we install swallow
+   * listeners on the probe input itself (capture + bubble) that
+   * stopImmediatePropagation + preventDefault, so the synthesized events never
+   * escape to ancestor/delegated handlers.
    */
   async probeLocalFile(tabId, filePath) {
     try {
@@ -401,6 +411,11 @@ export class CDPClient {
           i.type = 'file';
           i.style.display = 'none';
           i.setAttribute('data-wb-upload-probe', '');
+          const swallow = (e) => { e.stopImmediatePropagation(); e.preventDefault(); };
+          i.addEventListener('change', swallow, true);
+          i.addEventListener('change', swallow, false);
+          i.addEventListener('input', swallow, true);
+          i.addEventListener('input', swallow, false);
           document.documentElement.appendChild(i);
           return i;
         })()`,
