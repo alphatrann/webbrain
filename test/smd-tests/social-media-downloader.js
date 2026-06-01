@@ -1309,6 +1309,11 @@ window.SocialMediaDownloader = (() => {
     return [...httpVideos, ...blobUrls, ...rest];
   };
 
+  const isVideoDownloadUrl = url =>
+    isHttpVideoUrl(url) ||
+    String(url || '').startsWith('blob:') ||
+    /v\.redd\.it/i.test(url || '');
+
   const focusedDownloadUrls = urls => {
     urls = videoFirstUrls(urls);
     const httpVideoUrl = urls.find(isHttpVideoUrl);
@@ -1683,9 +1688,7 @@ window.SocialMediaDownloader = (() => {
     };
     let i = 1;
     for (const url of selected) {
-      const isVideo = /\.(mp4|mov|m4v|webm|m3u8|ts)(\?|#|$)/i.test(url)
-        || url.startsWith('blob:')
-        || /v\.redd\.it/.test(url);
+      const isVideo = isVideoDownloadUrl(url);
       const ext = getExt(url) || (isVideo ? '.mp4' : '.jpg');
       const filename = `${filenameSafe(prefix)}_${isVideo ? 'video' : 'photo'}_${String(i).padStart(3, '0')}${ext}`;
       let r;

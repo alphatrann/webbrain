@@ -8,6 +8,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -1449,6 +1450,30 @@ test('download_social_media exposes merged DOM/vision strategy in act tiers only
       assert.deepEqual(props.target.enum, ['image', 'video', 'media']);
       assert.match(props.strategy.description, /falls back to DOM/i);
     }
+  }
+});
+
+test('social media downloader copies stay in sync', () => {
+  const chrome = fs.readFileSync(path.join(ROOT, 'src/chrome/src/agent/social-media-downloader.js'), 'utf8');
+  const firefox = fs.readFileSync(path.join(ROOT, 'src/firefox/src/agent/social-media-downloader.js'), 'utf8');
+  const fixture = fs.readFileSync(path.join(ROOT, 'test/smd-tests/social-media-downloader.js'), 'utf8');
+
+  assert.equal(firefox, chrome);
+  assert.equal(fixture, chrome);
+});
+
+test('social media downloader names extensionless HTTP videos as videos', () => {
+  const downloaderPaths = [
+    'src/chrome/src/agent/social-media-downloader.js',
+    'src/firefox/src/agent/social-media-downloader.js',
+    'test/smd-tests/social-media-downloader.js',
+  ];
+
+  for (const relPath of downloaderPaths) {
+    const source = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
+    assert.match(source, /const isHttpVideoUrl = url =>[\s\S]*googlevideo\\.com\\\/videoplayback\\b[\s\S]*mime\|type\)=video/);
+    assert.match(source, /const isVideoDownloadUrl = url =>\s*isHttpVideoUrl\(url\) \|\|[\s\S]*v\\.redd\\.it/);
+    assert.match(source, /const isVideo = isVideoDownloadUrl\(url\);/);
   }
 });
 
