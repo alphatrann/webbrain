@@ -1593,7 +1593,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19).replace('T', '_');
     let filename = String(args.filename || `webbrain-visible-media-${stamp}.png`).trim();
     filename = filename.split('/').pop().split('\\').pop();
-    if (!/\.(png|jpg|jpeg|webp)$/i.test(filename)) filename += '.png';
+    filename = filename.replace(/\.(jpe?g|webp)$/i, '.png');
+    if (!/\.png$/i.test(filename)) filename += '.png';
     const downloadId = await browser.downloads.download({ url: crop.dataUrl, filename, saveAs: false });
 
     return {
