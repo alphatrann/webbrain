@@ -4860,12 +4860,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // download_file is now handled by download_files (normalized above)
 
     if (name === 'upload_file') {
+      args = args || {};
       // Accept a downloadId as an alternative to filePath. After context
       // compaction the model often can't recall the exact on-disk path, but the
       // small integer id (returned by download_files/list_downloads and
       // auto-pinned to the scratchpad) is easy to carry. Resolve it to the real
-      // path here so the rest of the handler is unchanged.
-      if (args.downloadId != null && !args.filePath) {
+      // path here so the rest of the handler is unchanged. If both are present,
+      // downloadId wins: filePath may be stale or invented.
+      if (args.downloadId != null) {
         try {
           const items = await new Promise((resolve, reject) => {
             chrome.downloads.search({ id: Number(args.downloadId) }, (res) => {

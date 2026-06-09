@@ -65,7 +65,7 @@ const { resourceBucket, bucketArgsKey, URL_FAMILY_TOOLS } = await import(
 const { resourceBucket: resourceBucketFx, bucketArgsKey: bucketArgsKeyFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/loop-bucket.js').replace(/\\/g, '/')
 );
-const { CDPClient } = await import(
+const { CDPClient, cdpClient: cdpClientCh } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/cdp/cdp-client.js').replace(/\\/g, '/')
 );
 
@@ -2687,6 +2687,55 @@ test('upload_file schema accepts downloadId and no longer hard-requires filePath
   assert.ok(up, 'upload_file not present in act tools');
   assert.ok(up.function.parameters.properties.downloadId, 'downloadId param missing from schema');
   assert.deepEqual(up.function.parameters.required, ['selector'], 'filePath should no longer be required');
+});
+
+test('upload_file prefers downloadId over a supplied stale filePath (chrome)', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalCdp = {
+    attach: cdpClientCh.attach,
+    querySelectorPierce: cdpClientCh.querySelectorPierce,
+    probeLocalFile: cdpClientCh.probeLocalFile,
+    setFileInputFiles: cdpClientCh.setFileInputFiles,
+    getFileInputFiles: cdpClientCh.getFileInputFiles,
+  };
+  const realPath = '/Users/x/Downloads/real.zip';
+  const stalePath = '/Users/Shared/made-up.zip';
+  const uploaded = [];
+
+  try {
+    globalThis.chrome = {
+      runtime: { lastError: null },
+      downloads: {
+        search(query, cb) {
+          assert.deepEqual(query, { id: 9123 });
+          cb([{ id: 9123, state: 'complete', filename: realPath }]);
+        },
+      },
+    };
+    cdpClientCh.attach = async (tabId) => ({ tabId, attached: true });
+    cdpClientCh.querySelectorPierce = async () => [501];
+    cdpClientCh.probeLocalFile = async (_tabId, filePath) => {
+      assert.equal(filePath, realPath, 'downloadId-resolved path should override stale filePath before probing');
+      return { exists: true, readable: true, size: 123 };
+    };
+    cdpClientCh.setFileInputFiles = async (_tabId, _nodeId, files) => {
+      uploaded.push(files);
+    };
+    cdpClientCh.getFileInputFiles = async () => [{ name: 'real.zip', size: 123, readable: true }];
+
+    const agent = new AgentCh({});
+    const args = { selector: 'input[type=file]', downloadId: 9123, filePath: stalePath };
+    const result = await agent.executeTool(42, 'upload_file', args);
+
+    assert.equal(result.success, true);
+    assert.equal(result.file, realPath);
+    assert.equal(args.filePath, realPath);
+    assert.deepEqual(uploaded, [[realPath]]);
+  } finally {
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    Object.assign(cdpClientCh, originalCdp);
+  }
 });
 
 test('_pinDownloadHandles pins downloadIds id-only across download tools (chrome & firefox)', () => {
