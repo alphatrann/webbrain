@@ -11,6 +11,8 @@ import { fetchWithFallback } from './fetch-with-fallback.js';
 
 const WEBBRAIN_CLOUD_PROVIDER_ID = 'webbrain_cloud';
 const WEBBRAIN_DEVICE_GUID_KEY = 'webbrainDeviceGuid';
+const OPENROUTER_DEFAULT_MODEL = 'minimax/minimax-m3';
+const OPENROUTER_LEGACY_DEFAULT_MODEL = 'stepfun/step-3.7-flash';
 
 /**
  * Manages LLM provider instances and persists configuration.
@@ -37,7 +39,7 @@ export class ProviderManager {
    */
   async load() {
     const data = await chrome.storage.local.get(['providers', 'activeProvider', WEBBRAIN_DEVICE_GUID_KEY]);
-    const stored = data.providers || {};
+    const stored = this._migrateStoredProviderConfigs(data.providers || {});
     // Field-level merge: defaults provide the full shape (including new
     // fields like apiKeyUrl), stored values override individual fields
     // without dropping keys that don't exist in stored.
@@ -273,7 +275,7 @@ export class ProviderManager {
         label: 'OpenRouter',
         providerName: 'openrouter',
         baseUrl: 'https://openrouter.ai/api/v1',
-        model: 'stepfun/step-3.7-flash',
+        model: OPENROUTER_DEFAULT_MODEL,
         supportsStreamUsageOptions: true,
         apiKey: '',
         apiKeyUrl: 'https://openrouter.ai/keys',
@@ -293,6 +295,17 @@ export class ProviderManager {
         enabled: false,
       },
     };
+  }
+
+  _migrateStoredProviderConfigs(stored) {
+    const migrated = { ...stored };
+    if (migrated.openrouter?.model === OPENROUTER_LEGACY_DEFAULT_MODEL) {
+      migrated.openrouter = {
+        ...migrated.openrouter,
+        model: OPENROUTER_DEFAULT_MODEL,
+      };
+    }
+    return migrated;
   }
 
   /**

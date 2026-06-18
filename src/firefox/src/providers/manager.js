@@ -4,6 +4,8 @@ import { AnthropicProvider, AnthropicOAuthProvider } from './anthropic.js';
 
 const WEBBRAIN_CLOUD_PROVIDER_ID = 'webbrain_cloud';
 const WEBBRAIN_DEVICE_GUID_KEY = 'webbrainDeviceGuid';
+const OPENROUTER_DEFAULT_MODEL = 'minimax/minimax-m3';
+const OPENROUTER_LEGACY_DEFAULT_MODEL = 'stepfun/step-3.7-flash';
 
 /**
  * Manages LLM provider instances and persists configuration.
@@ -28,7 +30,7 @@ export class ProviderManager {
    */
   async load() {
     const data = await browser.storage.local.get(['providers', 'activeProvider', WEBBRAIN_DEVICE_GUID_KEY]);
-    const stored = data.providers || {};
+    const stored = this._migrateStoredProviderConfigs(data.providers || {});
     const defaults = this._defaultConfigs();
     const configs = {};
     for (const [id, config] of Object.entries(defaults)) {
@@ -256,7 +258,7 @@ export class ProviderManager {
         label: 'OpenRouter',
         providerName: 'openrouter',
         baseUrl: 'https://openrouter.ai/api/v1',
-        model: 'stepfun/step-3.7-flash',
+        model: OPENROUTER_DEFAULT_MODEL,
         supportsStreamUsageOptions: true,
         apiKey: '',
         apiKeyUrl: 'https://openrouter.ai/keys',
@@ -274,6 +276,17 @@ export class ProviderManager {
         enabled: false,
       },
     };
+  }
+
+  _migrateStoredProviderConfigs(stored) {
+    const migrated = { ...stored };
+    if (migrated.openrouter?.model === OPENROUTER_LEGACY_DEFAULT_MODEL) {
+      migrated.openrouter = {
+        ...migrated.openrouter,
+        model: OPENROUTER_DEFAULT_MODEL,
+      };
+    }
+    return migrated;
   }
 
   /**

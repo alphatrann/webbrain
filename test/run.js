@@ -2049,6 +2049,30 @@ test('_defaultConfigs: new cloud providers present and disabled by default', () 
   }
 });
 
+test('_defaultConfigs: OpenRouter defaults to MiniMax M3 and migrates old default', () => {
+  for (const PM of [ProviderManagerCh, ProviderManagerFx]) {
+    const mgr = new PM();
+    const defaults = mgr._defaultConfigs();
+    assert.equal(defaults.openrouter.model, 'minimax/minimax-m3');
+
+    const migrated = mgr._migrateStoredProviderConfigs({
+      openrouter: {
+        model: 'stepfun/step-3.7-flash',
+        apiKey: 'kept',
+      },
+    });
+    assert.equal(migrated.openrouter.model, 'minimax/minimax-m3');
+    assert.equal(migrated.openrouter.apiKey, 'kept');
+
+    const custom = mgr._migrateStoredProviderConfigs({
+      openrouter: {
+        model: 'custom/model',
+      },
+    });
+    assert.equal(custom.openrouter.model, 'custom/model');
+  }
+});
+
 test('_defaultConfigs: chrome and firefox share the same provider set', () => {
   const chDefaults = new ProviderManagerCh()._defaultConfigs();
   const fxDefaults = new ProviderManagerFx()._defaultConfigs();
