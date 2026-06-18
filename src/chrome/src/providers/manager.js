@@ -96,7 +96,12 @@ export class ProviderManager {
         outputCostPerMillionUsd: 1.15,
         supportsStreamUsageOptions: true,
         supportsVision: true,
-        omitToolsWhenImagesPresent: true,
+        // WebBrain Cloud proxies to OpenRouter, whose upstream models
+        // (minimax, stepfun, …) handle tools + images together fine. Dropping
+        // tools on image turns forced the model into prompt-based tool calling,
+        // which leaks raw tool-call template tokens (e.g. `]<]minimax[>[`) into
+        // content and never produces a tool_calls array. Keep tools on.
+        omitToolsWhenImagesPresent: false,
         apiKey: '',
         enabled: true,
       },
@@ -303,6 +308,15 @@ export class ProviderManager {
       migrated.openrouter = {
         ...migrated.openrouter,
         model: OPENROUTER_DEFAULT_MODEL,
+      };
+    }
+    // Existing installs stored omitToolsWhenImagesPresent:true for WebBrain
+    // Cloud, which suppressed native tools on every screenshot turn and broke
+    // tool calling. Force it off so the saved config picks up the new default.
+    if (migrated.webbrain_cloud?.omitToolsWhenImagesPresent) {
+      migrated.webbrain_cloud = {
+        ...migrated.webbrain_cloud,
+        omitToolsWhenImagesPresent: false,
       };
     }
     return migrated;
