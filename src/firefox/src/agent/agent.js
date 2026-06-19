@@ -347,6 +347,9 @@ export class Agent {
     const before = await this._checkCostAllowance(provider, costState);
     if (before) throw this._costAllowanceError(before);
     const result = await provider.chat(messages, options);
+    if (result && typeof result.content === 'string') {
+      result.content = Agent._stripReasoningTags(result.content);
+    }
     const after = await this._recordCostUsage(provider, result?.usage, costState);
     if (after) result.costAllowanceMessage = after;
     return result;
@@ -515,6 +518,20 @@ Format — keep it terse, structured, no flowery prose:
 6) Unknowns: if you cannot read something clearly, say so. Do not guess numbers, names, or identifiers.
 
 Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout description unless it matters (e.g. "left nav is collapsed"). If the page is blank or still loading, say that in one line and stop.`;
+
+  /**
+   * Strip <think>...</think> reasoning blocks (and stray orphan think tags) that
+   * some reasoning models leak into content. The model's dedicated reasoning
+   * channel is unaffected — we only clean user-visible text. Leading whitespace
+   * left by a removed block is trimmed.
+   */
+  static _stripReasoningTags(s) {
+    if (!s) return s;
+    const out = String(s)
+      .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+      .replace(/<\/?think\b[^>]*>/gi, '');
+    return out.replace(/^\s+/, '');
+  }
 
   /**
    * Strip chain-of-thought preambles from a vision model's response.
@@ -4530,6 +4547,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             break;
           }
         }
+
+        fullText = Agent._stripReasoningTags(fullText);
 
         // Fallback: parse tool calls from streamed text if structured calls are missing.
         if (!hasToolCalls && fullText) {
