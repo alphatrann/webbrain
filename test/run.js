@@ -2787,6 +2787,18 @@ test('agent only auto-records progress clicks inside repeated-item work', () => 
     ]);
     const laterTask = agent._autoRecordProgressAction(779, 'click', { text: 'Follow monalisa' }, { success: true, text: 'Follow monalisa', href: '/monalisa' });
     assert.equal(laterTask?.item.id, 'monalisa', `${AgentClass.name}: latest repeated-item task was ignored`);
+
+    agent.conversations.set(782, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Update release notes and save the draft.' },
+    ]);
+    agent._progressUpdate(782, {
+      items: [{ id: 'octocat', label: 'octocat', action: 'follow', status: 'processed' }],
+    });
+    const staleTerminal = agent._autoRecordProgressAction(782, 'click', { text: 'Follow monalisa' }, { success: true, text: 'Follow monalisa', href: '/monalisa' });
+    assert.equal(staleTerminal, null, `${AgentClass.name}: stale terminal rows kept ledger context active`);
+    assert.equal(agent.progressLedgers.get(782).length, 1, `${AgentClass.name}: stale terminal task recorded a new row`);
+    assert.equal(agent._appendProgressLedgerToFinal(782, 'Done.'), 'Done.', `${AgentClass.name}: stale terminal rows were appended to an unrelated final answer`);
   }
 });
 
@@ -2945,6 +2957,32 @@ test('agent does not seed GitHub stargazer follow rows for read-only page reads'
     assert.equal(note, null, `${AgentClass.name}: read-only stargazer read seeded rows`);
     assert.equal(result.progressObserved, undefined);
     assert.equal(agent.progressLedgers.get(tabId), undefined);
+  }
+});
+
+test('agent ignores stale terminal follow rows when observing stargazers', async () => {
+  const page = `
+    button "Follow ChJus" [ref_13]
+    button "Follow rafi" [ref_31]
+  `;
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 783;
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Summarize who is on this stargazers page.' },
+    ]);
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'octocat', label: 'octocat', action: 'follow', status: 'processed' }],
+    });
+    agent._currentUrl = async () => 'https://github.com/foo/bar/stargazers';
+
+    const result = { success: true, pageContent: page };
+    const note = await agent._recordProgressObservation(tabId, 'get_accessibility_tree', result);
+    assert.equal(note, null, `${AgentClass.name}: stale terminal follow rows seeded new stargazer rows`);
+    assert.deepEqual(agent.progressLedgers.get(tabId).map(row => [row.id, row.action, row.status]), [
+      ['octocat', 'follow', 'processed'],
+    ]);
   }
 });
 

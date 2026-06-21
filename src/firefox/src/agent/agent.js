@@ -2511,9 +2511,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return '';
   }
 
+  _activeProgressLedgerRows(tabId) {
+    return unresolvedLedgerRows(this.progressLedgers.get(tabId) || []);
+  }
+
   _hasProgressLedgerContext(tabId) {
-    const rows = this.progressLedgers.get(tabId) || [];
-    if (rows.length > 0) return true;
+    if (this._activeProgressLedgerRows(tabId).length > 0) return true;
 
     const text = this._latestTaskText(tabId).toLowerCase();
     if (!text) return false;
@@ -2531,7 +2534,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _hasGithubStargazerFollowContext(tabId) {
-    const rows = this.progressLedgers.get(tabId) || [];
+    const rows = this._activeProgressLedgerRows(tabId);
     if (rows.some(row => String(row?.action || '').toLowerCase() === 'follow')) return true;
     const text = this._latestTaskText(tabId).toLowerCase();
     return /\bfollow\b/.test(text) && this._hasProgressLedgerContext(tabId);
@@ -2627,6 +2630,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   _appendProgressLedgerToFinal(tabId, summary) {
     const rows = this.progressLedgers.get(tabId) || [];
     if (!rows.length) return summary;
+    if (!this._hasProgressLedgerContext(tabId)) return summary;
     const counts = progressCounts(rows);
     const visible = selectLedgerRows(rows, { limit: 20 });
     const lines = visible.map(r => {
