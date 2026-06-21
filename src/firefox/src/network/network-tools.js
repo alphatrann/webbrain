@@ -223,7 +223,7 @@ export function extractPageSourceAssets(html, baseUrl) {
   if (!html) return out;
 
   const add = (kind, raw) => {
-    const value = String(raw || '').trim();
+    const value = decodeHtmlAttributeValue(raw).trim();
     if (!value || /^(data|javascript|mailto|tel):/i.test(value)) return;
     let resolved = value;
     try { resolved = new URL(value, baseUrl).href; } catch { /* keep raw */ }
@@ -247,6 +247,28 @@ export function extractPageSourceAssets(html, baseUrl) {
   }
 
   return out;
+}
+
+const HTML_ATTRIBUTE_ENTITIES = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+function decodeHtmlAttributeValue(raw) {
+  return String(raw || '').replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]+);/gi, (match, body) => {
+    if (body[0] === '#') {
+      const codePoint = body[1].toLowerCase() === 'x'
+        ? Number.parseInt(body.slice(2), 16)
+        : Number.parseInt(body.slice(1), 10);
+      if (!Number.isFinite(codePoint)) return match;
+      try { return String.fromCodePoint(codePoint); } catch { return match; }
+    }
+    return HTML_ATTRIBUTE_ENTITIES[body.toLowerCase()] ?? match;
+  });
 }
 
 export function slicePageSource(text, opts = {}) {

@@ -11,6 +11,7 @@ import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import vm from 'node:vm';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -282,6 +283,87 @@ class LoopDetectorShim {
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
+
+function makeMockElement(tagName, opts = {}) {
+  const el = {
+    nodeType: 1,
+    tagName: tagName.toUpperCase(),
+    id: opts.id || '',
+    classList: opts.classes || [],
+    parentElement: null,
+    children: [],
+    innerText: opts.text || '',
+    textContent: opts.text || '',
+    getAttribute(name) {
+      return opts.attributes?.[name] || '';
+    },
+    getBoundingClientRect() {
+      return opts.rect || { x: 0, y: 0, top: 0, left: 0, width: 100, height: 50, right: 100, bottom: 50 };
+    },
+    matches() {
+      return false;
+    },
+  };
+  return el;
+}
+
+function runInspectElementStylesContentScript(relativePath, params, opts = {}) {
+  let listener = null;
+  const html = makeMockElement('html');
+  const body = makeMockElement('body', { text: 'Body fallback' });
+  body.parentElement = html;
+  html.children = [body];
+  const document = {
+    body,
+    documentElement: html,
+    styleSheets: [],
+    querySelector(selector) {
+      if (opts.throwSelector) throw new Error(opts.throwSelector);
+      return opts.selectors?.[selector] || null;
+    },
+    elementFromPoint() {
+      return opts.pointTarget || null;
+    },
+  };
+  const window = {
+    __webbrain_injected: false,
+    innerWidth: 1024,
+    innerHeight: 768,
+    scrollX: 0,
+    scrollY: 0,
+    devicePixelRatio: 1,
+  };
+  if (opts.lookup !== undefined) window.__wb_ax_lookup = opts.lookup;
+
+  const runtime = {
+    onMessage: {
+      addListener(fn) {
+        listener = fn;
+      },
+    },
+  };
+  const extensionApi = { runtime };
+  const sandbox = {
+    window,
+    document,
+    chrome: extensionApi,
+    browser: extensionApi,
+    CSS: { escape: (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&') },
+    CSSRule: { STYLE_RULE: 1 },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    console,
+  };
+  vm.createContext(sandbox);
+  const source = fs.readFileSync(path.join(ROOT, relativePath), 'utf8');
+  vm.runInContext(source, sandbox, { filename: relativePath });
+  assert.equal(typeof listener, 'function', `${relativePath} did not register a content message listener`);
+
+  let result;
+  listener({ target: 'content', action: 'inspect_element_styles', params }, {}, (response) => {
+    result = response;
+  });
+  return result;
+}
 
 async function run() {
   let passed = 0;
@@ -1170,10 +1252,11 @@ test('read_page_source helpers paginate source chunks with clamps', () => {
 
 test('read_page_source helpers extract and resolve stylesheet/script assets', () => {
   const html = `
-    <link rel="stylesheet" href="/css/app.css">
-    <link href='theme.css' rel='preload stylesheet'>
+    <link rel="stylesheet" href="/css/app.css?v=1&amp;theme=dark">
+    <link href='theme.css?x=1&#38;y=2' rel='preload stylesheet'>
     <link rel="icon" href="/favicon.ico">
-    <script src="/js/app.js"></script>
+    <link rel="stylesheet" href="javascript&#58;alert(1)">
+    <script src="/js/app.js?debug=true&amp;v=2"></script>
     <script defer src='https://cdn.example/lib.js'></script>
     <script src="data:text/javascript,ignored"></script>
   `;
@@ -1183,13 +1266,34 @@ test('read_page_source helpers extract and resolve stylesheet/script assets', ()
   ]) {
     const assets = extract(html, 'https://example.com/pages/index.html');
     assert.deepEqual(assets.stylesheets, [
-      'https://example.com/css/app.css',
-      'https://example.com/pages/theme.css',
-    ], `${label}: stylesheets should resolve relative URLs and ignore non-stylesheets`);
+      'https://example.com/css/app.css?v=1&theme=dark',
+      'https://example.com/pages/theme.css?x=1&y=2',
+    ], `${label}: stylesheets should decode entities, resolve relative URLs, and ignore non-stylesheets`);
     assert.deepEqual(assets.scripts, [
-      'https://example.com/js/app.js',
+      'https://example.com/js/app.js?debug=true&v=2',
       'https://cdn.example/lib.js',
-    ], `${label}: scripts should resolve relative URLs and ignore data URLs`);
+    ], `${label}: scripts should decode entities, resolve relative URLs, and ignore data URLs`);
+  }
+});
+
+test('inspect_element_styles reports missing explicit targets instead of inspecting body', () => {
+  for (const [label, relativePath] of [
+    ['chrome', 'src/chrome/src/content/content.js'],
+    ['firefox', 'src/firefox/src/content/content.js'],
+  ]) {
+    const missingSelector = runInspectElementStylesContentScript(relativePath, { selector: '#missing' });
+    assert.equal(missingSelector.success, false, `${label}: missing selector should fail`);
+    assert.match(missingSelector.error, /Could not resolve requested DOM element/);
+    assert.ok(missingSelector.warnings.some((w) => w.includes('No element matched selector "#missing"')));
+
+    const staleRef = runInspectElementStylesContentScript(relativePath, { ref_id: 'ref_stale' }, { lookup: () => null });
+    assert.equal(staleRef.success, false, `${label}: stale ref_id should fail`);
+    assert.ok(staleRef.warnings.some((w) => w.includes('No element found for ref_id "ref_stale"')));
+
+    const bodyFallback = runInspectElementStylesContentScript(relativePath, {});
+    assert.equal(bodyFallback.success, true, `${label}: empty target params should inspect body`);
+    assert.equal(bodyFallback.targetMethod, 'body');
+    assert.equal(bodyFallback.target.tag, 'body');
   }
 });
 

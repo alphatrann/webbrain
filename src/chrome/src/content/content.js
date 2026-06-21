@@ -1793,26 +1793,62 @@
     };
 
     let target = null;
-    let targetMethod = 'body';
-    if (typeof params.ref_id === 'string' && params.ref_id) {
+    let targetMethod = null;
+    const hasRefId = typeof params.ref_id === 'string' && params.ref_id;
+    const selector = typeof params.selector === 'string' ? params.selector.trim() : '';
+    const x = Number(params.x);
+    const y = Number(params.y);
+    const hasCoordinates = Number.isFinite(x) && Number.isFinite(y);
+    const hasTargetParams = !!(hasRefId || selector || hasCoordinates);
+    if (hasRefId) {
       if (typeof window.__wb_ax_lookup === 'function') {
-        target = window.__wb_ax_lookup(params.ref_id);
-        targetMethod = 'ref_id';
+        const refTarget = window.__wb_ax_lookup(params.ref_id);
+        if (refTarget && refTarget.nodeType === 1) {
+          target = refTarget;
+          targetMethod = 'ref_id';
+        } else if (refTarget) {
+          warnings.push(`ref_id "${params.ref_id}" resolved to a non-element node.`);
+        } else {
+          warnings.push(`No element found for ref_id "${params.ref_id}".`);
+        }
       } else {
         warnings.push('ref_id was provided but accessibility-tree.js is not available.');
       }
     }
-    if (!target && typeof params.selector === 'string' && params.selector.trim()) {
+    if (!target && selector) {
       try {
-        target = document.querySelector(params.selector);
-        targetMethod = 'selector';
+        const selectorTarget = document.querySelector(selector);
+        if (selectorTarget && selectorTarget.nodeType === 1) {
+          target = selectorTarget;
+          targetMethod = 'selector';
+        } else if (selectorTarget) {
+          warnings.push(`Selector "${selector}" matched a non-element node.`);
+        } else {
+          warnings.push(`No element matched selector "${selector}".`);
+        }
       } catch (e) {
         warnings.push(`Invalid selector: ${e.message}`);
       }
     }
-    if (!target && Number.isFinite(Number(params.x)) && Number.isFinite(Number(params.y))) {
-      target = document.elementFromPoint(Number(params.x), Number(params.y));
-      targetMethod = 'coordinates';
+    if (!target && hasCoordinates) {
+      const pointTarget = typeof document.elementFromPoint === 'function'
+        ? document.elementFromPoint(x, y)
+        : null;
+      if (pointTarget && pointTarget.nodeType === 1) {
+        target = pointTarget;
+        targetMethod = 'coordinates';
+      } else {
+        warnings.push(`No element found at coordinates (${x}, ${y}).`);
+      }
+    }
+    if (!target && hasTargetParams) {
+      return {
+        success: false,
+        error: 'Could not resolve requested DOM element to inspect.',
+        ref_id: params.ref_id || null,
+        selector: params.selector || null,
+        warnings,
+      };
     }
     if (!target) {
       target = document.body || document.documentElement;
