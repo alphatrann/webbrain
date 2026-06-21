@@ -71,6 +71,9 @@ function htmlToText(html) {
 // the cap only bites on the long tail.
 const FETCH_TEXT_LIMIT = 192000;
 const FETCH_JSON_LIMIT = 96000;
+const PAGE_SOURCE_DEFAULT_LIMIT = 6000;
+const PAGE_SOURCE_MIN_LIMIT = 1000;
+const PAGE_SOURCE_MAX_LIMIT = 7000;
 
 /**
  * Validate a URL before the agent fetches it.
@@ -254,6 +257,140 @@ try {
 
 export function getAllowLocalNetwork() {
   return _allowLocalNetwork;
+}
+
+export function extractPageSourceAssets(html, baseUrl) {
+  const out = { stylesheets: [], scripts: [] };
+  const seen = { stylesheets: new Set(), scripts: new Set() };
+  if (!html) return out;
+
+  const add = (kind, raw) => {
+    const value = String(raw || '').trim();
+    if (!value || /^(data|javascript|mailto|tel):/i.test(value)) return;
+    let resolved = value;
+    try { resolved = new URL(value, baseUrl).href; } catch { /* keep raw */ }
+    if (seen[kind].has(resolved) || out[kind].length >= 50) return;
+    seen[kind].add(resolved);
+    out[kind].push(resolved);
+  };
+
+  const linkRe = /<link\b[^>]*>/gi;
+  let m;
+  while ((m = linkRe.exec(html))) {
+    const tag = m[0];
+    if (!/\brel\s*=\s*(?:"[^"]*\bstylesheet\b[^"]*"|'[^']*\bstylesheet\b[^']*'|[^\s>]*\bstylesheet\b[^\s>]*)/i.test(tag)) continue;
+    const href = tag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    add('stylesheets', href && (href[1] || href[2] || href[3]));
+  }
+
+  const scriptRe = /<script\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
+  while ((m = scriptRe.exec(html))) {
+    add('scripts', m[1] || m[2] || m[3]);
+  }
+
+  return out;
+}
+
+export function slicePageSource(text, opts = {}) {
+  const source = String(text || '');
+  const offset = Math.max(0, Math.floor(Number(opts.offset) || 0));
+  const requested = Number(opts.maxChars) || PAGE_SOURCE_DEFAULT_LIMIT;
+  const maxChars = Math.max(PAGE_SOURCE_MIN_LIMIT, Math.min(PAGE_SOURCE_MAX_LIMIT, Math.floor(requested)));
+  const end = Math.min(source.length, offset + maxChars);
+  return {
+    text: source.slice(offset, end),
+    offset,
+    maxChars,
+    nextOffset: end < source.length ? end : null,
+    truncated: end < source.length,
+    originalLength: source.length,
+  };
+}
+
+/**
+ * Fetch the raw server-delivered page source. Unlike fetchUrl(), HTML is not
+ * stripped to prose; this intentionally mirrors View Source semantics.
+ */
+export async function readPageSource(url, opts = {}, ctx = {}) {
+  let targetUrl = String(url || '').trim();
+  if (!targetUrl && ctx && ctx.tabId != null) {
+    try {
+      const tab = await chrome.tabs.get(ctx.tabId);
+      targetUrl = tab?.url || '';
+    } catch {}
+  }
+  if (!targetUrl) return { success: false, error: 'read_page_source: no url provided and could not read the active tab URL.' };
+
+  const allowLocal = getAllowLocalNetwork();
+  const v = validateFetchUrl(targetUrl, { allowLocalNetwork: allowLocal });
+  if (!v.ok) return { success: false, error: v.error };
+
+  let attachCookies = false;
+  let tabRegDomain = null;
+  if (ctx && ctx.tabId != null) {
+    try {
+      const tab = await chrome.tabs.get(ctx.tabId);
+      if (tab && tab.url) {
+        try {
+          const tabHost = new URL(tab.url).hostname;
+          const fetchHost = new URL(targetUrl).hostname;
+          tabRegDomain = registrableDomain(tabHost);
+          if (tabRegDomain && tabRegDomain === registrableDomain(fetchHost)) {
+            attachCookies = true;
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'GET',
+      credentials: attachCookies ? 'include' : 'omit',
+      redirect: 'follow',
+    });
+
+    if (res.url && res.url !== targetUrl) {
+      const v2 = validateFetchUrl(res.url, { allowLocalNetwork: allowLocal });
+      if (!v2.ok) {
+        return { success: false, error: `Redirect to blocked URL: ${v2.error}`, finalUrl: res.url };
+      }
+      if (attachCookies && tabRegDomain) {
+        try {
+          const finalRegDomain = registrableDomain(new URL(res.url).hostname);
+          if (finalRegDomain !== tabRegDomain) {
+            return {
+              success: false,
+              error: `Redirect crossed registrable-domain boundary (${tabRegDomain} → ${finalRegDomain}); body discarded for safety. Re-call with the explicit final URL if needed.`,
+              finalUrl: res.url,
+            };
+          }
+        } catch {}
+      }
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    const source = await res.text();
+    const slice = slicePageSource(source, opts);
+    const assetUrls = extractPageSourceAssets(source, res.url || targetUrl);
+    return {
+      success: true,
+      status: res.status,
+      contentType,
+      url: targetUrl,
+      finalUrl: res.url || targetUrl,
+      text: slice.text,
+      offset: slice.offset,
+      maxChars: slice.maxChars,
+      nextOffset: slice.nextOffset,
+      truncated: slice.truncated,
+      originalLength: slice.originalLength,
+      assetUrls,
+      note: 'Raw server-delivered source only. This is not the live DOM or computed styles; use inspect_element_styles for rendered layout/CSS issues.',
+    };
+  } catch (e) {
+    return { success: false, error: `read_page_source failed: ${e.message}` };
+  }
 }
 
 /**

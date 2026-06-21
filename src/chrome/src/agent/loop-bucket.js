@@ -62,7 +62,7 @@
  * hashing because their args don't have multiple equivalent forms.
  */
 export const URL_FAMILY_TOOLS = new Set([
-  'fetch_url', 'research_url', 'download_file', 'read_downloaded_file',
+  'fetch_url', 'research_url', 'read_page_source', 'download_file', 'read_downloaded_file',
 ]);
 
 /**
