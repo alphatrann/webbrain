@@ -156,7 +156,20 @@ export function bucketArgsKey(name, args) {
   if (URL_FAMILY_TOOLS.has(name) && args && args.url) {
     const bucket = resourceBucket(args.url);
     const method = (args.method || 'GET').toUpperCase();
-    return `url:${bucket}|${method}`;
+    const pageSourceRange = name === 'read_page_source' ? _pageSourceRangeKey(args) : '';
+    return `url:${bucket}|${method}${pageSourceRange}`;
   }
   return JSON.stringify(args || {});
+}
+
+function _pageSourceRangeKey(args) {
+  const offset = _nonNegativeInteger(args.offset, 0);
+  const maxChars = args.maxChars == null ? '' : _nonNegativeInteger(args.maxChars, 0);
+  return `|offset:${offset}|maxChars:${maxChars}`;
+}
+
+function _nonNegativeInteger(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.floor(n));
 }

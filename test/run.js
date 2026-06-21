@@ -1322,6 +1322,30 @@ test('bucketArgsKey: URL-family tools use resource bucket + method', () => {
   assert.notEqual(get, post);
 });
 
+test('bucketArgsKey: read_page_source includes pagination fields', () => {
+  const url = 'https://example.com/a/long-page.html';
+  assert.notEqual(
+    bucketArgsKey('read_page_source', { url, offset: 0, maxChars: 7000 }),
+    bucketArgsKey('read_page_source', { url, offset: 7000, maxChars: 7000 }),
+    'different source chunks should not share a loop bucket',
+  );
+  assert.notEqual(
+    bucketArgsKey('read_page_source', { url, offset: 0, maxChars: 6000 }),
+    bucketArgsKey('read_page_source', { url, offset: 0, maxChars: 7000 }),
+    'different source page sizes should not share a loop bucket',
+  );
+  assert.equal(
+    bucketArgsKey('read_page_source', { url }),
+    bucketArgsKey('read_page_source', { url, offset: 0 }),
+    'omitted offset should behave like the default first chunk',
+  );
+  assert.equal(
+    bucketArgsKey('fetch_url', { url, offset: 0 }),
+    bucketArgsKey('fetch_url', { url, offset: 7000 }),
+    'other URL-family tools should keep resource-only bucketing',
+  );
+});
+
 test('bucketArgsKey: non-URL tools fall back to exact JSON args', () => {
   // click_ax with the same ref_id should match itself
   assert.equal(
@@ -1367,10 +1391,27 @@ test('LOOP DETECTOR catches URL-family thrashing (the trace bug)', () => {
   assert.ok(triggered.i >= 2, `expected detection at call index ≥2, got ${triggered.i}`);
 });
 
+test('LOOP DETECTOR allows read_page_source pagination', () => {
+  const d = new LoopDetectorShim();
+  const url = 'https://example.com/a/long-page.html';
+  for (const offset of [0, 7000, 14000, 21000]) {
+    const result = d._checkLoop(1, 'read_page_source', { url, offset, maxChars: 7000 }, { success: true });
+    assert.equal(result.kind, 'none', `offset ${offset} should not be treated as a repeated call`);
+  }
+
+  const repeat = new LoopDetectorShim();
+  let result = { kind: 'none' };
+  for (let i = 0; i < 3; i++) {
+    result = repeat._checkLoop(1, 'read_page_source', { url, offset: 7000, maxChars: 7000 }, { success: true });
+  }
+  assert.equal(result.kind, 'nudge', 'repeating the same source chunk should still trigger loop detection');
+});
+
 test('firefox loop-bucket matches chrome', () => {
   const samples = [
     ['fetch_url', { url: 'https://raw.githubusercontent.com/o/r/main/foo.json' }],
     ['fetch_url', { url: 'https://api.github.com/repos/o/r/contents/foo.json', method: 'POST' }],
+    ['read_page_source', { url: 'https://example.com/a/long-page.html', offset: 7000, maxChars: 7000 }],
     ['click_ax', { ref_id: 'ref_42' }],
     ['fetch_url', { url: 'not a url' }],
   ];
