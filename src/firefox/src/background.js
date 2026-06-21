@@ -377,6 +377,12 @@ async function handleMessage(msg, sender) {
       return { ok: true };
     }
 
+    case 'compact_conversation': {
+      const tabId = msg.tabId || sender.tab?.id;
+      if (!tabId) return { ok: false, error: 'No tab ID' };
+      return { ok: true, ...(await agent.compactConversation(tabId)) };
+    }
+
     case 'abort': {
       const tabId = msg.tabId || sender.tab?.id;
       if (tabId) agent.abort(tabId);

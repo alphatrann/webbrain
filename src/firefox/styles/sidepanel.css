@@ -1275,17 +1275,52 @@ body {
   font-size: 12px;
 }
 
-#user-input {
+#input-text-layer {
   flex: 1;
-  background: none;
+  display: grid;
+  min-width: 0;
+  position: relative;
+}
+
+#input-highlight,
+#user-input {
+  grid-area: 1 / 1;
+  width: 100%;
+  min-width: 0;
+  max-height: 120px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+#input-highlight {
+  color: transparent;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+
+.input-highlight-command {
+  color: transparent;
+  text-decoration-line: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+
+#user-input {
+  position: relative;
+  z-index: 1;
+  background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 13px;
-  font-family: inherit;
+  caret-color: var(--text-primary);
   resize: none;
-  max-height: 120px;
-  line-height: 1.4;
   outline: none;
+  overflow-y: auto;
 }
 
 #user-input::placeholder {

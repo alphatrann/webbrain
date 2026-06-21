@@ -1857,6 +1857,7 @@ test('sidepanel slash commands are autocompletable in both builds', () => {
     '/show-scratchpad',
     '/allow-api',
     '/compact',
+    '/verbose',
     '/reset',
     '/screenshot',
     '/export',
@@ -1874,10 +1875,17 @@ test('sidepanel slash commands are autocompletable in both builds', () => {
     const locale = fs.readFileSync(path.join(ROOT, localeRel), 'utf8');
 
     assert.match(html, /id="slash-command-menu"/, `${label}: autocomplete menu markup missing`);
+    assert.match(html, /id="input-highlight"/, `${label}: slash command highlight mirror missing`);
     assert.match(css, /\.slash-command-menu/, `${label}: autocomplete menu styles missing`);
+    assert.match(css, /\.input-highlight-command/, `${label}: recognized slash command underline style missing`);
     assert.match(panel, /const SLASH_COMMANDS = \[/, `${label}: autocomplete command list missing`);
     assert.match(panel, /handleSlashCommandKeydown/, `${label}: autocomplete keyboard handler missing`);
     assert.match(panel, /applySlashCommandCompletion/, `${label}: autocomplete completion handler missing`);
+    assert.match(panel, /compact_conversation/, `${label}: /compact should force context compaction`);
+    assert.match(panel, /\/verbose\\b/, `${label}: /verbose display-toggle parser missing`);
+    assert.match(panel, /getRecognizedSlashCommandPrefix/, `${label}: recognized slash command highlighter missing`);
+    assert.match(panel, /updateSlashCommandHighlight/, `${label}: slash command highlight renderer missing`);
+    assert.match(panel, /inputEl\.addEventListener\('scroll', syncSlashCommandHighlightScroll\)/, `${label}: slash command highlight should follow textarea scroll`);
     assert.match(panel, /scrollSlashCommandOptionIntoView/, `${label}: selected autocomplete option should be scrolled into view`);
     assert.match(panel, /slashCommandMenuEl\.scrollTop [+-]=/, `${label}: autocomplete scrolling should adjust the menu scroll position`);
     assert.match(panel, /inputEl\.addEventListener\('input', handleInput\)/, `${label}: input handler should refresh autocomplete`);
@@ -3617,6 +3625,69 @@ test('Agent enrich: no recording status note when the conversation never recorde
   ];
   const enriched = await agent._enrichUserMessageWithCurrentPage(999, messages, 'summarize this page');
   assert.doesNotMatch(enriched.content, /Recording status/i);
+});
+
+test('manual compactConversation compacts before automatic thresholds', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 88;
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'keep working on the task' },
+    ];
+    for (let i = 0; i < 20; i++) {
+      messages.push({ role: 'assistant', content: `step ${i}` });
+      messages.push({ role: 'user', content: `ok ${i}` });
+    }
+    agent.conversations.set(tabId, messages);
+
+    const origLog = console.log;
+    console.log = () => {};
+    let result;
+    try {
+      result = await agent.compactConversation(tabId);
+    } finally {
+      console.log = origLog;
+    }
+
+    assert.equal(result.compacted, true, `${AgentClass.name}: manual compaction should run below automatic thresholds`);
+    assert.ok(result.summarized > 0, `${AgentClass.name}: should summarize older turns`);
+    assert.ok(agent.conversations.get(tabId).some(m => /Context window was trimmed/i.test(String(m.content || ''))), `${AgentClass.name}: summary message missing`);
+
+    const h = agent.persistTimers?.get?.(tabId);
+    if (h) clearTimeout(h);
+  }
+});
+
+test('manual compactConversation reports emergency truncation as compacted', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 4000, supportsVision: false }) });
+    const tabId = label === 'chrome' ? 89 : 90;
+    const hugeToolResult = 'x'.repeat(14000);
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'keep working on the task' },
+      { role: 'assistant', tool_calls: [{ id: 'tool-1', function: { name: 'read_page' } }] },
+      { role: 'tool', tool_call_id: 'tool-1', content: hugeToolResult },
+    ];
+    agent.conversations.set(tabId, messages);
+
+    const events = [];
+    const result = await agent.compactConversation(tabId, (type, data) => events.push({ type, data }));
+
+    assert.equal(result.compacted, true, `${label}: emergency truncation should count as compaction`);
+    assert.equal(result.reason, 'truncated_oversized_messages', `${label}: truncation reason missing`);
+    assert.equal(result.truncated, true, `${label}: truncation flag missing`);
+    assert.equal(events[0]?.type, 'context_compacted', `${label}: compaction event missing`);
+    assert.match(messages[3].content, /\[\.\.\.truncated to fit context\]/, `${label}: oversized tool result not truncated`);
+    assert.ok(messages[3].content.length < hugeToolResult.length, `${label}: tool result was not shortened`);
+
+    if (label === 'chrome') {
+      assert.equal(agent.persistTimers.has(tabId), true, 'chrome: truncated conversation should be persisted');
+    }
+    const h = agent.persistTimers?.get?.(tabId);
+    if (h) clearTimeout(h);
+  }
 });
 
 console.log('\nauto-scratchpad on download');
