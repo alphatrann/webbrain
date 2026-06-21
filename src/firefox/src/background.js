@@ -40,7 +40,8 @@ scheduler.start();
 // Load maxSteps setting
 async function loadMaxSteps() {
   const stored = await browser.storage.local.get('maxAgentSteps');
-  if (stored.maxAgentSteps) agent.maxSteps = stored.maxAgentSteps;
+  if (stored.maxAgentSteps === 0) agent.maxSteps = Infinity;
+  else if (stored.maxAgentSteps) agent.maxSteps = stored.maxAgentSteps;
 }
 
 async function loadAutoScreenshot() {
@@ -89,7 +90,7 @@ browser.runtime.onInstalled.addListener(async () => {
 // Listen for setting changes
 browser.storage.onChanged.addListener((changes) => {
   if (changes.maxAgentSteps) {
-    agent.maxSteps = changes.maxAgentSteps.newValue;
+    agent.maxSteps = changes.maxAgentSteps.newValue === 0 ? Infinity : changes.maxAgentSteps.newValue;
   }
   if (changes.autoScreenshot) {
     agent.autoScreenshot = changes.autoScreenshot.newValue;
