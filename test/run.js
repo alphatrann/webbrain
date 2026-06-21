@@ -4254,6 +4254,36 @@ test('agent does not seed GitHub follow rows for non-follow stargazer list work'
   }
 });
 
+test('agent does not seed GitHub follow rows when follow intent is negated', async () => {
+  const page = `
+    button "Follow ChJus" [ref_13]
+    button "Follow rafi" [ref_31]
+  `;
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 806;
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Collect email addresses for every stargazer on this page, but do not follow anyone.' },
+    ]);
+    agent._currentUrl = async () => 'https://github.com/foo/bar/stargazers';
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'ChJus', label: 'ChJus', action: 'collect_email', status: 'pending' }],
+    });
+
+    assert.equal(agent._currentTaskHasProgressIntent(tabId), true, `${AgentClass.name}: collect task lost progress intent`);
+    assert.equal(agent._hasGithubStargazerFollowContext(tabId), false, `${AgentClass.name}: negated follow wording enabled follow observation`);
+    assert.equal(agent._textHasAffirmativeFollowIntent('Do not follow alice, but follow everyone else.'), true, `${AgentClass.name}: affirmative follow clause was stripped with the negated clause`);
+
+    const result = { success: true, pageContent: page };
+    const note = await agent._recordProgressObservation(tabId, 'get_accessibility_tree', result);
+    assert.equal(note, null, `${AgentClass.name}: negated follow task seeded follow rows`);
+    assert.deepEqual(agent.progressLedgers.get(tabId).map(row => [row.id, row.action, row.status]), [
+      ['ChJus', 'collect_email', 'pending'],
+    ]);
+  }
+});
+
 test('agent does not seed GitHub follow rows for unfollow stargazer tasks', async () => {
   const page = `
     button "Follow ChJus" [ref_13]
@@ -4272,6 +4302,42 @@ test('agent does not seed GitHub follow rows for unfollow stargazer tasks', asyn
     const note = await agent._recordProgressObservation(tabId, 'get_accessibility_tree', result);
     assert.equal(note, null, `${AgentClass.name}: unfollow task seeded follow rows`);
     assert.equal(agent.progressLedgers.get(tabId), undefined, `${AgentClass.name}: unfollow task created a follow ledger`);
+  }
+});
+
+test('agent scopes page-relative progress task keys to the current page', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 807;
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page.' },
+    ]);
+
+    let currentUrl = 'https://github.com/foo/bar/stargazers?page=1';
+    agent._currentUrl = async () => currentUrl;
+    const first = await agent._recordProgressObservation(tabId, 'get_accessibility_tree', {
+      success: true,
+      pageContent: 'button "Follow alice" [ref_41]',
+    });
+    assert.equal(first.addedPending, 1, `${AgentClass.name}: first page did not seed a pending row`);
+    const alice = agent.progressLedgers.get(tabId).find(row => row.id === 'alice');
+    assert.match(alice.taskKey, /github\.com\/foo\/bar\/stargazers\?page=1/, `${AgentClass.name}: first task key did not include page scope`);
+
+    currentUrl = 'https://github.com/acme/widgets/stargazers?page=1';
+    const second = await agent._recordProgressObservation(tabId, 'get_accessibility_tree', {
+      success: true,
+      pageContent: 'button "Follow bob" [ref_42]',
+    });
+    assert.equal(second.addedPending, 1, `${AgentClass.name}: second page did not seed a pending row`);
+    const bob = agent.progressLedgers.get(tabId).find(row => row.id === 'bob');
+    assert.match(bob.taskKey, /github\.com\/acme\/widgets\/stargazers\?page=1/, `${AgentClass.name}: second task key did not include page scope`);
+    assert.notEqual(bob.taskKey, alice.taskKey, `${AgentClass.name}: page-relative tasks reused the same task key`);
+
+    const currentRows = agent._currentTaskLedgerRows(tabId);
+    assert.deepEqual(currentRows.map(row => row.id), ['bob'], `${AgentClass.name}: stale page row matched the current page task`);
+    assert.deepEqual(agent._progressDoneBlock(tabId).unresolved.map(row => row.id), ['bob'], `${AgentClass.name}: done block included stale page rows`);
   }
 });
 

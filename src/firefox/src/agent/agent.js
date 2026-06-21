@@ -40,6 +40,7 @@ export class Agent {
     this.providerManager = providerManager;
     this.conversations = new Map(); // tabId -> messages[]
     this.progressLedgers = new Map(); // tabId -> structured progress rows, projected into a pinned note
+    this.progressPageScopes = new Map(); // tabId -> normalized page identity for scoped progress task keys
     this.conversationIds = new Map(); // tabId -> stable conversationId (regenerated on clearConversation)
     this.conversationModes = new Map(); // tabId -> 'ask' | 'act'
     this.abortFlags = new Map(); // tabId -> boolean
@@ -614,7 +615,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   async _currentUrl(tabId) {
     try {
       const tab = await browser.tabs.get(tabId);
-      return tab?.url || '';
+      const url = tab?.url || '';
+      this._rememberProgressPageScope(tabId, url);
+      return url;
     } catch (e) { return ''; }
   }
 
@@ -2219,6 +2222,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._cancelClarifications(tabId, 'conversation cleared');
     this.conversations.delete(tabId);
     this.progressLedgers.delete(tabId);
+    this.progressPageScopes.delete(tabId);
     this.conversationModes.delete(tabId);
     this.conversationIds.delete(tabId);
     this._lastInputTokens.delete(tabId);
@@ -2229,6 +2233,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _cleanupTab(tabId, { preserveRunGuard = false } = {}) {
     this._isPdfTabCache.delete(tabId);
+    this.progressPageScopes.delete(tabId);
     this._doneBlockCount.delete(tabId);
     this._recentSubmitClicks.delete(tabId);
     if (!preserveRunGuard) {
@@ -2493,7 +2498,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         error: `progress_update: invalid status value(s): ${invalid.slice(0, 6).join(', ')}. Use exactly one of pending, acted, processed, skipped, or failed.`,
       };
     }
-    const taskKey = opts.taskKey || this._currentProgressTaskKey(tabId);
+    const taskKey = opts.taskKey || this._currentProgressTaskKey(tabId, { pageScope: opts.pageScope });
     const scopedItems = taskKey
       ? items.map(item => (item && typeof item === 'object' && !Array.isArray(item)
         ? { ...item, taskKey }
@@ -2659,15 +2664,55 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       && this._currentTaskIsProgressContinuation(tabId);
   }
 
-  _progressTaskKeyForText(text) {
-    return String(text || '')
+  _progressTaskKeyForText(text, pageScope = '') {
+    const base = String(text || '')
       .toLowerCase()
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, 240);
+      .slice(0, 180);
+    const scope = String(pageScope || '').trim();
+    return scope ? `${base} ::page:${scope}`.slice(0, 240) : base;
   }
 
-  _currentProgressTaskKey(tabId) {
+  _progressPageScopeForUrl(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    try {
+      const parsed = new URL(raw);
+      if (!/^https?:$/i.test(parsed.protocol)) return '';
+      const path = parsed.pathname.replace(/\/+$/, '') || '/';
+      return `${parsed.protocol}//${parsed.hostname.toLowerCase()}${path}${parsed.search}`.slice(0, 180);
+    } catch {
+      return '';
+    }
+  }
+
+  _rememberProgressPageScope(tabId, url) {
+    const pageScope = this._progressPageScopeForUrl(url);
+    if (pageScope) this.progressPageScopes.set(tabId, pageScope);
+    return pageScope;
+  }
+
+  _progressPageScopeFromConversation(tabId) {
+    const messages = this.conversations.get(tabId) || [];
+    for (let i = messages.length - 1; i >= 1; i--) {
+      const c = this._messageText(messages[i]?.content);
+      const match = c.match(/^\s*\[Current page context[^\]]*\bURL:\s*(https?:\/\/[^\s\]]+)/i);
+      const pageScope = match ? this._progressPageScopeForUrl(match[1]) : '';
+      if (pageScope) return pageScope;
+    }
+    return '';
+  }
+
+  _currentProgressPageScope(tabId) {
+    const cached = this.progressPageScopes.get(tabId);
+    if (cached) return cached;
+    const pageScope = this._progressPageScopeFromConversation(tabId);
+    if (pageScope) this.progressPageScopes.set(tabId, pageScope);
+    return pageScope;
+  }
+
+  _currentProgressTaskKey(tabId, opts = {}) {
     if (this._currentTaskIsProgressContinuation(tabId)) {
       const keys = Array.from(new Set(
         this._activeProgressLedgerRows(tabId)
@@ -2676,12 +2721,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       ));
       if (keys.length === 1) return keys[0];
     }
-    return this._progressTaskKeyForText(this._latestTaskText(tabId));
+    const pageScope = String(opts.pageScope || this._currentProgressPageScope(tabId) || '').trim();
+    return this._progressTaskKeyForText(this._latestTaskText(tabId), pageScope);
   }
 
   _progressRowMatchesTaskText(row, text, currentTaskKey = '') {
     const rowTaskKey = String(row?.taskKey || '').trim();
-    if (rowTaskKey) return rowTaskKey === currentTaskKey;
+    if (rowTaskKey) {
+      if (rowTaskKey === currentTaskKey) return true;
+      return !rowTaskKey.includes('::page:')
+        && rowTaskKey === this._progressTaskKeyForText(text);
+    }
     const taskWords = new Set(String(text || '').toLowerCase().match(/[a-z0-9]+/g) || []);
     if (!taskWords.size) return false;
     const rowWords = String(`${row?.id || ''} ${row?.label || ''} ${row?.target || ''} ${row?.url || ''}`)
@@ -2700,13 +2750,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       && rowMatchesTask;
   }
 
-  _currentTaskLedgerRows(tabId) {
+  _currentTaskLedgerRows(tabId, opts = {}) {
     const rows = this.progressLedgers.get(tabId) || [];
     if (!rows.length) return [];
     if (this._currentTaskIsProgressContinuation(tabId)) return rows;
     if (!this._currentTaskHasProgressIntent(tabId)) return [];
     const text = this._latestTaskText(tabId);
-    const taskKey = this._currentProgressTaskKey(tabId);
+    const taskKey = this._currentProgressTaskKey(tabId, opts);
     return rows.filter(row => this._progressRowMatchesTaskText(row, text, taskKey));
   }
 
@@ -2748,11 +2798,23 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return itemAction && repeatedTarget;
   }
 
+  _textHasAffirmativeFollowIntent(text) {
+    let normalized = String(text || '').toLowerCase().replace(/[’]/g, "'");
+    if (!/\bfollow(?:ing)?\b/.test(normalized)) return false;
+    normalized = normalized
+      .replace(/\b(?:do\s+not|don't|dont|never)\s+(?:try\s+to\s+|start\s+|keep\s+)?follow(?:ing)?\b(?:\s+(?:anyone|anybody|people|users?|stargazers?|them|him|her|it))?/g, ' ')
+      .replace(/\b(?:avoid|skip)\s+follow(?:ing)?\b(?:\s+(?:anyone|anybody|people|users?|stargazers?|them|him|her|it))?/g, ' ')
+      .replace(/\bwithout\s+follow(?:ing)?\b(?:\s+(?:anyone|anybody|people|users?|stargazers?|them|him|her|it))?/g, ' ')
+      .replace(/\bnot\s+(?:to\s+)?follow(?:ing)?\b(?:\s+(?:anyone|anybody|people|users?|stargazers?|them|him|her|it))?/g, ' ')
+      .replace(/\bno\s+follow(?:ing)?\b/g, ' ');
+    return /\bfollow(?:ing)?\b/.test(normalized);
+  }
+
   _hasGithubStargazerFollowContext(tabId) {
     const rows = this._activeProgressLedgerRows(tabId);
     const hasFollowRows = rows.some(row => String(row?.action || '').toLowerCase() === 'follow');
     const text = this._latestTaskText(tabId).toLowerCase();
-    const hasFollowIntent = /\bfollow\b/.test(text);
+    const hasFollowIntent = this._textHasAffirmativeFollowIntent(text);
     if (hasFollowIntent && this._hasProgressLedgerContext(tabId)) return true;
     return hasFollowRows
       && this._currentTaskIsProgressContinuation(tabId)
@@ -2801,14 +2863,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!pageContent || (!pageContent.includes('button "Follow ') && !pageContent.includes('button "Unfollow '))) return null;
     const url = result.url || result.pageUrl || await this._currentUrl(tabId);
     if (!this._isGithubStargazersUrl(url)) return null;
+    const pageScope = this._rememberProgressPageScope(tabId, url);
 
     const observed = buildGithubStargazerProgressItems(
-      this._currentTaskLedgerRows(tabId),
+      this._currentTaskLedgerRows(tabId, { pageScope }),
       pageContent,
       { excludedUsernames: this._excludedGithubUsernames(tabId) }
     );
     if (!observed.items.length) return null;
-    const update = this._progressUpdate(tabId, { items: observed.items }, { source: 'observe' });
+    const update = this._progressUpdate(tabId, { items: observed.items }, { source: 'observe', pageScope });
     if (!update?.success) return null;
     const note = {
       ...observed.stats,
