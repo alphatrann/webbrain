@@ -2823,6 +2823,42 @@ test('agent only auto-records progress clicks inside repeated-item work', () => 
   }
 });
 
+test('agent reuses namespaced follow rows for auto-recorded clicks', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 787;
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page.' },
+    ]);
+    agent._progressUpdate(tabId, {
+      items: [
+        { id: 'ChJus', label: 'ChJus', action: 'collect_email', status: 'processed' },
+        {
+          id: 'follow:chjus',
+          label: 'ChJus',
+          action: 'follow',
+          status: 'pending',
+          fields: { followState: 'not_followed', refId: 'ref_13' },
+        },
+      ],
+    });
+
+    const recorded = agent._autoRecordProgressAction(
+      tabId,
+      'click',
+      { text: 'Follow ChJus' },
+      { success: true, text: 'Follow ChJus', href: '/ChJus' },
+    );
+    const rows = new Map(agent.progressLedgers.get(tabId).map(row => [row.id, row]));
+    assert.equal(recorded?.item.id, 'follow:chjus', `${AgentClass.name}: click did not reuse the follow row id`);
+    assert.equal(rows.get('ChJus')?.status, 'processed', `${AgentClass.name}: unrelated row was overwritten`);
+    assert.equal(rows.get('ChJus')?.action, 'collect_email', `${AgentClass.name}: unrelated row action changed`);
+    assert.equal(rows.get('follow:chjus')?.status, 'acted', `${AgentClass.name}: follow row was not marked acted`);
+    assert.equal(rows.get('follow:chjus')?.action, 'follow', `${AgentClass.name}: follow row action changed`);
+  }
+});
+
 test('progress ledger merges rows and does not downgrade terminal rows', () => {
   let state = upsertLedgerItems([], [
     { id: 'myxvisual', label: 'follow myxvisual', action: 'follow', status: 'acted' },

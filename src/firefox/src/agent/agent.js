@@ -2537,6 +2537,36 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return unresolvedLedgerRows(this.progressLedgers.get(tabId) || []);
   }
 
+  _progressLedgerLookupKey(value) {
+    return String(value || '')
+      .trim()
+      .replace(/^follow:/i, '')
+      .replace(/^\s*(?:follow|unfollow)\s+/i, '')
+      .replace(/^\s*@/, '')
+      .toLowerCase();
+  }
+
+  _reconcileAutoProgressItem(tabId, item) {
+    if (!item || String(item.action || '').toLowerCase() !== 'follow') return item;
+    const itemKeys = new Set([item.id, item.label, item.target]
+      .map(value => this._progressLedgerLookupKey(value))
+      .filter(Boolean));
+    if (!itemKeys.size) return item;
+    const match = this._activeProgressLedgerRows(tabId).find(row => {
+      if (String(row?.action || '').toLowerCase() !== 'follow') return false;
+      return [row.id, row.label, row.target]
+        .map(value => this._progressLedgerLookupKey(value))
+        .some(key => key && itemKeys.has(key));
+    });
+    if (!match?.id || match.id === item.id) return item;
+    return {
+      ...item,
+      id: match.id,
+      label: match.label || item.label,
+      url: item.url || match.url,
+    };
+  }
+
   _hasProgressLedgerContext(tabId) {
     if (this._currentTaskHasProgressIntent(tabId)) return true;
     return this._activeProgressLedgerRows(tabId).length > 0
@@ -2637,10 +2667,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!this._hasProgressLedgerContext(tabId)) return null;
     const item = detectProgressAction(name, args, result);
     if (!item) return null;
-    const update = this._progressUpdate(tabId, { items: [item] }, { source: 'auto' });
+    const reconciled = this._reconcileAutoProgressItem(tabId, item);
+    const update = this._progressUpdate(tabId, { items: [reconciled] }, { source: 'auto' });
     if (!update?.success) return null;
     return {
-      item: update.updated?.[0] || item,
+      item: update.updated?.[0] || reconciled,
       counts: update.counts || progressCounts(this.progressLedgers.get(tabId) || []),
       unresolved: unresolvedLedgerRows(this.progressLedgers.get(tabId) || [], { limit: 8 }),
     };
