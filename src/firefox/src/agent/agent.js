@@ -2500,13 +2500,29 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       || c.startsWith('[Agent progress ledger');
   }
 
+  _stripInjectedTaskContext(text) {
+    let out = String(text || '');
+    let prev = null;
+    while (out && out !== prev) {
+      prev = out;
+      out = out
+        .replace(/^\[Current page context[^\]]*]\s*/i, '')
+        .replace(/^\[Recording status:[^\]]*]\s*/i, '')
+        .replace(/^\[USER OVERRIDE[^\]]*]\s*/i, '')
+        .replace(/^\[UNTRUSTED SCREENSHOT[^\]]*]\s*/i, '')
+        .replace(/^\[Initial viewport description[^\]]*]\s*(?:<untrusted_page_content\b[^>]*>[\s\S]*?<\/untrusted_page_content\b[^>]*>\s*)?/i, '')
+        .replace(/^\[Site guidance for[^\]]*]\n[\s\S]*?\n{2,}/i, '');
+    }
+    return out.trim();
+  }
+
   _latestTaskText(tabId) {
     const messages = this.conversations.get(tabId) || [];
     for (let i = messages.length - 1; i >= 1; i--) {
       const m = messages[i];
       if (m.role !== 'user') continue;
       if (this._isAgentInjectedUserContent(m.content)) continue;
-      return this._messageText(m.content);
+      return this._stripInjectedTaskContext(this._messageText(m.content));
     }
     return '';
   }
