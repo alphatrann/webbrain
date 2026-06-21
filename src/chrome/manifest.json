@@ -13,6 +13,7 @@
     "webNavigation",
     "debugger",
     "downloads",
+    "alarms",
     "unlimitedStorage",
     "offscreen",
     "privateNetworkAccess",
