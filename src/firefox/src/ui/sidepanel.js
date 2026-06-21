@@ -273,6 +273,7 @@ if (globalThis.browser?.storage?.onChanged) {
 
 const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('user-input');
+const inputHighlightEl = document.getElementById('input-highlight');
 const sendBtn = document.getElementById('btn-send');
 const clearBtn = document.getElementById('btn-clear');
 const settingsBtn = document.getElementById('btn-settings');
@@ -299,6 +300,7 @@ const SLASH_COMMANDS = [
   { value: '/show-scratchpad', descriptionKey: 'sp.slash.show_scratchpad' },
   { value: '/allow-api', descriptionKey: 'sp.slash.allow_api' },
   { value: '/compact', descriptionKey: 'sp.slash.compact' },
+  { value: '/verbose', descriptionKey: 'sp.slash.verbose' },
   { value: '/reset', descriptionKey: 'sp.slash.reset' },
   { value: '/screenshot', descriptionKey: 'sp.slash.screenshot' },
   { value: '/export', descriptionKey: 'sp.slash.export' },
@@ -1113,6 +1115,45 @@ function getSlashCommandQuery() {
   return beforeCursor.toLowerCase();
 }
 
+function getRecognizedSlashCommandPrefix(value) {
+  const leadingWhitespace = value.match(/^\s*/)?.[0] || '';
+  const text = value.slice(leadingWhitespace.length);
+  const lowerText = text.toLowerCase();
+  const command = SLASH_COMMANDS.find((candidate) => {
+    if (!lowerText.startsWith(candidate.value)) return false;
+    const next = text.charAt(candidate.value.length);
+    return !next || /\s/.test(next);
+  });
+  if (!command) return null;
+  return {
+    start: leadingWhitespace.length,
+    end: leadingWhitespace.length + command.value.length,
+  };
+}
+
+function syncSlashCommandHighlightScroll() {
+  if (!inputEl || !inputHighlightEl) return;
+  inputHighlightEl.scrollTop = inputEl.scrollTop;
+  inputHighlightEl.scrollLeft = inputEl.scrollLeft;
+}
+
+function updateSlashCommandHighlight() {
+  if (!inputEl || !inputHighlightEl) return;
+  const value = inputEl.value;
+  const commandRange = getRecognizedSlashCommandPrefix(value);
+  if (!commandRange) {
+    inputHighlightEl.textContent = value;
+    syncSlashCommandHighlightScroll();
+    return;
+  }
+
+  const before = escapeHtml(value.slice(0, commandRange.start));
+  const command = escapeHtml(value.slice(commandRange.start, commandRange.end));
+  const after = escapeHtml(value.slice(commandRange.end));
+  inputHighlightEl.innerHTML = `${before}<span class="input-highlight-command">${command}</span>${after}`;
+  syncSlashCommandHighlightScroll();
+}
+
 function scrollSlashCommandOptionIntoView(option) {
   if (!slashCommandMenuEl || !option) return;
 
@@ -1309,8 +1350,22 @@ async function parseSlashCommands(text) {
     return text.slice(mApi[0].length).trim();
   }
 
-  // /compact — toggle verbose/compact mode
-  if (/^\/compact\b\s*/i.test(text)) {
+  // /compact — force context compaction for this conversation
+  const mCompact = text.match(/^\/compact\b\s*/i);
+  if (mCompact) {
+    const res = await sendToBackground('compact_conversation', { tabId: currentTabId });
+    if (res?.ok && res.compacted) {
+      addContextCompactedNote({ ...res, manual: true });
+    } else if (res?.ok) {
+      addMessage('system', t('sp.compact.nothing_to_compact'));
+    } else {
+      addMessage('system', t('sp.compact.failed', { error: res?.error || 'unknown error' }));
+    }
+    return text.slice(mCompact[0].length).trim();
+  }
+
+  // /verbose — toggle verbose/compact tool display
+  if (/^\/verbose\b\s*/i.test(text)) {
     verboseMode = !verboseMode;
     if (verboseBtn) verboseBtn.classList.toggle('active', verboseMode);
     browser.storage.local.set({ verboseMode }).catch(() => {});
@@ -1999,7 +2054,7 @@ function addMessage(role, content) {
 function addContextCompactedNote(data) {
   const note = document.createElement('div');
   note.className = 'context-compacted-note';
-  note.textContent = t('sp.context_compacted');
+  note.textContent = t(data?.manual ? 'sp.context_compacted_manual' : 'sp.context_compacted');
   if (data && data.summarized != null && data.remaining != null) {
     note.title = t('sp.context_compacted_detail', {
       summarized: data.summarized,
@@ -2264,6 +2319,7 @@ function truncate(str, len) {
 function autoResizeInput() {
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+  updateSlashCommandHighlight();
 }
 
 // --- Communication ---
@@ -2370,6 +2426,7 @@ inputEl.addEventListener('keydown', (e) => {
 });
 
 inputEl.addEventListener('input', handleInput);
+inputEl.addEventListener('scroll', syncSlashCommandHighlightScroll);
 inputEl.addEventListener('focus', updateSlashCommandAutocomplete);
 inputEl.addEventListener('blur', () => setTimeout(hideSlashCommandAutocomplete, 120));
 document.addEventListener('wb-locale-changed', () => {

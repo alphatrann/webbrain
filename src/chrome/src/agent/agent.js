@@ -3247,7 +3247,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * When a compaction actually happens, emits onUpdate('context_compacted', …)
    * so the side panel can show the user that context was auto-compacted.
    */
-  async _manageContext(tabId, messages, onUpdate = null, costState = null) {
+  async _manageContext(tabId, messages, onUpdate = null, costState = null, { force = false } = {}) {
     const totalChars = this._estimateContextChars(messages);
 
     const tokenBudget = this._contextTokenBudget();
@@ -3281,12 +3281,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // thrash). A genuine token-budget overflow (tooManyTokens) is never
     // suppressed — that path still protects against provider hard-errors.
     const cooldown = this._compactCooldown.get(tabId) || 0;
-    if (cooldown > 0 && !tooManyTokens) {
+    if (!force && cooldown > 0 && !tooManyTokens) {
       this._compactCooldown.set(tabId, cooldown - 1);
-      return;
+      return { compacted: false, reason: 'cooldown', remaining: messages.length, tokens: usedTokens || null, budget: tokenBudget };
     }
 
-    if (!tooManyMessages && !tooManyChars && !tooManyTokens) return; // context is fine
+    if (!force && !tooManyMessages && !tooManyChars && !tooManyTokens) {
+      return { compacted: false, reason: 'not_needed', remaining: messages.length, tokens: usedTokens || null, budget: tokenBudget };
+    }
 
     // Strategy: keep system prompt + ORIGINAL USER TASK (pinned) + summarize
     // old messages + keep recent messages.
@@ -3343,7 +3345,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // oversized tool results / messages in place instead — keeps all turns
       // but caps the bloat — then re-measure on the next call.
       if (tooManyTokens) this._truncateOversizedMessages(tabId, messages);
-      return;
+      return { compacted: false, reason: 'not_enough_history', remaining: messages.length, tokens: usedTokens || null, budget: tokenBudget };
     }
 
     // Build tool_call_id → name map so each tool result in the summary can be
@@ -3438,6 +3440,32 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         });
       } catch { /* ignore */ }
     }
+
+    return {
+      compacted: true,
+      summarized: oldMessages.length,
+      remaining: messages.length,
+      tokens: usedTokens || null,
+      budget: tokenBudget,
+    };
+  }
+
+  async compactConversation(tabId, onUpdate = null) {
+    await this._hydrate(tabId);
+    const messages = this.conversations.get(tabId);
+    if (!messages || messages.length <= 1) {
+      return { compacted: false, reason: 'empty', remaining: messages?.length || 0 };
+    }
+
+    const result = await this._manageContext(
+      tabId,
+      messages,
+      onUpdate,
+      this.currentCostState.get(tabId) || null,
+      { force: true }
+    );
+    if (result?.compacted) this._persist(tabId);
+    return result || { compacted: false, reason: 'not_needed', remaining: messages.length };
   }
 
   _truncate(str, len) {
