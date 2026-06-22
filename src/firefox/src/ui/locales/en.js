@@ -160,6 +160,7 @@ export default {
   'sp.compact.verbose_on': 'Verbose mode <strong>on</strong> — full tool call JSON visible.',
   'sp.compact.verbose_off': 'Verbose mode <strong>off</strong> — compact tool display.',
   'sp.screenshot.error': 'Screenshot failed: {msg}',
+  'sp.record.error': 'Recording error: {error}',
   'sp.export.done': 'Conversation exported.',
   'sp.profile.on': 'Profile auto-fill <strong>enabled</strong>.',
   'sp.profile.off': 'Profile auto-fill <strong>disabled</strong>.',
