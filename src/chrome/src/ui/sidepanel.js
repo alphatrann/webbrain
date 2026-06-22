@@ -1584,6 +1584,8 @@ async function parseSlashCommands(text) {
       });
       if (!res?.ok) {
         addMessage('system', t('sp.record.error', { error: res?.error || 'unknown' }));
+      } else if (res.state && res.state.hasMic === false && res.state.micError) {
+        addMessage('system', t('sp.record.error', { error: res.state.micError }));
       }
     } catch (e) {
       addMessage('system', t('sp.record.error', { error: e.message }));
