@@ -2354,6 +2354,40 @@ test('ScheduledJobManager allows same intent outside the duplicate window', asyn
   }
 });
 
+test('ScheduledJobManager dedupes new schedules against queued retry times', async () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  const lateAlarmAt = now + 5 * 60 * 1000;
+  for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    const h = makeSchedulerHarness(SchedulerMod, { now, isRunning: () => true });
+    const args = { after_seconds: 30, reason: 'wait for account page', resume_instruction: 'continue the next batch' };
+    const first = await h.manager.createResumeJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      mode: 'act',
+      args,
+    });
+
+    h.setNow(lateAlarmAt);
+    await h.manager.handleAlarm(h.alarmName(first.jobId));
+    const queued = h.jobs()[0];
+    assert.equal(queued.status, 'queued', `${label}: delayed busy alarm should requeue the job`);
+    assert.equal(Date.parse(queued.nextRunAt), lateAlarmAt + SchedulerMod.QUEUE_RETRY_MS, `${label}: retry should be based on the delayed alarm time`);
+
+    const second = await h.manager.createResumeJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      mode: 'act',
+      args,
+    });
+
+    assert.equal(second.success, true, `${label}: duplicate retry-time resume should still report success`);
+    assert.equal(second.deduped, true, `${label}: queued retry-time resume should be deduped`);
+    assert.equal(second.jobId, first.jobId, `${label}: duplicate should reuse the queued job id`);
+    assert.equal(h.jobs().length, 1, `${label}: duplicate should not create a second stored job`);
+    assert.equal(h.alarms.get(h.alarmName(first.jobId)).when, lateAlarmAt + SchedulerMod.QUEUE_RETRY_MS, `${label}: queued retry alarm should remain scheduled`);
+  }
+});
+
 test('ScheduledJobManager requeues when the target tab is already running', async () => {
   const now = Date.UTC(2026, 0, 1, 12, 0, 0);
   for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {

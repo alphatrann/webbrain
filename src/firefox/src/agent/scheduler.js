@@ -92,8 +92,14 @@ function canonicalUrl(value) {
 }
 
 function scheduledTimeMs(job) {
-  const ms = Date.parse(job?.scheduledAt || job?.schedule?.run_at || job?.nextRunAt || '');
-  return Number.isFinite(ms) ? ms : null;
+  const candidates = job?.status === 'queued'
+    ? [job?.nextRunAt, job?.scheduledAt, job?.schedule?.run_at]
+    : [job?.scheduledAt, job?.schedule?.run_at, job?.nextRunAt];
+  for (const candidate of candidates) {
+    const ms = Date.parse(candidate || '');
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
 }
 
 function scheduledJobCreatedMs(job) {
