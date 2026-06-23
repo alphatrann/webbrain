@@ -119,6 +119,8 @@ if (languageSelect) {
 
 let providersData = {};
 let activeProviderId = '';
+let providerActivationRequestId = 0;
+let requestedActiveProviderId = '';
 let authToken = '';
 let authEmail = '';
 let authDefaultModel = '';
@@ -1359,7 +1361,16 @@ function syncInputsIntoProvidersData() {
 
 async function activateProvider(id) {
   syncInputsIntoProvidersData();
+  requestedActiveProviderId = id;
+  const requestId = ++providerActivationRequestId;
   await sendToBackground('set_active_provider', { providerId: id });
+  if (requestId !== providerActivationRequestId || requestedActiveProviderId !== id) {
+    const latestProviderId = requestedActiveProviderId;
+    if (latestProviderId) {
+      sendToBackground('set_active_provider', { providerId: latestProviderId }).catch(() => {});
+    }
+    return;
+  }
   activeProviderId = id;
   renderProviders();
 }

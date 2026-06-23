@@ -2220,6 +2220,26 @@ test('sidepanel drops stale provider selection and connection checks', () => {
   }
 });
 
+test('settings page drops stale provider activation completions', () => {
+  for (const [label, settingsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js'],
+    ['firefox', 'src/firefox/src/ui/settings.js'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    assert.match(settings, /let providerActivationRequestId = 0;/, `${label}: settings provider activation should be sequenced`);
+    assert.match(settings, /let requestedActiveProviderId = '';/, `${label}: settings should track the latest requested provider`);
+
+    const activateStart = settings.indexOf('async function activateProvider(id) {');
+    assert.notEqual(activateStart, -1, `${label}: activateProvider missing`);
+    const activateBody = settings.slice(activateStart, settings.indexOf('\n}\n\n', activateStart) + 2);
+    assert.match(
+      activateBody,
+      /requestedActiveProviderId = id;[\s\S]*?const requestId = \+\+providerActivationRequestId;[\s\S]*?sendToBackground\('set_active_provider', \{ providerId: id \}\);[\s\S]*?if \(requestId !== providerActivationRequestId \|\| requestedActiveProviderId !== id\) \{[\s\S]*?const latestProviderId = requestedActiveProviderId;[\s\S]*?sendToBackground\('set_active_provider', \{ providerId: latestProviderId \}\)\.catch\(\(\) => \{\}\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?activeProviderId = id;[\s\S]*?renderProviders\(\);/,
+      `${label}: stale settings provider activations should repair the latest provider and skip stale rendering`,
+    );
+  }
+});
+
 test('sidepanel scopes allow-api override to the tab conversation', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
