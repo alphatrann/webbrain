@@ -17,6 +17,7 @@ export function createContextMenuPromptHandler({
   const trackedContextMenuPromptIds = new Set();
   const deferredContextMenuPrompts = [];
   const queuedContextMenuPrompts = [];
+  let runningContextMenuPromptId = null;
 
   function normalizeContextMenuPromptPayload(raw) {
     const payload = raw?.prompt || raw;
@@ -43,7 +44,7 @@ export function createContextMenuPromptHandler({
 
     // Queue prompts that belong to a different tab or arrive while busy.
     // drainQueuedContextMenuPrompts picks them up on tab switch or run completion.
-    if (!contextMenuPromptMatchesCurrentTab(payload) || getIsProcessing()) {
+    if (!contextMenuPromptMatchesCurrentTab(payload) || runningContextMenuPromptId || getIsProcessing()) {
       queuedContextMenuPrompts.push(payload);
       return;
     }
@@ -61,13 +62,13 @@ export function createContextMenuPromptHandler({
   function flushDeferredContextMenuPrompts() {
     if (getCurrentTabId() == null || deferredContextMenuPrompts.length === 0) return;
     const deferred = deferredContextMenuPrompts.splice(0);
-    for (const payload of deferred) routeTrackedContextMenuPrompt(payload);
+    queuedContextMenuPrompts.push(...deferred);
   }
 
   function drainQueuedContextMenuPrompts() {
-    if (getCurrentTabId() == null || getIsProcessing()) return;
+    if (getCurrentTabId() == null || runningContextMenuPromptId || getIsProcessing()) return;
     flushDeferredContextMenuPrompts();
-    if (getIsProcessing() || queuedContextMenuPrompts.length === 0) return;
+    if (runningContextMenuPromptId || getIsProcessing() || queuedContextMenuPrompts.length === 0) return;
 
     // Find first queued prompt that belongs to the currently active tab and run it.
     // Non-matching entries stay in the queue for when the user returns to that tab.
@@ -80,10 +81,11 @@ export function createContextMenuPromptHandler({
 
   async function runContextMenuPrompt(payload) {
     if (!payload?.text) return;
-    if (getIsProcessing()) {
+    if (runningContextMenuPromptId || getIsProcessing()) {
       queuedContextMenuPrompts.push(payload);
       return;
     }
+    runningContextMenuPromptId = payload.id;
 
     const currentTabId = getCurrentTabId();
     const clearPayload = { tabId: payload.tabId ?? currentTabId, promptId: payload.id };
@@ -106,8 +108,10 @@ export function createContextMenuPromptHandler({
     try {
       accepted = await sendMessage({ contextMenuClear: clearPayload });
     } catch { /* storage recovery can retry the prompt later */ }
+    runningContextMenuPromptId = null;
     trackedContextMenuPromptIds.delete(payload.id);
     if (accepted) acceptedContextMenuPromptIds.add(payload.id);
+    drainQueuedContextMenuPrompts();
   }
 
   async function consumePendingContextMenuPrompt() {

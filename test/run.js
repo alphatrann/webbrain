@@ -3068,6 +3068,38 @@ test('context-menu prompt recovery does not duplicate an in-flight send', async 
   }
 });
 
+test('context-menu deferred prompts dispatch one at a time', async () => {
+  for (const [label, createHandler] of [
+    ['chrome', createContextMenuPromptHandlerCh],
+    ['firefox', createContextMenuPromptHandlerFx],
+  ]) {
+    const first = { id: `${label}-deferred-1`, tabId: 11, text: 'First selected text prompt' };
+    const second = { id: `${label}-deferred-2`, tabId: 11, text: 'Second selected text prompt' };
+    const gate = deferred();
+    const h = createContextMenuPromptHarness(createHandler, first, async () => {
+      await gate.promise;
+      return true;
+    });
+
+    h.setTabId(null);
+    h.handler.acceptContextMenuPrompt(first);
+    h.handler.acceptContextMenuPrompt(second);
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 0, `${label}: prompts should defer until the panel has an active tab`);
+
+    h.setTabId(11);
+    h.handler.drainQueuedContextMenuPrompts();
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 1, `${label}: only the first deferred prompt should start while sendMessage is still settling`);
+    assert.equal(h.sends[0].text, first.text, `${label}: first deferred prompt should be submitted first`);
+
+    gate.resolve();
+    await waitMicrotasks(6);
+    assert.equal(h.sends.length, 2, `${label}: queued deferred prompt should start after the first send settles`);
+    assert.equal(h.sends[1].text, second.text, `${label}: second deferred prompt should be submitted after the first settles`);
+  }
+});
+
 test('context-menu cleanup blocks stale consume until storage removal finishes', async () => {
   for (const [label, createStorage] of [
     ['chrome', createContextMenuStorageCh],
