@@ -1932,6 +1932,32 @@ test('chrome /record reports mic denial as a warning, not recording failure', ()
   assert.match(locale, /Recording started with tab audio and video only/, 'chrome: mic warning should say recording started');
 });
 
+test('chrome sidepanel Escape abort honors slash autocomplete dismissal', () => {
+  const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
+  assert.match(panel, /if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\);\s*hideSlashCommandAutocomplete\(\);\s*return true;\s*\}/, 'chrome: slash autocomplete Escape should consume the key event');
+
+  const globalHandlerStart = panel.indexOf('function handleGlobalKeydown(e)');
+  const defaultPreventedGuard = panel.indexOf('if (e.defaultPrevented) return;', globalHandlerStart);
+  const abortCall = panel.indexOf('abortRun();', globalHandlerStart);
+  assert.notEqual(globalHandlerStart, -1, 'chrome: global keydown handler missing');
+  assert.notEqual(defaultPreventedGuard, -1, 'chrome: global keydown handler should honor consumed key events');
+  assert.notEqual(abortCall, -1, 'chrome: Escape abort shortcut missing');
+  assert.equal(defaultPreventedGuard < abortCall, true, 'chrome: consumed slash-menu Escape should not reach abortRun');
+});
+
+test('chrome sidepanel shortcuts are documented in help and README', () => {
+  const locale = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/locales/en.js'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+
+  for (const shortcut of ['Ctrl/Cmd+/', 'Ctrl/Cmd+Shift+A', 'Ctrl/Cmd+Shift+X', 'Escape']) {
+    assert.match(locale, new RegExp(shortcut.replace(/[+/]/g, '\\$&')), `chrome: /help should mention ${shortcut}`);
+    assert.match(readme, new RegExp(shortcut.replace('Ctrl/Cmd', 'Ctrl.*Cmd').replace(/[+/]/g, '\\$&')), `README should mention ${shortcut}`);
+  }
+  assert.match(locale, /Keyboard Shortcuts/, 'chrome: /help should include a keyboard shortcut section');
+  assert.match(readme, /## Keyboard Shortcuts/, 'README should include a keyboard shortcut section');
+  assert.match(readme, /Stop the active run, unless it is only dismissing slash-command autocomplete/, 'README should document Escape vs slash autocomplete behavior');
+});
+
 test('sidepanel reports missing background responses without res.content crash', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
