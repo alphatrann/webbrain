@@ -1982,7 +1982,7 @@ test('sidepanel reports missing background responses without res.content crash',
   }
 });
 
-test('sidepanel rebinds copy buttons after restoring serialized tab chat', () => {
+test('sidepanel rebinds interactive controls after restoring serialized tab chat', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
@@ -1991,17 +1991,22 @@ test('sidepanel rebinds copy buttons after restoring serialized tab chat', () =>
     assert.match(panel, /function rebindCopyButtons\(\)/, `${label}: copy-button rebinding helper missing`);
     assert.match(panel, /document\.querySelectorAll\('\.msg-copy-btn'\)[\s\S]*?addEventListener\('click'/, `${label}: assistant message copy buttons should be rebound`);
     assert.match(panel, /document\.querySelectorAll\('\.code-copy-btn'\)[\s\S]*?addEventListener\('click'/, `${label}: code copy buttons should be rebound`);
+    assert.match(panel, /function rebindContinueButtons\(\) \{[\s\S]*?document\.querySelectorAll\('\.continue-btn'\)[\s\S]*?addEventListener\('click', continueAgent\)/, `${label}: restored Continue buttons should be rebound`);
+    assert.match(panel, /function rebindClarifyCards\(\) \{[\s\S]*?document\.querySelectorAll\('\.clarify-card'\)[\s\S]*?submitClarify\(card, tabId, clarifyId/, `${label}: restored clarify cards should be rebound`);
+    assert.match(panel, /function rebindRestoredMessageControls\(\) \{[\s\S]*?rebindCopyButtons\(\);[\s\S]*?rebindContinueButtons\(\);[\s\S]*?rebindClarifyCards\(\);[\s\S]*?\}/, `${label}: restored tab chat should rebind all durable message controls`);
+    assert.match(panel, /card\.dataset\.tabId = String\(tabId\);/, `${label}: clarify cards should persist their target tab for restore rebinding`);
+    assert.match(panel, /b\.dataset\.value = value;[\s\S]*?submitClarify\(card, tabId, clarifyId, value, 'option'\)/, `${label}: restored permission choices need stable values, not localized labels`);
 
     const match = panel.match(/(?:async\s+)?function switchToTab\(newTabId\) \{[\s\S]*?consumePendingContextMenuPrompt\(\)/);
     assert.ok(match, `${label}: switchToTab body missing`);
     const body = match[0];
     const restoreIdx = body.indexOf('messagesEl.innerHTML =');
     const clearBoundIdx = body.indexOf("messagesEl.querySelectorAll('[data-bound]')");
-    const rebindIdx = body.indexOf('rebindCopyButtons();');
+    const rebindIdx = body.indexOf('rebindRestoredMessageControls();');
     assert.notEqual(restoreIdx, -1, `${label}: restored tab chat should write serialized HTML`);
-    assert.notEqual(clearBoundIdx, -1, `${label}: restored copy buttons should clear serialized bound markers`);
-    assert.notEqual(rebindIdx, -1, `${label}: restored tab chat should rebind copy buttons`);
-    assert.equal(restoreIdx < clearBoundIdx && clearBoundIdx < rebindIdx, true, `${label}: copy handlers must be rebound immediately after restoring tab chat HTML`);
+    assert.notEqual(clearBoundIdx, -1, `${label}: restored controls should clear serialized bound markers`);
+    assert.notEqual(rebindIdx, -1, `${label}: restored tab chat should rebind interactive controls`);
+    assert.equal(restoreIdx < clearBoundIdx && clearBoundIdx < rebindIdx, true, `${label}: control handlers must be rebound immediately after restoring tab chat HTML`);
   }
 });
 

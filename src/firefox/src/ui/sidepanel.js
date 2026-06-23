@@ -1107,7 +1107,7 @@ function switchToTab(newTabId) {
   if (tabChats.has(newTabId)) {
     messagesEl.innerHTML = tabChats.get(newTabId);
     messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
-    rebindCopyButtons();
+    rebindRestoredMessageControls();
   } else {
     messagesEl.innerHTML = '';
     addMessage('system', t('sp.help_message'));
@@ -1239,6 +1239,60 @@ function rebindCopyButtons() {
       }
     });
   });
+}
+
+function rebindContinueButtons() {
+  document.querySelectorAll('.continue-btn').forEach(btn => {
+    if (btn.dataset.bound) return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', continueAgent);
+  });
+}
+
+function rebindClarifyCards() {
+  document.querySelectorAll('.clarify-card').forEach(card => {
+    if (card.classList.contains('clarify-answered')) return;
+    const clarifyId = String(card.dataset.clarifyId || '');
+    if (!clarifyId) return;
+    const rawTabId = card.dataset.scheduledTabId ?? card.dataset.tabId;
+    const tabId = rawTabId != null && rawTabId !== '' ? Number(rawTabId) : currentTabId;
+    if (tabId == null || Number.isNaN(tabId)) return;
+
+    card.querySelectorAll('.clarify-option').forEach(btn => {
+      if (btn.dataset.bound) return;
+      btn.dataset.bound = 'true';
+      btn.addEventListener('click', () => {
+        submitClarify(card, tabId, clarifyId, btn.dataset.value || btn.textContent, 'option');
+      });
+    });
+
+    card.querySelectorAll('.clarify-input').forEach(input => {
+      if (input.dataset.bound) return;
+      input.dataset.bound = 'true';
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && input.value.trim()) {
+          e.preventDefault();
+          submitClarify(card, tabId, clarifyId, input.value.trim(), 'text');
+        }
+      });
+    });
+
+    card.querySelectorAll('.clarify-submit').forEach(btn => {
+      if (btn.dataset.bound) return;
+      btn.dataset.bound = 'true';
+      btn.addEventListener('click', () => {
+        const input = card.querySelector('.clarify-input');
+        const value = input?.value?.trim();
+        if (value) submitClarify(card, tabId, clarifyId, value, 'text');
+      });
+    });
+  });
+}
+
+function rebindRestoredMessageControls() {
+  rebindCopyButtons();
+  rebindContinueButtons();
+  rebindClarifyCards();
 }
 
 async function loadProviders() {
@@ -1938,6 +1992,7 @@ function renderClarifyCard(data) {
   const card = document.createElement('div');
   card.className = 'clarify-card';
   card.dataset.clarifyId = clarifyId;
+  card.dataset.tabId = String(tabId);
   if (scheduledJobId) {
     card.dataset.scheduledJobId = scheduledJobId;
   }
@@ -1977,6 +2032,7 @@ function renderClarifyCard(data) {
       b.type = 'button';
       b.className = 'clarify-option';
       b.textContent = String(label).slice(0, 200);
+      b.dataset.value = value;
       b.addEventListener('click', () => submitClarify(card, tabId, clarifyId, value, 'option'));
       optionsEl.appendChild(b);
     }
