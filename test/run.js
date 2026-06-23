@@ -2994,6 +2994,30 @@ test('settings async test controls surface rejected background results', () => {
   }
 });
 
+test('settings page awaits immediate preference writes before moving on', () => {
+  for (const [label, settingsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js'],
+    ['firefox', 'src/firefox/src/ui/settings.js'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    assert.match(
+      settings,
+      /window\.addEventListener\('message', async \(event\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ authToken, authEmail, authDefaultModel \}\)\.catch\(\(\) => \{\}\);[\s\S]*?renderAuthSection\(\);/,
+      `${label}: auth token hydration should persist before the settings UI proceeds`,
+    );
+    assert.match(
+      settings,
+      /verboseToggle\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode: verboseToggle\.checked \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: verbose toggle should await its storage write`,
+    );
+    assert.match(
+      settings,
+      /requestTimeoutRange\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ requestTimeoutMs: sec \* 1000 \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: request timeout changes should await persistence`,
+    );
+  }
+});
+
 test('sidepanel scopes allow-api override to the tab conversation', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
@@ -3073,6 +3097,25 @@ test('sidepanel scopes async tab commands to the original tab', () => {
     const visionIdx = panel.indexOf('// /vision');
     const visionBody = panel.slice(visionIdx, panel.indexOf('return text;', visionIdx));
     assert.match(visionBody, /sendToBackground\('get_providers'\);[\s\S]*?sendToBackground\('update_provider'[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system'/, `${label}: /vision should not render a result into a different tab`);
+  }
+});
+
+test('sidepanel awaits immediate verbose preference writes', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(
+      panel,
+      /verboseMode = !verboseMode;[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode \}\)\.catch\(\(\) => \{\}\);/,
+      `${label}: verbose toggles should await persistence before continuing`,
+    );
+    assert.match(
+      panel,
+      /if \(\s*\/\^\\\/verbose\\b\\s\*\/i\.test\(text\)\s*\) \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode \}\)\.catch\(\(\) => \{\}\);/,
+      `${label}: /verbose should await persistence before echoing the mode change`,
+    );
   }
 });
 

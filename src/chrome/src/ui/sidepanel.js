@@ -1334,7 +1334,7 @@ if (verboseBtn) {
     // Normal click → toggle verbose mode
     verboseMode = !verboseMode;
     verboseBtn.classList.toggle('active', verboseMode);
-    chrome.storage.local.set({ verboseMode }).catch(() => {});
+    await chrome.storage.local.set({ verboseMode }).catch(() => {});
   });
 }
 
@@ -1395,7 +1395,7 @@ function setRecommendedActionsCollapsed(collapsed, { persist = true } = {}) {
   recommendedActionsCollapsed = Boolean(collapsed);
   updateRecommendedActionsCollapsedState();
   if (persist) {
-    chrome.storage.local.set({ [RECOMMENDED_ACTIONS_COLLAPSED_KEY]: recommendedActionsCollapsed }).catch(() => {});
+    void chrome.storage.local.set({ [RECOMMENDED_ACTIONS_COLLAPSED_KEY]: recommendedActionsCollapsed }).catch(() => {});
   }
 }
 
@@ -1910,7 +1910,7 @@ async function parseSlashCommands(text, tabId = currentTabId) {
   if (/^\/verbose\b\s*/i.test(text)) {
     verboseMode = !verboseMode;
     if (verboseBtn) verboseBtn.classList.toggle('active', verboseMode);
-    chrome.storage.local.set({ verboseMode }).catch(() => {});
+    await chrome.storage.local.set({ verboseMode }).catch(() => {});
     addMessage('system', verboseMode
       ? t('sp.compact.verbose_on')
       : t('sp.compact.verbose_off'));

@@ -379,13 +379,13 @@ async function logout() {
   renderAuthSection();
 }
 
-window.addEventListener('message', (event) => {
+window.addEventListener('message', async (event) => {
   if (event.data?.type === 'WB_AUTH_TOKEN') {
     const { token, email, defaultModel } = event.data;
     authToken = token;
     authEmail = email;
     authDefaultModel = defaultModel || 'openai/gpt-4o';
-    browser.storage.local.set({ authToken, authEmail, authDefaultModel });
+    await browser.storage.local.set({ authToken, authEmail, authDefaultModel }).catch(() => {});
     renderAuthSection();
     autoConfigureWebbrainProvider();
   }
@@ -400,52 +400,52 @@ async function autoConfigureWebbrainProvider() {
 
 // --- Display Settings ---
 
-verboseToggle.addEventListener('change', () => {
-  browser.storage.local.set({ verboseMode: verboseToggle.checked });
+verboseToggle.addEventListener('change', async () => {
+  await browser.storage.local.set({ verboseMode: verboseToggle.checked }).catch(() => {});
 });
 
-screenshotToggle.addEventListener('change', () => {
-  browser.storage.local.set({ screenshotFallback: screenshotToggle.checked });
+screenshotToggle.addEventListener('change', async () => {
+  await browser.storage.local.set({ screenshotFallback: screenshotToggle.checked }).catch(() => {});
 });
 
 maxStepsRange.addEventListener('input', () => {
   stepsValueLabel.textContent = Number(maxStepsRange.value) === MAX_AGENT_STEPS_UNLIMITED_SENTINEL ? '∞' : maxStepsRange.value;
 });
 
-maxStepsRange.addEventListener('change', () => {
-  browser.storage.local.set({
+maxStepsRange.addEventListener('change', async () => {
+  await browser.storage.local.set({
     maxAgentSteps: Number(maxStepsRange.value) === MAX_AGENT_STEPS_UNLIMITED_SENTINEL
       ? 0
       : parseInt(maxStepsRange.value, 10),
-  });
+  }).catch(() => {});
 });
 
 if (requestTimeoutRange) {
   requestTimeoutRange.addEventListener('input', () => {
     requestTimeoutValueLabel.textContent = requestTimeoutRange.value + 's';
   });
-  requestTimeoutRange.addEventListener('change', () => {
+  requestTimeoutRange.addEventListener('change', async () => {
     const sec = parseInt(requestTimeoutRange.value, 10);
-    browser.storage.local.set({ requestTimeoutMs: sec * 1000 });
+    await browser.storage.local.set({ requestTimeoutMs: sec * 1000 }).catch(() => {});
   });
 }
 
-autoScreenshotSelect?.addEventListener('change', () => {
-  browser.storage.local.set({ autoScreenshot: autoScreenshotSelect.value });
+autoScreenshotSelect?.addEventListener('change', async () => {
+  await browser.storage.local.set({ autoScreenshot: autoScreenshotSelect.value }).catch(() => {});
 });
 
-siteAdaptersToggle?.addEventListener('change', () => {
-  browser.storage.local.set({ useSiteAdapters: siteAdaptersToggle.checked });
+siteAdaptersToggle?.addEventListener('change', async () => {
+  await browser.storage.local.set({ useSiteAdapters: siteAdaptersToggle.checked }).catch(() => {});
 });
 
-tracingToggle?.addEventListener('change', () => {
-  browser.storage.local.set({ tracingEnabled: tracingToggle.checked });
+tracingToggle?.addEventListener('change', async () => {
+  await browser.storage.local.set({ tracingEnabled: tracingToggle.checked }).catch(() => {});
 });
 
-costSessionLimitInput?.addEventListener('change', () => {
+costSessionLimitInput?.addEventListener('change', async () => {
   const value = normalizeCostAmount(costSessionLimitInput.value);
   costSessionLimitInput.value = value.toFixed(2);
-  browser.storage.local.set({ costAllowanceSessionUsd: value });
+  await browser.storage.local.set({ costAllowanceSessionUsd: value }).catch(() => {});
 });
 
 costTotalLimitInput?.addEventListener('change', async () => {
@@ -453,7 +453,7 @@ costTotalLimitInput?.addEventListener('change', async () => {
   costTotalLimitInput.value = value.toFixed(2);
   const stored = await browser.storage.local.get(['cloudCostSpentUsd']);
   renderCostAllowanceSpent(normalizeCostAmount(stored.cloudCostSpentUsd, 0), value);
-  browser.storage.local.set({ costAllowanceTotalUsd: value });
+  await browser.storage.local.set({ costAllowanceTotalUsd: value }).catch(() => {});
 });
 
 btnResetCostSpend?.addEventListener('click', async () => {
@@ -461,20 +461,20 @@ btnResetCostSpend?.addEventListener('click', async () => {
   renderCostAllowanceSpent(0, normalizeCostAmount(costTotalLimitInput?.value));
 });
 
-strictSecretToggle?.addEventListener('change', () => {
-  browser.storage.local.set({ strictSecretMode: strictSecretToggle.checked });
+strictSecretToggle?.addEventListener('change', async () => {
+  await browser.storage.local.set({ strictSecretMode: strictSecretToggle.checked }).catch(() => {});
 });
 
-allowLocalNetworkToggle?.addEventListener('change', () => {
-  browser.storage.local.set({ agentAllowLocalNetwork: allowLocalNetworkToggle.checked });
+allowLocalNetworkToggle?.addEventListener('change', async () => {
+  await browser.storage.local.set({ agentAllowLocalNetwork: allowLocalNetworkToggle.checked }).catch(() => {});
 });
 
-scheduledTasksToggle?.addEventListener('change', () => {
-  browser.storage.local.set({ scheduledTasksEnabled: scheduledTasksToggle.checked });
+scheduledTasksToggle?.addEventListener('change', async () => {
+  await browser.storage.local.set({ scheduledTasksEnabled: scheduledTasksToggle.checked }).catch(() => {});
 });
 
-scheduledConfirmToggle?.addEventListener('change', () => {
-  browser.storage.local.set({ scheduledRequireConsequentialConfirmation: scheduledConfirmToggle.checked });
+scheduledConfirmToggle?.addEventListener('change', async () => {
+  await browser.storage.local.set({ scheduledRequireConsequentialConfirmation: scheduledConfirmToggle.checked }).catch(() => {});
 });
 
 // --- Vision Model ---
