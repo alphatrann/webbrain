@@ -42,6 +42,12 @@ const { sanitizeLink, sanitizeMarkdownLinks } = await import(
 const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/markdown-link.js').replace(/\\/g, '/')
 );
+const { createContextMenuStorage: createContextMenuStorageCh } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/context-menu-storage.js').replace(/\\/g, '/')
+);
+const { createContextMenuStorage: createContextMenuStorageFx } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/context-menu-storage.js').replace(/\\/g, '/')
+);
 
 // permission-gate.js is pure JS (deterministic capability × origin gate).
 const { Capability, capabilityFor, capabilitiesFor, normalizeHost, hostForCapability, requiredHosts, frameHostMatches, isNetworkMutation, PermissionManager, UNTRUSTED_CONTENT_TOOLS } = await import(
