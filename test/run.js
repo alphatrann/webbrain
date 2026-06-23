@@ -2029,6 +2029,72 @@ test('chrome offscreen helper recreates an evicted document after ready cache is
   }
 });
 
+test('chrome fetch fallback clears offscreen proxy timeout after success', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousFetch = globalThis.fetch;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const previousWarn = console.warn;
+  const timers = [];
+  console.warn = () => {};
+  globalThis.setTimeout = (fn, ms) => {
+    const handle = { fn, ms, cleared: false };
+    timers.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    if (handle) handle.cleared = true;
+  };
+  globalThis.fetch = async () => {
+    throw new TypeError('Failed to fetch');
+  };
+  globalThis.chrome = {
+    offscreen: {
+      async hasDocument() {
+        return true;
+      },
+    },
+    runtime: {
+      async sendMessage() {
+        return {
+          ok: true,
+          status: 200,
+          contentType: 'application/json',
+          body: '{"ok":true}',
+        };
+      },
+    },
+  };
+  try {
+    const fetchUrl = 'file://' + path.join(ROOT, 'src/chrome/src/providers/fetch-with-fallback.js').replace(/\\/g, '/') + `?test=${Date.now()}`;
+    const { fetchWithFallback } = await import(fetchUrl);
+    const res = await fetchWithFallback('http://127.0.0.1:11434/api/chat', {
+      method: 'POST',
+      timeoutMs: 12345,
+      body: '{}',
+    });
+
+    assert.equal(res.status, 200, 'chrome: fallback should synthesize the proxied response');
+    assert.equal(await res.text(), '{"ok":true}', 'chrome: fallback response body should survive proxy conversion');
+    assert.equal(timers.length, 2, 'chrome: direct fetch and offscreen proxy should each install one timeout');
+    assert.equal(timers.every((timer) => timer.cleared), true, 'chrome: offscreen proxy timeout should be cleared after success');
+  } finally {
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+    if (previousFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = previousFetch;
+    }
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+    console.warn = previousWarn;
+  }
+});
+
 test('chrome sidepanel Escape abort honors slash autocomplete dismissal', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
   assert.match(panel, /if \(e\.key === 'Escape'\) \{\s*e\.preventDefault\(\);\s*hideSlashCommandAutocomplete\(\);\s*return true;\s*\}/, 'chrome: slash autocomplete Escape should consume the key event');
