@@ -460,15 +460,17 @@ function enqueueTabChatOperation(tabId, fn) {
 }
 
 async function loadTabChat(tabId) {
-  if (tabChats.has(tabId)) return tabChats.get(tabId);
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return null;
+  if (!tabChatOperations.has(numericTabId) && tabChats.has(numericTabId)) return tabChats.get(numericTabId);
   try {
-    return await enqueueTabChatOperation(tabId, async (numericTabId) => {
-      if (tabChats.has(numericTabId)) return tabChats.get(numericTabId);
-      const key = TAB_CHAT_PREFIX + numericTabId;
+    return await enqueueTabChatOperation(numericTabId, async (queuedTabId) => {
+      if (tabChats.has(queuedTabId)) return tabChats.get(queuedTabId);
+      const key = TAB_CHAT_PREFIX + queuedTabId;
       const stored = await chrome.storage.session.get(key);
       const html = stored?.[key];
       if (typeof html === 'string') {
-        tabChats.set(numericTabId, html);
+        tabChats.set(queuedTabId, html);
         return html;
       }
       return null;

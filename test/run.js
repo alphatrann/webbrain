@@ -2608,7 +2608,12 @@ test('chrome sidepanel serializes tab-chat storage writes with clears and reads'
   const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
   assert.match(panel, /const tabChatOperations = new Map\(\);/, 'chrome: tab-chat operations should be queued per tab');
   assert.match(panel, /function enqueueTabChatOperation\(tabId, fn\) \{[\s\S]*?const previous = tabChatOperations\.get\(numericTabId\) \|\| Promise\.resolve\(\);[\s\S]*?tabChatOperations\.set\(numericTabId, operation\);[\s\S]*?\}/, 'chrome: tab-chat writes should be serialized behind prior operations');
-  assert.match(panel, /async function loadTabChat\(tabId\) \{[\s\S]*?return await enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?const stored = await chrome\.storage\.session\.get\(key\);/, 'chrome: tab-chat restore should read session storage on the queue');
+  const loadStart = panel.indexOf('async function loadTabChat(tabId) {');
+  assert.notEqual(loadStart, -1, 'chrome: loadTabChat missing');
+  const loadBody = panel.slice(loadStart, panel.indexOf('\n}\n\nfunction persistTabChat', loadStart) + 2);
+  assert.match(loadBody, /const numericTabId = Number\(tabId\);[\s\S]*?if \(!Number\.isFinite\(numericTabId\)\) return null;/, 'chrome: tab-chat restore should normalize tab ids before checking the cache');
+  assert.match(loadBody, /if \(!tabChatOperations\.has\(numericTabId\) && tabChats\.has\(numericTabId\)\) return tabChats\.get\(numericTabId\);/, 'chrome: tab-chat restore should only trust cached HTML when no queued operation can update it');
+  assert.match(loadBody, /return await enqueueTabChatOperation\(numericTabId, async \(queuedTabId\) => \{[\s\S]*?if \(tabChats\.has\(queuedTabId\)\) return tabChats\.get\(queuedTabId\);[\s\S]*?const stored = await chrome\.storage\.session\.get\(key\);/, 'chrome: tab-chat restore should wait behind pending per-tab operations before reading cache or storage');
   assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?await chrome\.storage\.session\.set\(\{ \[key\]: html \}\)\.catch\(\(\) => \{\}\);/, 'chrome: tab-chat persistence should be serialized through the queue');
   const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
   assert.notEqual(clearStart, -1, 'chrome: clearCachedTabChat missing');
