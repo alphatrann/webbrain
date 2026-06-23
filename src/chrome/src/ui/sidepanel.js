@@ -57,8 +57,8 @@ if (globalThis.chrome?.storage?.onChanged) {
   let localModelChoices = [];
   let cloudReady = false;
 
-  function dismissOnboarding() {
-    chrome.storage.local.set({ onboardingComplete: true }).catch(() => {});
+  async function dismissOnboarding() {
+    await chrome.storage.local.set({ onboardingComplete: true }).catch(() => {});
     overlay.classList.add('hidden');
   }
 
@@ -139,10 +139,10 @@ if (globalThis.chrome?.storage?.onChanged) {
       changeLink.target = '_blank';
       changeLink.rel = 'noopener noreferrer';
       changeLink.textContent = 'Change';
-      changeLink.addEventListener('click', (event) => {
+      changeLink.addEventListener('click', async (event) => {
         event.preventDefault();
         openProviderSettings();
-        dismissOnboarding();
+        await dismissOnboarding();
       });
       providerStatus.append(
         document.createTextNode('Using WebBrain Cloud. '),
@@ -262,7 +262,7 @@ if (globalThis.chrome?.storage?.onChanged) {
 
   settingsBtn.addEventListener('click', async () => {
     if (cloudReady) {
-      dismissOnboarding();
+      await dismissOnboarding();
       inputEl?.focus();
       return;
     }
@@ -281,7 +281,7 @@ if (globalThis.chrome?.storage?.onChanged) {
         await sendToBackground('set_active_provider', { providerId: choice.providerId });
         await loadProviders();
         if (providerSelect) providerSelect.value = choice.providerId;
-        await testConnection();
+        await testConnection({ providerId: choice.providerId });
         dismissOnboarding();
         inputEl?.focus();
       } catch (e) {
@@ -293,10 +293,12 @@ if (globalThis.chrome?.storage?.onChanged) {
     }
 
     openProviderSettings();
-    dismissOnboarding();
+    await dismissOnboarding();
   });
 
-  skipBtn.addEventListener('click', dismissOnboarding);
+  skipBtn.addEventListener('click', async () => {
+    await dismissOnboarding();
+  });
 })();
 
 const messagesEl = document.getElementById('messages');
@@ -356,6 +358,7 @@ const recordingTimerEl = document.getElementById('recording-timer');
 const recordingStopBtn = document.getElementById('btn-recording-stop');
 
 let currentTabId = null;
+let renderedTabId = null;
 let pendingTabSwitch = null; // tab the user switched to while isProcessing was true
 let isProcessing = false;
 let currentAssistantEl = null;
@@ -363,6 +366,8 @@ let verboseMode = false;
 let agentMode = 'ask'; // 'ask' or 'act'
 let abortRequested = false;
 let recommendationsRequestId = 0;
+let providerSelectionRequestId = 0;
+let providerTestRequestId = 0;
 let recommendedActionsCollapsed = false;
 let slashCommandMatches = [];
 let slashCommandSelectedIndex = 0;
@@ -440,37 +445,122 @@ function playCompletionSound() {
 // conversation survives the side panel being closed and reopened.
 const tabChats = new Map();
 const TAB_CHAT_PREFIX = 'tabChat:';
+const tabChatOperations = new Map();
+const tabInputDrafts = new Map();
+
+function enqueueTabChatOperation(tabId, fn) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return Promise.resolve({ ok: true });
+  const previous = tabChatOperations.get(numericTabId) || Promise.resolve();
+  const operation = previous.catch(() => {}).then(() => fn(numericTabId));
+  tabChatOperations.set(numericTabId, operation);
+  operation.finally(() => {
+    if (tabChatOperations.get(numericTabId) === operation) tabChatOperations.delete(numericTabId);
+  }).catch(() => {});
+  return operation;
+}
 
 async function loadTabChat(tabId) {
-  if (tabChats.has(tabId)) return tabChats.get(tabId);
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return null;
+  if (!tabChatOperations.has(numericTabId) && tabChats.has(numericTabId)) return tabChats.get(numericTabId);
   try {
-    const key = TAB_CHAT_PREFIX + tabId;
-    const stored = await chrome.storage.session.get(key);
-    const html = stored?.[key];
-    if (typeof html === 'string') {
-      tabChats.set(tabId, html);
-      return html;
-    }
+    return await enqueueTabChatOperation(numericTabId, async (queuedTabId) => {
+      if (tabChats.has(queuedTabId)) return tabChats.get(queuedTabId);
+      const key = TAB_CHAT_PREFIX + queuedTabId;
+      const stored = await chrome.storage.session.get(key);
+      const html = stored?.[key];
+      if (typeof html === 'string') {
+        tabChats.set(queuedTabId, html);
+        return html;
+      }
+      return null;
+    });
   } catch (e) { /* ignore */ }
   return null;
 }
 
 function persistTabChat(tabId, html) {
   if (tabId == null) return;
-  tabChats.set(tabId, html);
-  try {
-    chrome.storage.session.set({ [TAB_CHAT_PREFIX + tabId]: html }).catch(() => {});
-  } catch (e) { /* ignore */ }
+  return enqueueTabChatOperation(tabId, async (numericTabId) => {
+    tabChats.set(numericTabId, html);
+    const key = TAB_CHAT_PREFIX + numericTabId;
+    try {
+      await chrome.storage.session.set({ [key]: html }).catch(() => {});
+    } catch (e) { /* ignore */ }
+    return { ok: true };
+  });
+}
+
+function clearCachedTabChat(tabId) {
+  if (tabId == null) return;
+  if (persistTimer && persistTimerTabId === tabId) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+    persistTimerTabId = null;
+  }
+  tabChats.delete(tabId);
+  return enqueueTabChatOperation(tabId, async (numericTabId) => {
+    tabChats.delete(numericTabId);
+    try {
+      await chrome.storage.session?.remove(TAB_CHAT_PREFIX + numericTabId).catch(() => {});
+    } catch (e) { /* ignore */ }
+    return { ok: true };
+  });
+}
+
+function saveInputDraftForTab(tabId, text) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) return;
+  const draft = String(text || '');
+  if (draft.trim()) {
+    tabInputDrafts.set(numericTabId, draft);
+  } else {
+    tabInputDrafts.delete(numericTabId);
+  }
+}
+
+function captureInputDraftForTab(tabId) {
+  if (!inputEl) return;
+  saveInputDraftForTab(tabId, inputEl.value || '');
+}
+
+function restoreInputDraftForTab(tabId) {
+  if (!inputEl) return;
+  const numericTabId = Number(tabId);
+  const draft = Number.isFinite(numericTabId) ? tabInputDrafts.get(numericTabId) || '' : '';
+  inputEl.value = draft;
+  autoResizeInput();
+  updateSlashCommandAutocomplete();
+}
+
+function renderClearedConversationForTab(tabId) {
+  clearCachedTabChat(tabId);
+  saveInputDraftForTab(tabId, '');
+  setApiMutationsAllowedForTab(tabId, false);
+  if (currentTabId !== tabId) return;
+  renderedTabId = tabId;
+  messagesEl.innerHTML = '';
+  inputEl.value = '';
+  autoResizeInput();
+  addMessage('system', t('sp.cleared_message'));
+  refreshScheduledJobs({ tabId });
+  refreshRecommendedActions();
 }
 
 // Save current tab's chat to storage on a debounced cadence — we don't want
 // to thrash storage on every keystroke / streamed token.
 let persistTimer = null;
+let persistTimerTabId = null;
 function schedulePersist() {
   if (persistTimer) clearTimeout(persistTimer);
+  const tabId = renderedTabId;
+  const html = messagesEl.innerHTML;
+  persistTimerTabId = tabId;
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    if (currentTabId != null) persistTabChat(currentTabId, messagesEl.innerHTML);
+    persistTimerTabId = null;
+    if (tabId != null) persistTabChat(tabId, html);
   }, 400);
 }
 
@@ -719,11 +809,12 @@ function renderScheduledJobs(jobs = []) {
   ensureScheduledClarifyCards(visible);
 }
 
-async function refreshScheduledJobs() {
+async function refreshScheduledJobs({ tabId = null } = {}) {
   if (!scheduledJobsEl) return;
   try {
     const response = await sendToBackground('list_scheduled_jobs', { all: true });
     const jobs = response?.jobs || [];
+    if (tabId != null && currentTabId !== tabId) return jobs;
     renderScheduledJobs(jobs);
     return jobs;
   } catch (e) {
@@ -742,15 +833,36 @@ async function scheduledJobAction(action, jobId) {
   };
   const bgAction = actionMap[action];
   if (!bgAction || !jobId) return;
+  const tabId = currentTabId;
   try {
     const response = await sendToBackground(bgAction, { jobId });
     if (response && (response.ok === false || response.success === false)) {
-      addMessage('error', t('sp.error_prefix', { msg: response.error || 'Scheduled job action failed.' }));
+      if (currentTabId === tabId) {
+        addMessage('error', t('sp.error_prefix', { msg: response.error || 'Scheduled job action failed.' }));
+      }
     }
-    await refreshScheduledJobs();
+    await refreshScheduledJobs({ tabId });
   } catch (e) {
-    addMessage('error', t('sp.error_prefix', { msg: e.message }));
+    if (currentTabId === tabId) {
+      addMessage('error', t('sp.error_prefix', { msg: e.message }));
+    }
   }
+}
+
+async function drainQueuedContextMenuPromptsAfterPendingTabSwitch() {
+  if (pendingTabSwitch == null) {
+    drainQueuedContextMenuPrompts();
+    return;
+  }
+  const pending = pendingTabSwitch;
+  pendingTabSwitch = null;
+  try {
+    await switchToTab(pending);
+  } catch {
+    // Still drain any queued prompt for the current tab; tab activation can fail
+    // when the underlying browser tab disappears during run settlement.
+  }
+  drainQueuedContextMenuPrompts();
 }
 
 function settleScheduledRun(event, job) {
@@ -771,13 +883,13 @@ function settleScheduledRun(event, job) {
     hideActivity();
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     abortRequested = false;
-    drainQueuedContextMenuPrompts();
+    drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
   if (event === 'completed') playCompletionSound();
 }
 
 function handleScheduledJobEvent(data, tabId) {
-  refreshScheduledJobs();
+  refreshScheduledJobs({ tabId: currentTabId });
   const event = data?.event;
   const job = data?.job;
   if (!event || !job) return;
@@ -792,9 +904,8 @@ function handleScheduledJobEvent(data, tabId) {
   if (!sameTab && !crossPanelScheduledEvent) return;
 
   const title = scheduledJobTitle(job);
-  const safeTitle = escapeHtml(title);
   if (event === 'created') {
-    addMessage('system', t('sp.scheduled.created', { title: safeTitle, time: formatScheduledTime(job.nextRunAt || job.scheduledAt) }));
+    addMessage('system', tSystemHtml('sp.scheduled.created', { title, time: formatScheduledTime(job.nextRunAt || job.scheduledAt) }));
   } else if (event === 'running') {
     isProcessing = true;
     abortRequested = false;
@@ -818,8 +929,8 @@ function handleScheduledJobEvent(data, tabId) {
     } else {
       isProcessing = false;
       sendBtn.disabled = false;
-      addMessage('system', t('sp.scheduled.needs_user_input', { title: safeTitle }));
-      drainQueuedContextMenuPrompts();
+      addMessage('system', tSystemHtml('sp.scheduled.needs_user_input', { title }));
+      drainQueuedContextMenuPromptsAfterPendingTabSwitch();
     }
   }
 }
@@ -851,10 +962,10 @@ function isHttpScheduleUrl(value) {
   }
 }
 
-async function getCurrentScheduleUrl() {
-  if (currentTabId == null) return '';
+async function getCurrentScheduleUrl(tabId = currentTabId) {
+  if (tabId == null) return '';
   try {
-    const tab = await chrome.tabs.get(currentTabId);
+    const tab = await chrome.tabs.get(tabId);
     return tab?.url || '';
   } catch {
     return '';
@@ -872,20 +983,199 @@ function addScheduleField(form, labelText, control) {
   return label;
 }
 
-async function renderScheduleComposer(prefillPrompt = '') {
+function getScheduleComposerControls(form) {
+  return {
+    titleInput: form?.querySelector('.schedule-title'),
+    promptInput: form?.querySelector('.schedule-prompt'),
+    scheduleType: form?.querySelector('.schedule-type'),
+    timeMode: form?.querySelector('.schedule-time-mode'),
+    afterInput: form?.querySelector('.schedule-after'),
+    runAtInput: form?.querySelector('.schedule-run-at'),
+    intervalInput: form?.querySelector('.schedule-interval'),
+    targetType: form?.querySelector('.schedule-target-type'),
+    urlInput: form?.querySelector('.schedule-url'),
+    modeInput: form?.querySelector('.schedule-mode'),
+    errorEl: form?.querySelector('.schedule-error'),
+    submit: form?.querySelector('.schedule-submit'),
+    cancel: form?.querySelector('.schedule-cancel'),
+  };
+}
+
+function getScheduleComposerTabId(form) {
+  const rawTabId = form?.dataset?.tabId;
+  const parsed = rawTabId != null && rawTabId !== '' ? Number(rawTabId) : currentTabId;
+  return Number.isFinite(parsed) ? parsed : currentTabId;
+}
+
+function updateScheduleComposerVisibility(form) {
+  const { scheduleType, timeMode, afterInput, runAtInput, intervalInput, targetType, urlInput } = getScheduleComposerControls(form);
+  afterInput?.closest('.schedule-field')?.classList.toggle('hidden', timeMode?.value !== 'after');
+  runAtInput?.closest('.schedule-field')?.classList.toggle('hidden', timeMode?.value !== 'at');
+  intervalInput?.closest('.schedule-field')?.classList.toggle('hidden', scheduleType?.value !== 'recurring');
+  urlInput?.closest('.schedule-field')?.classList.toggle('hidden', targetType?.value !== 'url');
+}
+
+async function submitScheduleComposer(e, form) {
+  e.preventDefault();
+  const {
+    titleInput,
+    promptInput,
+    scheduleType,
+    timeMode,
+    afterInput,
+    runAtInput,
+    intervalInput,
+    targetType,
+    urlInput,
+    modeInput,
+    errorEl,
+    submit,
+  } = getScheduleComposerControls(form);
+  const tabId = getScheduleComposerTabId(form);
+  if (tabId == null || !promptInput || !scheduleType || !timeMode || !afterInput || !runAtInput || !intervalInput || !targetType || !urlInput || !modeInput || !errorEl || !submit) {
+    return;
+  }
+
+  errorEl.textContent = '';
+  const prompt = promptInput.value.trim();
+  if (!prompt) {
+    errorEl.textContent = t('sp.schedule_form.error_prompt');
+    return;
+  }
+
+  const schedule = { type: scheduleType.value };
+  if (timeMode.value === 'after') {
+    const minutes = Number(afterInput.value);
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      errorEl.textContent = t('sp.schedule_form.error_time');
+      return;
+    }
+    schedule.after_seconds = Math.round(minutes * 60);
+  } else {
+    const runAtMs = Date.parse(runAtInput.value);
+    if (!Number.isFinite(runAtMs)) {
+      errorEl.textContent = t('sp.schedule_form.error_time');
+      return;
+    }
+    schedule.run_at = new Date(runAtMs).toISOString();
+  }
+  if (schedule.type === 'recurring') {
+    const interval = Number(intervalInput.value);
+    if (!Number.isFinite(interval) || interval < 1) {
+      errorEl.textContent = t('sp.schedule_form.error_interval');
+      return;
+    }
+    schedule.interval_minutes = Math.floor(interval);
+  }
+
+  const target = { type: targetType.value };
+  if (target.type === 'url') {
+    const url = urlInput.value.trim();
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('bad protocol');
+      target.url = parsed.href;
+    } catch {
+      errorEl.textContent = t('sp.schedule_form.error_url');
+      return;
+    }
+  }
+
+  submit.disabled = true;
+  try {
+    const title = titleInput?.value?.trim() || prompt.slice(0, 80) || t('sp.scheduled.task_title');
+    const res = await sendToBackground('create_scheduled_job', {
+      tabId,
+      job: { title, prompt, schedule, target, mode: modeInput.value },
+    });
+    if (res?.success === false || res?.ok === false || !res?.scheduledAt) {
+      throw new Error(res?.error || 'Could not create scheduled job.');
+    }
+    const createdHtml = tSystemHtml('sp.schedule_form.created', {
+      title,
+      time: formatScheduledTime(res.scheduledAt),
+    });
+    if (currentTabId !== tabId) {
+      replaceCachedScheduleComposer(tabId, form.dataset.composerId, createdHtml);
+      return;
+    }
+    const msgEl = form.closest('.message');
+    form.remove();
+    const textEl = msgEl?.querySelector('.message-text');
+    if (textEl) {
+      textEl.innerHTML = createdHtml;
+    }
+    await refreshScheduledJobs({ tabId });
+  } catch (err) {
+    if (currentTabId !== tabId) {
+      updateCachedScheduleComposerError(tabId, form.dataset.composerId, err.message);
+      return;
+    }
+    submit.disabled = false;
+    errorEl.textContent = err.message;
+  }
+}
+
+function bindScheduleComposer(form) {
+  if (!form || form.dataset.bound) return;
+  const { scheduleType, timeMode, targetType, cancel } = getScheduleComposerControls(form);
+  form.dataset.bound = 'true';
+  scheduleType?.addEventListener('change', () => updateScheduleComposerVisibility(form));
+  timeMode?.addEventListener('change', () => updateScheduleComposerVisibility(form));
+  targetType?.addEventListener('change', () => updateScheduleComposerVisibility(form));
+  updateScheduleComposerVisibility(form);
+  cancel?.addEventListener('click', () => form.closest('.message')?.remove());
+  form.addEventListener('submit', (e) => submitScheduleComposer(e, form));
+}
+
+function replaceCachedScheduleComposer(tabId, composerId, html) {
+  const cached = tabChats.get(tabId);
+  if (typeof cached !== 'string' || !composerId) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = cached;
+  const form = wrapper.querySelector(`form.schedule-composer[data-composer-id="${composerId}"]`);
+  const textEl = form?.closest('.message')?.querySelector('.message-text');
+  if (!form || !textEl) return;
+  form.remove();
+  textEl.innerHTML = html;
+  persistTabChat(tabId, wrapper.innerHTML);
+}
+
+function updateCachedScheduleComposerError(tabId, composerId, message) {
+  const cached = tabChats.get(tabId);
+  if (typeof cached !== 'string' || !composerId) return;
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = cached;
+  const form = wrapper.querySelector(`form.schedule-composer[data-composer-id="${composerId}"]`);
+  const submit = form?.querySelector('.schedule-submit');
+  const errorEl = form?.querySelector('.schedule-error');
+  if (!form || !submit || !errorEl) return;
+  submit.disabled = false;
+  errorEl.textContent = message || '';
+  persistTabChat(tabId, wrapper.innerHTML);
+}
+
+async function renderScheduleComposer(prefillPrompt = '', tabId = currentTabId) {
+  if (tabId == null) return;
+  const initialScheduleUrl = await getCurrentScheduleUrl(tabId);
+  if (currentTabId !== tabId) return;
+
   const msgEl = addMessage('system', t('sp.schedule_form.opened'));
   const content = msgEl.querySelector('.message-content');
   const form = document.createElement('form');
   form.className = 'schedule-composer';
-  const initialScheduleUrl = await getCurrentScheduleUrl();
+  form.dataset.tabId = String(tabId);
+  form.dataset.composerId = `schedule-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const titleInput = document.createElement('input');
   titleInput.type = 'text';
+  titleInput.className = 'schedule-title';
   titleInput.maxLength = 200;
   titleInput.placeholder = t('sp.schedule_form.title_placeholder');
   addScheduleField(form, t('sp.schedule_form.title'), titleInput);
 
   const promptInput = document.createElement('textarea');
+  promptInput.className = 'schedule-prompt';
   promptInput.rows = 4;
   promptInput.required = true;
   promptInput.maxLength = 8000;
@@ -897,10 +1187,12 @@ async function renderScheduleComposer(prefillPrompt = '') {
   row.className = 'schedule-row';
 
   const scheduleType = document.createElement('select');
+  scheduleType.className = 'schedule-type';
   scheduleType.innerHTML = `<option value="once">${escapeHtml(t('sp.schedule_form.once'))}</option><option value="recurring">${escapeHtml(t('sp.schedule_form.recurring'))}</option>`;
   addScheduleField(row, t('sp.schedule_form.type'), scheduleType);
 
   const timeMode = document.createElement('select');
+  timeMode.className = 'schedule-time-mode';
   timeMode.innerHTML = `<option value="after">${escapeHtml(t('sp.schedule_form.in_minutes'))}</option><option value="at">${escapeHtml(t('sp.schedule_form.at_time'))}</option>`;
   addScheduleField(row, t('sp.schedule_form.when'), timeMode);
   form.appendChild(row);
@@ -911,34 +1203,40 @@ async function renderScheduleComposer(prefillPrompt = '') {
   afterInput.max = '10080';
   afterInput.step = '1';
   afterInput.value = '10';
-  const afterField = addScheduleField(form, t('sp.schedule_form.after_minutes'), afterInput);
+  afterInput.className = 'schedule-after';
+  addScheduleField(form, t('sp.schedule_form.after_minutes'), afterInput);
 
   const runAtInput = document.createElement('input');
   runAtInput.type = 'datetime-local';
   runAtInput.value = datetimeLocalValue(Date.now() + 10 * 60 * 1000);
-  const runAtField = addScheduleField(form, t('sp.schedule_form.run_at'), runAtInput);
+  runAtInput.className = 'schedule-run-at';
+  addScheduleField(form, t('sp.schedule_form.run_at'), runAtInput);
 
   const intervalInput = document.createElement('input');
   intervalInput.type = 'number';
   intervalInput.min = '1';
   intervalInput.step = '1';
   intervalInput.value = '60';
-  const intervalField = addScheduleField(form, t('sp.schedule_form.interval_minutes'), intervalInput);
+  intervalInput.className = 'schedule-interval';
+  addScheduleField(form, t('sp.schedule_form.interval_minutes'), intervalInput);
 
   const targetType = document.createElement('select');
+  targetType.className = 'schedule-target-type';
   targetType.innerHTML = `<option value="current_tab">${escapeHtml(t('sp.schedule_form.current_tab'))}</option><option value="url">${escapeHtml(t('sp.schedule_form.url'))}</option>`;
   addScheduleField(form, t('sp.schedule_form.target'), targetType);
 
   const urlInput = document.createElement('input');
   urlInput.type = 'url';
+  urlInput.className = 'schedule-url';
   urlInput.placeholder = 'https://example.com/';
-  const urlField = addScheduleField(form, t('sp.schedule_form.target_url'), urlInput);
+  addScheduleField(form, t('sp.schedule_form.target_url'), urlInput);
   if (isHttpScheduleUrl(initialScheduleUrl)) {
     urlInput.value = initialScheduleUrl;
     targetType.value = 'url';
   }
 
   const modeInput = document.createElement('select');
+  modeInput.className = 'schedule-mode';
   modeInput.innerHTML = `<option value="act">${escapeHtml(t('sp.mode.act'))}</option><option value="ask">${escapeHtml(t('sp.mode.ask'))}</option>`;
   modeInput.value = agentMode === 'ask' ? 'ask' : 'act';
   addScheduleField(form, t('sp.schedule_form.mode'), modeInput);
@@ -961,99 +1259,16 @@ async function renderScheduleComposer(prefillPrompt = '') {
   actions.appendChild(cancel);
   form.appendChild(actions);
 
-  function updateVisibility() {
-    afterField.classList.toggle('hidden', timeMode.value !== 'after');
-    runAtField.classList.toggle('hidden', timeMode.value !== 'at');
-    intervalField.classList.toggle('hidden', scheduleType.value !== 'recurring');
-    urlField.classList.toggle('hidden', targetType.value !== 'url');
-  }
-  scheduleType.addEventListener('change', updateVisibility);
-  timeMode.addEventListener('change', updateVisibility);
-  targetType.addEventListener('change', updateVisibility);
-  updateVisibility();
-
-  cancel.addEventListener('click', () => msgEl.remove());
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    errorEl.textContent = '';
-    const prompt = promptInput.value.trim();
-    if (!prompt) {
-      errorEl.textContent = t('sp.schedule_form.error_prompt');
-      return;
-    }
-
-    const schedule = { type: scheduleType.value };
-    if (timeMode.value === 'after') {
-      const minutes = Number(afterInput.value);
-      if (!Number.isFinite(minutes) || minutes < 0) {
-        errorEl.textContent = t('sp.schedule_form.error_time');
-        return;
-      }
-      schedule.after_seconds = Math.round(minutes * 60);
-    } else {
-      const runAtMs = Date.parse(runAtInput.value);
-      if (!Number.isFinite(runAtMs)) {
-        errorEl.textContent = t('sp.schedule_form.error_time');
-        return;
-      }
-      schedule.run_at = new Date(runAtMs).toISOString();
-    }
-    if (schedule.type === 'recurring') {
-      const interval = Number(intervalInput.value);
-      if (!Number.isFinite(interval) || interval < 1) {
-        errorEl.textContent = t('sp.schedule_form.error_interval');
-        return;
-      }
-      schedule.interval_minutes = Math.floor(interval);
-    }
-
-    const target = { type: targetType.value };
-    if (target.type === 'url') {
-      const url = urlInput.value.trim();
-      try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('bad protocol');
-        target.url = parsed.href;
-      } catch {
-        errorEl.textContent = t('sp.schedule_form.error_url');
-        return;
-      }
-    }
-
-    submit.disabled = true;
-    try {
-      const title = titleInput.value.trim() || prompt.slice(0, 80) || t('sp.scheduled.task_title');
-      const res = await sendToBackground('create_scheduled_job', {
-        tabId: currentTabId,
-        job: { title, prompt, schedule, target, mode: modeInput.value },
-      });
-      if (res?.success === false || res?.ok === false || !res?.scheduledAt) {
-        throw new Error(res?.error || 'Could not create scheduled job.');
-      }
-      form.remove();
-      const textEl = msgEl.querySelector('.message-text');
-      if (textEl) {
-        textEl.innerHTML = t('sp.schedule_form.created', {
-          title: escapeHtml(title),
-          time: formatScheduledTime(res.scheduledAt),
-        });
-      }
-      await refreshScheduledJobs();
-    } catch (err) {
-      submit.disabled = false;
-      errorEl.textContent = err.message;
-    }
-  });
-
+  bindScheduleComposer(form);
   content.appendChild(form);
   promptInput.focus();
   scrollToBottom();
 }
 
-async function showScratchpad() {
+async function showScratchpad(tabId = currentTabId) {
   try {
-    const res = await sendToBackground('get_scratchpad', { tabId: currentTabId });
+    const res = await sendToBackground('get_scratchpad', { tabId });
+    if (currentTabId !== tabId) return;
     const body = String(res?.body || '').trim();
     if (!res?.exists || !body || body === '(empty)') {
       addMessage('system', t('sp.scratchpad.empty'));
@@ -1061,7 +1276,8 @@ async function showScratchpad() {
     }
     addMessage('system', `${t('sp.scratchpad.title_html')}<pre class="scratchpad-dump">${escapeHtml(body)}</pre>`);
   } catch (e) {
-    addMessage('system', t('sp.scratchpad.error', { msg: e.message }));
+    if (currentTabId !== tabId) return;
+    addMessage('system', tSystemHtml('sp.scratchpad.error', { msg: e.message }));
   }
 }
 
@@ -1071,31 +1287,7 @@ async function showScratchpad() {
 async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTabId = tab?.id;
-
-  // Load verbose setting
-  const stored = await chrome.storage.local.get('verboseMode');
-  verboseMode = stored.verboseMode || false;
-
-  // Restore prior conversation for this tab (if any) — survives close/reopen.
-  if (currentTabId != null) {
-    const html = await loadTabChat(currentTabId);
-    if (html) {
-      messagesEl.innerHTML = html;
-      messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
-      rebindCopyButtons();
-      scrollToBottom();
-    }
-  }
-
-  // Start observing the messages container for changes to persist.
-  persistObserver.observe(messagesEl, { childList: true, subtree: true, characterData: true });
-
-  await loadProviders();
-  await testConnection({ skipWebBrainCloud: true });
-  refreshScheduledJobs();
-  refreshRecommendedActions();
-  await consumePendingContextMenuPrompt();
-  drainQueuedContextMenuPrompts();
+  renderedTabId = currentTabId;
 
   chrome.tabs.onActivated.addListener(async (info) => {
     switchToTab(info.tabId);
@@ -1116,6 +1308,36 @@ async function init() {
       refreshRecommendedActions();
     }
   });
+
+  // Load verbose setting
+  const stored = await chrome.storage.local.get('verboseMode');
+  verboseMode = stored.verboseMode || false;
+
+  // Restore prior conversation for this tab (if any) — survives close/reopen.
+  const restoreTabId = currentTabId;
+  if (restoreTabId != null) {
+    const html = await loadTabChat(restoreTabId);
+    if (currentTabId === restoreTabId && html) {
+      messagesEl.innerHTML = html;
+      messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
+      rebindRestoredMessageControls();
+      scrollToBottom();
+    }
+  }
+
+  // Start observing the messages container for changes to persist.
+  persistObserver.observe(messagesEl, { childList: true, subtree: true, characterData: true });
+
+  await loadProviders();
+  await testConnection({ skipWebBrainCloud: true });
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab?.id && activeTab.id !== currentTabId) {
+    await switchToTab(activeTab.id);
+  }
+  refreshScheduledJobs({ tabId: currentTabId });
+  refreshRecommendedActions();
+  await consumePendingContextMenuPrompt();
+  drainQueuedContextMenuPrompts();
 
   // Reflect initial verbose state in the button.
   if (verboseBtn) verboseBtn.classList.toggle('active', verboseMode);
@@ -1172,37 +1394,43 @@ if (verboseBtn) {
     // Normal click → toggle verbose mode
     verboseMode = !verboseMode;
     verboseBtn.classList.toggle('active', verboseMode);
-    chrome.storage.local.set({ verboseMode }).catch(() => {});
+    await chrome.storage.local.set({ verboseMode }).catch(() => {});
   });
 }
 
 async function switchToTab(newTabId) {
-  if (newTabId === currentTabId) { pendingTabSwitch = null; return; }
+  if (newTabId === currentTabId && renderedTabId === newTabId) { pendingTabSwitch = null; return; }
   if (isProcessing) {
     pendingTabSwitch = newTabId; // apply after the run ends
     return;
   }
   pendingTabSwitch = null;
 
-  // Save current tab's chat (in-memory + storage).
-  if (currentTabId != null) {
-    persistTabChat(currentTabId, messagesEl.innerHTML);
+  // Save the tab currently represented by the DOM. During an async restore,
+  // currentTabId may already point at the target while the DOM is still older.
+  if (renderedTabId != null) {
+    persistTabChat(renderedTabId, messagesEl.innerHTML);
+    captureInputDraftForTab(renderedTabId);
   }
 
   currentTabId = newTabId;
+  syncApiMutationsAllowedForCurrentTab();
 
   // Restore new tab's chat from memory or storage.
   const html = await loadTabChat(newTabId);
+  if (currentTabId !== newTabId) return;
+  renderedTabId = newTabId;
   if (html) {
     messagesEl.innerHTML = html;
     messagesEl.querySelectorAll('[data-bound]').forEach(el => delete el.dataset.bound);
-    rebindCopyButtons();
+    rebindRestoredMessageControls();
   } else {
     messagesEl.innerHTML = '';
     addMessage('system', t('sp.help_message'));
   }
+  restoreInputDraftForTab(newTabId);
   scrollToBottom();
-  refreshScheduledJobs();
+  refreshScheduledJobs({ tabId: newTabId });
   refreshRecommendedActions();
   consumePendingContextMenuPrompt().then(() => drainQueuedContextMenuPrompts()).catch(() => {});
 }
@@ -1231,13 +1459,15 @@ function setRecommendedActionsCollapsed(collapsed, { persist = true } = {}) {
   recommendedActionsCollapsed = Boolean(collapsed);
   updateRecommendedActionsCollapsedState();
   if (persist) {
-    chrome.storage.local.set({ [RECOMMENDED_ACTIONS_COLLAPSED_KEY]: recommendedActionsCollapsed }).catch(() => {});
+    void chrome.storage.local.set({ [RECOMMENDED_ACTIONS_COLLAPSED_KEY]: recommendedActionsCollapsed }).catch(() => {});
   }
 }
 
 if (recommendedActionsToggleEl) {
-  recommendedActionsToggleEl.addEventListener('click', () => {
-    setRecommendedActionsCollapsed(!recommendedActionsCollapsed);
+  recommendedActionsToggleEl.addEventListener('click', async () => {
+    const next = !recommendedActionsCollapsed;
+    setRecommendedActionsCollapsed(next, { persist: false });
+    await chrome.storage.local.set({ [RECOMMENDED_ACTIONS_COLLAPSED_KEY]: next }).catch(() => {});
   });
 }
 
@@ -1261,9 +1491,10 @@ async function refreshRecommendedActions() {
     return;
   }
 
+  const tabId = currentTabId;
   try {
-    const pageInfo = await sendToBackground('get_page_info', { tabId: currentTabId });
-    if (requestId !== recommendationsRequestId) return;
+    const pageInfo = await sendToBackground('get_page_info', { tabId });
+    if (requestId !== recommendationsRequestId || currentTabId !== tabId || isProcessing) return;
     const actions = buildRecommendedActions(pageInfo, { max: 4 });
     recommendedActionsListEl.replaceChildren();
     actions.forEach((action) => {
@@ -1283,10 +1514,11 @@ async function refreshRecommendedActions() {
 
 async function runRecommendedAction(action) {
   const prompt = typeof action === 'string' ? action : action?.prompt;
-  if (!prompt || isProcessing) return;
+  const tabId = currentTabId;
+  if (!prompt || tabId == null || isProcessing) return;
   if (action?.mode === 'act') {
     const ok = await ensureActMode();
-    if (!ok) return;
+    if (!ok || currentTabId !== tabId || isProcessing) return;
   }
   inputEl.value = prompt;
   autoResizeInput();
@@ -1329,6 +1561,67 @@ function rebindCopyButtons() {
   });
 }
 
+function rebindContinueButtons() {
+  document.querySelectorAll('.continue-btn').forEach(btn => {
+    if (btn.dataset.bound) return;
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', continueAgent);
+  });
+}
+
+function rebindClarifyCards() {
+  document.querySelectorAll('.clarify-card').forEach(card => {
+    if (card.classList.contains('clarify-answered')) return;
+    const clarifyId = String(card.dataset.clarifyId || '');
+    if (!clarifyId) return;
+    const rawTabId = card.dataset.scheduledTabId ?? card.dataset.tabId;
+    const tabId = rawTabId != null && rawTabId !== '' ? Number(rawTabId) : currentTabId;
+    if (tabId == null || Number.isNaN(tabId)) return;
+
+    card.querySelectorAll('.clarify-option').forEach(btn => {
+      if (btn.dataset.bound) return;
+      btn.dataset.bound = 'true';
+      btn.addEventListener('click', () => {
+        submitClarify(card, tabId, clarifyId, btn.dataset.value || btn.textContent, 'option');
+      });
+    });
+
+    card.querySelectorAll('.clarify-input').forEach(input => {
+      if (input.dataset.bound) return;
+      input.dataset.bound = 'true';
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && input.value.trim()) {
+          e.preventDefault();
+          submitClarify(card, tabId, clarifyId, input.value.trim(), 'text');
+        }
+      });
+    });
+
+    card.querySelectorAll('.clarify-submit').forEach(btn => {
+      if (btn.dataset.bound) return;
+      btn.dataset.bound = 'true';
+      btn.addEventListener('click', () => {
+        const input = card.querySelector('.clarify-input');
+        const value = input?.value?.trim();
+        if (value) submitClarify(card, tabId, clarifyId, value, 'text');
+      });
+    });
+  });
+}
+
+function rebindScheduleComposers() {
+  document.querySelectorAll('form.schedule-composer').forEach(form => {
+    bindScheduleComposer(form);
+  });
+}
+
+function rebindRestoredMessageControls() {
+  rebindCopyButtons();
+  rebindContinueButtons();
+  rebindClarifyCards();
+  rebindScheduleComposers();
+}
+
 async function loadProviders() {
   try {
     const res = await sendToBackground('get_providers');
@@ -1354,21 +1647,33 @@ function markSelectedProviderUntested() {
   statusDot.title = providerSelect?.selectedOptions?.[0]?.textContent || providerSelect?.value || '';
 }
 
+function markSelectedProviderFailed(error) {
+  const msg = error?.message || t('sp.status.failed');
+  statusDot.className = 'status-dot offline';
+  statusDot.title = t('sp.status.error', { msg });
+}
+
 async function testConnection(options = {}) {
-  if (options.skipWebBrainCloud && isWebBrainCloudProviderSelected()) {
-    markSelectedProviderUntested();
+  const providerId = options.providerId || providerSelect.value;
+  const requestId = ++providerTestRequestId;
+  if (options.skipWebBrainCloud && providerId === 'webbrain_cloud') {
+    if (requestId === providerTestRequestId && providerSelect.value === providerId) {
+      markSelectedProviderUntested();
+    }
     return;
   }
   statusDot.className = 'status-dot connecting';
   try {
     const res = await sendToBackground('test_provider', {
-      providerId: providerSelect.value,
+      providerId,
     });
+    if (requestId !== providerTestRequestId || providerSelect.value !== providerId) return;
     statusDot.className = `status-dot ${res.ok ? 'online' : 'offline'}`;
     statusDot.title = res.ok
-      ? t('sp.status.connected', { model: res.model || providerSelect.value })
+      ? t('sp.status.connected', { model: res.model || providerId })
       : t('sp.status.error', { msg: res.error });
   } catch {
+    if (requestId !== providerTestRequestId || providerSelect.value !== providerId) return;
     statusDot.className = 'status-dot offline';
     statusDot.title = t('sp.status.failed');
   }
@@ -1583,13 +1888,33 @@ function handleInput() {
 // Reset on clearConversation. Visible to the user in the chat as a system
 // message and as a sticky badge near the input area.
 let apiMutationsAllowed = false;
+const apiMutationsAllowedByTab = new Map();
+
+function isApiMutationsAllowedForTab(tabId) {
+  return tabId != null && apiMutationsAllowedByTab.get(tabId) === true;
+}
+
+function setApiMutationsAllowedForTab(tabId, allowed) {
+  if (tabId == null) return;
+  if (allowed) {
+    apiMutationsAllowedByTab.set(tabId, true);
+  } else {
+    apiMutationsAllowedByTab.delete(tabId);
+  }
+  if (currentTabId === tabId) syncApiMutationsAllowedForCurrentTab();
+}
+
+function syncApiMutationsAllowedForCurrentTab() {
+  apiMutationsAllowed = isApiMutationsAllowedForTab(currentTabId);
+  updateApiBadge();
+}
 
 /**
  * Parse leading slash commands out of the user's message.
  * Returns the cleaned text (empty string if fully consumed).
  * May trigger async UI side effects (screenshot, export, etc.).
  */
-async function parseSlashCommands(text) {
+async function parseSlashCommands(text, tabId = currentTabId) {
   // /help — list all available slash commands
   if (/^\/help\b\s*/i.test(text)) {
     addMessage('system', t('sp.help_html'));
@@ -1598,7 +1923,8 @@ async function parseSlashCommands(text) {
 
   // /list-schedules — refresh the scheduled job strip
   if (/^\/list-schedules\b\s*/i.test(text)) {
-    const jobs = await refreshScheduledJobs();
+    const jobs = await refreshScheduledJobs({ tabId });
+    if (currentTabId !== tabId) return '';
     addMessage('system', visibleScheduledJobs(jobs).length
       ? t('sp.schedule_form.list_refreshed')
       : t('sp.schedule_form.none'));
@@ -1607,23 +1933,22 @@ async function parseSlashCommands(text) {
 
   // /show-scratchpad — dump the current tab's agent scratchpad
   if (/^\/show-scratchpad\b\s*/i.test(text)) {
-    await showScratchpad();
+    await showScratchpad(tabId);
     return '';
   }
 
   // /schedule — open a deterministic scheduled-task composer
   const mSchedule = text.match(/^\/schedule\b\s*/i);
   if (mSchedule) {
-    renderScheduleComposer(text.slice(mSchedule[0].length).trim());
+    renderScheduleComposer(text.slice(mSchedule[0].length).trim(), tabId);
     return '';
   }
 
   // /allow-api — enable API mutation override
   const mApi = text.match(/^\/allow-api\b\s*/i);
   if (mApi) {
-    const wasAlreadyAllowed = apiMutationsAllowed;
-    apiMutationsAllowed = true;
-    updateApiBadge();
+    const wasAlreadyAllowed = isApiMutationsAllowedForTab(tabId);
+    setApiMutationsAllowedForTab(tabId, true);
     if (!wasAlreadyAllowed) {
       addMessage('system', t('sp.api.enabled_html'));
     }
@@ -1633,7 +1958,9 @@ async function parseSlashCommands(text) {
   // /compact — force context compaction for this conversation
   const mCompact = text.match(/^\/compact\b\s*/i);
   if (mCompact) {
-    const res = await sendToBackground('compact_conversation', { tabId: currentTabId });
+    const remainder = text.slice(mCompact[0].length).trim();
+    const res = await sendToBackground('compact_conversation', { tabId });
+    if (currentTabId !== tabId) return remainder;
     if (res?.ok && res.compacted) {
       addContextCompactedNote({ ...res, manual: true });
     } else if (res?.ok && res.reason === 'busy') {
@@ -1641,16 +1968,17 @@ async function parseSlashCommands(text) {
     } else if (res?.ok) {
       addMessage('system', t('sp.compact.nothing_to_compact'));
     } else {
-      addMessage('system', t('sp.compact.failed', { error: res?.error || 'unknown error' }));
+      addMessage('system', tSystemHtml('sp.compact.failed', { error: res?.error || 'unknown error' }));
     }
-    return text.slice(mCompact[0].length).trim();
+    return remainder;
   }
 
   // /verbose — toggle verbose/compact tool display
   if (/^\/verbose\b\s*/i.test(text)) {
     verboseMode = !verboseMode;
     if (verboseBtn) verboseBtn.classList.toggle('active', verboseMode);
-    chrome.storage.local.set({ verboseMode }).catch(() => {});
+    await chrome.storage.local.set({ verboseMode }).catch(() => {});
+    if (currentTabId !== tabId) return '';
     addMessage('system', verboseMode
       ? t('sp.compact.verbose_on')
       : t('sp.compact.verbose_off'));
@@ -1659,31 +1987,26 @@ async function parseSlashCommands(text) {
 
   // /reset — clear conversation (same as clear button)
   if (/^\/reset\b\s*/i.test(text)) {
-    await sendToBackground('clear_conversation', { tabId: currentTabId });
-    messagesEl.innerHTML = '';
-    addMessage('system', t('sp.cleared_message'));
-    if (currentTabId != null) {
-      tabChats.delete(currentTabId);
-      chrome.storage.session?.remove(TAB_CHAT_PREFIX + currentTabId).catch(() => {});
-    }
-    apiMutationsAllowed = false;
-    updateApiBadge();
-    refreshScheduledJobs();
+    await sendToBackground('clear_conversation', { tabId });
+    renderClearedConversationForTab(tabId);
     return '';
   }
 
   // /screenshot — capture visible tab and display in chat
   if (/^\/screenshot\b\s*/i.test(text)) {
     try {
-      const tab = await chrome.tabs.query({ active: true, currentWindow: true });
-      const windowId = tab[0]?.windowId;
-      if (windowId) {
+      const tab = tabId == null ? null : await chrome.tabs.get(tabId);
+      if (currentTabId !== tabId || !tab?.active) return '';
+      const windowId = tab?.windowId;
+      if (windowId != null) {
         const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+        if (currentTabId !== tabId) return '';
         const imgHtml = `<img src="${dataUrl}" style="max-width:100%;border-radius:6px;margin:4px 0;" alt="Screenshot"/>`;
         addMessage('system', imgHtml);
       }
     } catch (e) {
-      addMessage('system', t('sp.screenshot.error', { msg: e.message }));
+      if (currentTabId !== tabId) return '';
+      addMessage('system', tSystemHtml('sp.screenshot.error', { msg: e.message }));
     }
     return '';
   }
@@ -1692,16 +2015,18 @@ async function parseSlashCommands(text) {
   if (/^\/record(?:\s|$)/i.test(text)) {
     try {
       const res = await sendToBackground('start_tab_recording', {
-        tabId: currentTabId,
+        tabId,
         options: { video: true, mic: true },
       });
+      if (currentTabId !== tabId) return '';
       if (!res?.ok) {
-        addMessage('system', t('sp.record.error', { error: res?.error || 'unknown' }));
+        addMessage('system', tSystemHtml('sp.record.error', { error: res?.error || 'unknown' }));
       } else if (res.state && res.state.hasMic === false && res.state.micError) {
-        addMessage('system', t('sp.record.mic_unavailable', { error: res.state.micError }));
+        addMessage('system', tSystemHtml('sp.record.mic_unavailable', { error: res.state.micError }));
       }
     } catch (e) {
-      addMessage('system', t('sp.record.error', { error: e.message }));
+      if (currentTabId !== tabId) return '';
+      addMessage('system', tSystemHtml('sp.record.error', { error: e.message }));
     }
     return '';
   }
@@ -1728,8 +2053,13 @@ async function parseSlashCommands(text) {
     const a = document.createElement('a');
     a.href = url;
     a.download = `webbrain-chat-${Date.now()}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+    document.body.appendChild(a);
+    try {
+      a.click();
+    } finally {
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 7000);
+    }
     addMessage('system', t('sp.export.done'));
     return '';
   }
@@ -1739,6 +2069,7 @@ async function parseSlashCommands(text) {
     const stored = await chrome.storage.local.get(['profileEnabled', 'profileText']);
     const newState = !stored.profileEnabled;
     await chrome.storage.local.set({ profileEnabled: newState });
+    if (currentTabId !== tabId) return '';
     addMessage('system', newState
       ? t('sp.profile.on')
       : t('sp.profile.off'));
@@ -1771,12 +2102,14 @@ async function parseSlashCommands(text) {
           providerId: active,
           config: { ...config, supportsVision: newVision },
         });
+        if (currentTabId !== tabId) return '';
         addMessage('system', newVision
           ? t('sp.vision.on')
           : t('sp.vision.off'));
       }
     } catch (e) {
-      addMessage('system', t('sp.vision.error', { msg: e.message }));
+      if (currentTabId !== tabId) return '';
+      addMessage('system', tSystemHtml('sp.vision.error', { msg: e.message }));
     }
     return '';
   }
@@ -1803,6 +2136,10 @@ function updateApiBadge() {
 async function sendMessage(extraChatParams) {
   let text = inputEl.value.trim();
   if (!text || isProcessing) return;
+  const tabId = currentTabId;
+  const modeForSend = /^\/(?:ask|plan)\b/i.test(text) ? 'ask' : agentMode;
+  const apiMutationsAllowedForSend = isApiMutationsAllowedForTab(tabId) || /^\/allow-api\b/i.test(text);
+  saveInputDraftForTab(tabId, '');
   hideSlashCommandAutocomplete();
 
   // Clear input early so slash commands don't linger visually.
@@ -1813,7 +2150,12 @@ async function sendMessage(extraChatParams) {
 
   // Parse any leading slash command. parseSlashCommands may strip the
   // command from `text` and toggle apiMutationsAllowed as a side effect.
-  text = await parseSlashCommands(text);
+  text = await parseSlashCommands(text, tabId);
+  const renderToCurrentTab = currentTabId === tabId;
+  if (!renderToCurrentTab) {
+    if (text) saveInputDraftForTab(tabId, text);
+    return false;
+  }
   // If the entire message was just the slash command, there's nothing
   // left to send to the agent — bail out after the side effect.
   if (!text) {
@@ -1822,68 +2164,67 @@ async function sendMessage(extraChatParams) {
     return;
   }
 
-  isProcessing = true;
-  hideRecommendedActions();
-  abortRequested = false;
-  sendBtn.disabled = true;
-  inputEl.value = '';
-  autoResizeInput();
-
-  addMessage('user', text);
-  showActivity(t('sp.activity.thinking'));
-
-  currentAssistantEl = addMessage('assistant', '');
+  let assistantEl = null;
+  if (renderToCurrentTab) {
+    isProcessing = true;
+    abortRequested = false;
+    sendBtn.disabled = true;
+    inputEl.value = '';
+    autoResizeInput();
+    hideRecommendedActions();
+    addMessage('user', text);
+    showActivity(t('sp.activity.thinking'));
+    assistantEl = addMessage('assistant', '');
+    currentAssistantEl = assistantEl;
+  }
 
   let accepted = false;
   try {
     const res = await sendToBackground('chat', {
-      tabId: currentTabId,
+      tabId,
       text,
-      mode: agentMode,
-      apiMutationsAllowed,
+      mode: modeForSend,
+      apiMutationsAllowed: apiMutationsAllowedForSend,
       ...extraChatParams,
     });
     accepted = true;
 
-    if (abortRequested) {
+    if (renderToCurrentTab && currentTabId === tabId && abortRequested) {
       // Agent was stopped — show what we got so far
-      const textEl = currentAssistantEl?.querySelector('.message-text');
+      const textEl = assistantEl?.querySelector('.message-text');
       if (textEl && !textEl.textContent.trim()) {
         textEl.innerHTML = formatMarkdown(res?.content || t('sp.stopped_by_user'));
-        addMessageCopyButton(currentAssistantEl);
+        addMessageCopyButton(assistantEl);
       }
-    } else if (res?.content && currentAssistantEl) {
-      const textEl = currentAssistantEl.querySelector('.message-text');
+    } else if (renderToCurrentTab && currentTabId === tabId && res?.content && assistantEl) {
+      const textEl = assistantEl.querySelector('.message-text');
       if (textEl && !textEl.textContent.trim()) {
         textEl.innerHTML = formatMarkdown(res.content);
-        addMessageCopyButton(currentAssistantEl);
+        addMessageCopyButton(assistantEl);
       }
     }
   } catch (e) {
-    if (!abortRequested) {
+    if (renderToCurrentTab && currentTabId === tabId && !abortRequested) {
       addMessage('error', t('sp.error_prefix', { msg: e.message }));
     }
   } finally {
-    finalizeSteps();
+    if (renderToCurrentTab && currentTabId === tabId) finalizeSteps(assistantEl);
     // Chime the user when the agent finishes. We play on both success and
     // error completion — anything that wasn't an explicit user abort. The
     // sound is what takes them from "glance back at the tab" to "know it's
     // done" without having to sit and watch the sidebar.
     const wasAborted = abortRequested;
-    isProcessing = false;
-    abortRequested = false;
-    sendBtn.disabled = false;
-    hideActivity();
-    currentAssistantEl = null;
-    scrollToBottom();
-    if (!wasAborted) playCompletionSound();
-    refreshRecommendedActions();
-    if (pendingTabSwitch != null) {
-      const pending = pendingTabSwitch;
-      pendingTabSwitch = null;
-      await switchToTab(pending);
+    if (renderToCurrentTab) {
+      isProcessing = false;
+      abortRequested = false;
+      sendBtn.disabled = false;
+      hideActivity();
     }
-    drainQueuedContextMenuPrompts();
+    if (currentAssistantEl === assistantEl) currentAssistantEl = null;
+    if (renderToCurrentTab && currentTabId === tabId) scrollToBottom();
+    if (renderToCurrentTab && !wasAborted) playCompletionSound();
+    if (renderToCurrentTab && currentTabId === tabId) refreshRecommendedActions();
+    await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
   return accepted;
 }
@@ -2246,6 +2587,7 @@ function renderClarifyCard(data) {
   const card = document.createElement('div');
   card.className = 'clarify-card';
   card.dataset.clarifyId = clarifyId;
+  card.dataset.tabId = String(tabId);
   if (scheduledJobId) {
     card.dataset.scheduledJobId = scheduledJobId;
   }
@@ -2285,6 +2627,7 @@ function renderClarifyCard(data) {
       b.type = 'button';
       b.className = 'clarify-option';
       b.textContent = String(label).slice(0, 200);
+      b.dataset.value = value;
       b.addEventListener('click', () => submitClarify(card, tabId, clarifyId, value, 'option'));
       optionsEl.appendChild(b);
     }
@@ -2396,7 +2739,7 @@ function submitClarify(card, tabId, clarifyId, answer, source) {
         isProcessing = false;
         sendBtn.disabled = false;
         hideActivity();
-        drainQueuedContextMenuPrompts();
+        drainQueuedContextMenuPromptsAfterPendingTabSwitch();
       }
       /* background may be torn down — clarify state already lives there */
     });
@@ -2533,7 +2876,10 @@ function appendVerboseToolCall(name, args) {
 
   const header = document.createElement('div');
   header.className = 'tool-call-header';
-  header.innerHTML = `<span class="icon">\u26A1</span> ${name}`;
+  const icon = document.createElement('span');
+  icon.className = 'icon';
+  icon.textContent = '\u26A1';
+  header.append(icon, document.createTextNode(` ${name || ''}`));
 
   const body = document.createElement('div');
   body.className = 'tool-call-body';
@@ -2647,6 +2993,8 @@ function showContinueButton() {
 }
 
 async function continueAgent() {
+  const tabId = currentTabId;
+  const modeForSend = agentMode;
   // Remove the continue bar
   document.querySelectorAll('.continue-bar').forEach(el => el.remove());
 
@@ -2654,35 +3002,36 @@ async function continueAgent() {
   abortRequested = false;
   sendBtn.disabled = true;
 
-  currentAssistantEl = addMessage('assistant', '');
+  const assistantEl = addMessage('assistant', '');
+  currentAssistantEl = assistantEl;
   showActivity(t('sp.activity.continuing'));
 
   try {
     const res = await sendToBackground('continue', {
-      tabId: currentTabId,
-      mode: agentMode,
+      tabId,
+      mode: modeForSend,
     });
 
-    if (res?.content && currentAssistantEl) {
-      const textEl = currentAssistantEl.querySelector('.message-text');
+    if (currentTabId === tabId && res?.content && assistantEl) {
+      const textEl = assistantEl.querySelector('.message-text');
       if (textEl && !textEl.textContent.trim()) {
         textEl.innerHTML = formatMarkdown(res.content);
-        addMessageCopyButton(currentAssistantEl);
+        addMessageCopyButton(assistantEl);
       }
     }
   } catch (e) {
-    if (!abortRequested) {
+    if (currentTabId === tabId && !abortRequested) {
       addMessage('error', t('sp.error_prefix', { msg: e.message }));
     }
   } finally {
-    finalizeSteps();
+    if (currentTabId === tabId) finalizeSteps(assistantEl);
     isProcessing = false;
     abortRequested = false;
     sendBtn.disabled = false;
     hideActivity();
-    currentAssistantEl = null;
-    scrollToBottom();
-    drainQueuedContextMenuPrompts();
+    if (currentAssistantEl === assistantEl) currentAssistantEl = null;
+    if (currentTabId === tabId) scrollToBottom();
+    await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
 }
 
@@ -2881,7 +3230,21 @@ function addMessageCopyButton(msgEl) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(str == null ? '' : str).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[c]));
+}
+
+function tSystemHtml(key, params) {
+  const safeParams = {};
+  for (const [name, value] of Object.entries(params || {})) {
+    safeParams[name] = escapeHtml(value);
+  }
+  return t(key, safeParams);
 }
 
 function truncate(str, len) {
@@ -2944,7 +3307,7 @@ function sendToBackground(action, data = {}) {
 
 // --- Keyboard shortcuts ---
 
-function handleGlobalKeydown(e) {
+async function handleGlobalKeydown(e) {
   if (e.defaultPrevented) return;
 
   // Don't steal shortcuts from other input elements (e.g. schedule form fields)
@@ -2969,7 +3332,7 @@ function handleGlobalKeydown(e) {
   // Ctrl+Shift+X: switch to Act mode (blocked while agent is running)
   if (mod && e.shiftKey && e.key === 'X' && !isProcessing) {
     e.preventDefault();
-    ensureActMode();
+    await ensureActMode();
     return;
   }
   // Escape: abort running agent (only when slash menu is not open)
@@ -3012,7 +3375,7 @@ async function ensureActMode() {
     if (!stored.actConfirmed) {
       const ok = confirm(t('sp.mode.act.confirm'));
       if (!ok) return false;
-      chrome.storage.local.set({ actConfirmed: true }).catch(() => {});
+      await chrome.storage.local.set({ actConfirmed: true }).catch(() => {});
     }
   } catch (e) { /* storage unavailable, fall through */ }
   setMode('act');
@@ -3021,8 +3384,8 @@ async function ensureActMode() {
 
 modeAskBtn.addEventListener('click', () => setMode('ask'));
 
-modeActBtn.addEventListener('click', () => {
-  ensureActMode();
+modeActBtn.addEventListener('click', async () => {
+  await ensureActMode();
 });
 
 
@@ -3040,7 +3403,7 @@ async function abortRun() {
   }
 
   // Force UI to settle even if background doesn't respond cleanly
-  setTimeout(() => {
+  setTimeout(async () => {
     if (abortRequested) {
       finalizeSteps();
       if (currentAssistantEl) {
@@ -3054,6 +3417,7 @@ async function abortRun() {
       hideActivity();
       currentAssistantEl = null;
       abortRequested = false;
+      await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
     }
   }, 3000); // safety timeout if background takes too long
 }
@@ -3085,23 +3449,31 @@ document.addEventListener('wb-locale-changed', () => {
 });
 
 clearBtn.addEventListener('click', async () => {
-  await sendToBackground('clear_conversation', { tabId: currentTabId });
-  messagesEl.innerHTML = '';
-  addMessage('system', t('sp.cleared_message'));
-  if (currentTabId != null) {
-    tabChats.delete(currentTabId);
-    chrome.storage.session?.remove(TAB_CHAT_PREFIX + currentTabId).catch(() => {});
-  }
-  // Per-conversation flags reset on clear.
-  apiMutationsAllowed = false;
-  updateApiBadge();
-  refreshScheduledJobs();
-  refreshRecommendedActions();
+  const tabId = currentTabId;
+  await sendToBackground('clear_conversation', { tabId });
+  renderClearedConversationForTab(tabId);
 });
 
 providerSelect.addEventListener('change', async () => {
-  await sendToBackground('set_active_provider', { providerId: providerSelect.value });
-  await testConnection();
+  const providerId = providerSelect.value;
+  const requestId = ++providerSelectionRequestId;
+  providerTestRequestId += 1;
+  try {
+    await sendToBackground('set_active_provider', { providerId });
+  } catch (e) {
+    if (requestId === providerSelectionRequestId && providerSelect.value === providerId) {
+      markSelectedProviderFailed(e);
+    }
+    return;
+  }
+  if (requestId !== providerSelectionRequestId || providerSelect.value !== providerId) {
+    const latestProviderId = providerSelect.value;
+    if (latestProviderId && latestProviderId !== providerId) {
+      sendToBackground('set_active_provider', { providerId: latestProviderId }).catch(() => {});
+    }
+    return;
+  }
+  await testConnection({ providerId });
 });
 
 settingsBtn.addEventListener('click', () => {
@@ -3115,8 +3487,8 @@ if (languageSelect) {
     .map((l) => `<option value="${l.code}">${l.label}</option>`)
     .join('');
   languageSelect.value = getLocale();
-  languageSelect.addEventListener('change', () => {
-    setLocale(languageSelect.value);
+  languageSelect.addEventListener('change', async () => {
+    await setLocale(languageSelect.value);
     applyDOMTranslations(document);
     updateInputPlaceholder();
   });

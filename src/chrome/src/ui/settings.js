@@ -8,7 +8,7 @@ import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
-const EXT_VERSION = '16.0.0';
+const EXT_VERSION = '17.0.0';
 
 const providersContainer = document.getElementById('providers');
 const verboseToggle = document.getElementById('toggle-verbose');
@@ -74,10 +74,10 @@ if (themeSelect) {
     themeSelect.value = mode;
     applyMode(mode, { syncStorage: false }); // already loaded, just paint
   });
-  themeSelect.addEventListener('change', () => {
+  themeSelect.addEventListener('change', async () => {
     const mode = THEME_MODES.includes(themeSelect.value) ? themeSelect.value : 'system';
     currentThemeMode = mode;
-    applyMode(mode);
+    await applyMode(mode);
   });
   watch(() => currentThemeMode);
   // If another Settings tab or the side panel flips the theme, watch()
@@ -103,8 +103,8 @@ renderSubtitle();
 if (languageSelect) {
   languageSelect.innerHTML = LANGUAGES.map((l) => `<option value="${l.code}">${l.label}</option>`).join('');
   languageSelect.value = getLocale();
-  languageSelect.addEventListener('change', () => {
-    setLocale(languageSelect.value);
+  languageSelect.addEventListener('change', async () => {
+    await setLocale(languageSelect.value);
     // Re-render dynamic bits whose text comes from JS.
     renderSubtitle();
     renderAuthSection();
@@ -121,6 +121,8 @@ if (languageSelect) {
 
 let providersData = {};
 let activeProviderId = '';
+let providerActivationRequestId = 0;
+let requestedActiveProviderId = '';
 let authToken = '';
 let authEmail = '';
 let authDefaultModel = '';
@@ -391,13 +393,13 @@ async function logout() {
   renderAuthSection();
 }
 
-window.addEventListener('message', (event) => {
+window.addEventListener('message', async (event) => {
   if (event.data?.type === 'WB_AUTH_TOKEN') {
     const { token, email, defaultModel } = event.data;
     authToken = token;
     authEmail = email;
     authDefaultModel = defaultModel || 'openai/gpt-4o';
-    chrome.storage.local.set({ authToken, authEmail, authDefaultModel });
+    await chrome.storage.local.set({ authToken, authEmail, authDefaultModel }).catch(() => {});
     renderAuthSection();
     autoConfigureWebbrainProvider();
   }
@@ -412,57 +414,57 @@ async function autoConfigureWebbrainProvider() {
 
 // --- Display Settings ---
 
-verboseToggle.addEventListener('change', () => {
-  chrome.storage.local.set({ verboseMode: verboseToggle.checked });
+verboseToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ verboseMode: verboseToggle.checked }).catch(() => {});
 });
 
-screenshotToggle.addEventListener('change', () => {
-  chrome.storage.local.set({ screenshotFallback: screenshotToggle.checked });
+screenshotToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ screenshotFallback: screenshotToggle.checked }).catch(() => {});
 });
 
 maxStepsRange.addEventListener('input', () => {
   stepsValueLabel.textContent = Number(maxStepsRange.value) === MAX_AGENT_STEPS_UNLIMITED_SENTINEL ? '∞' : maxStepsRange.value;
 });
 
-maxStepsRange.addEventListener('change', () => {
-  chrome.storage.local.set({
+maxStepsRange.addEventListener('change', async () => {
+  await chrome.storage.local.set({
     maxAgentSteps: Number(maxStepsRange.value) === MAX_AGENT_STEPS_UNLIMITED_SENTINEL
       ? 0
       : parseInt(maxStepsRange.value, 10),
-  });
+  }).catch(() => {});
 });
 
 if (requestTimeoutRange) {
   requestTimeoutRange.addEventListener('input', () => {
     requestTimeoutValueLabel.textContent = requestTimeoutRange.value + 's';
   });
-  requestTimeoutRange.addEventListener('change', () => {
+  requestTimeoutRange.addEventListener('change', async () => {
     // Stored as ms (the provider code consumes ms). UI shows seconds.
     const sec = parseInt(requestTimeoutRange.value, 10);
-    chrome.storage.local.set({ requestTimeoutMs: sec * 1000 });
+    await chrome.storage.local.set({ requestTimeoutMs: sec * 1000 }).catch(() => {});
   });
 }
 
-autoScreenshotSelect.addEventListener('change', () => {
-  chrome.storage.local.set({ autoScreenshot: autoScreenshotSelect.value });
+autoScreenshotSelect.addEventListener('change', async () => {
+  await chrome.storage.local.set({ autoScreenshot: autoScreenshotSelect.value }).catch(() => {});
 });
 
-siteAdaptersToggle.addEventListener('change', () => {
-  chrome.storage.local.set({ useSiteAdapters: siteAdaptersToggle.checked });
+siteAdaptersToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ useSiteAdapters: siteAdaptersToggle.checked }).catch(() => {});
 });
 
-notifySoundToggle.addEventListener('change', () => {
-  chrome.storage.local.set({ notifySound: notifySoundToggle.checked });
+notifySoundToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ notifySound: notifySoundToggle.checked }).catch(() => {});
 });
 
-tracingToggle.addEventListener('change', () => {
-  chrome.storage.local.set({ tracingEnabled: tracingToggle.checked });
+tracingToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ tracingEnabled: tracingToggle.checked }).catch(() => {});
 });
 
-costSessionLimitInput?.addEventListener('change', () => {
+costSessionLimitInput?.addEventListener('change', async () => {
   const value = normalizeCostAmount(costSessionLimitInput.value);
   costSessionLimitInput.value = value.toFixed(2);
-  chrome.storage.local.set({ costAllowanceSessionUsd: value });
+  await chrome.storage.local.set({ costAllowanceSessionUsd: value }).catch(() => {});
 });
 
 costTotalLimitInput?.addEventListener('change', async () => {
@@ -470,7 +472,7 @@ costTotalLimitInput?.addEventListener('change', async () => {
   costTotalLimitInput.value = value.toFixed(2);
   const stored = await chrome.storage.local.get(['cloudCostSpentUsd']);
   renderCostAllowanceSpent(normalizeCostAmount(stored.cloudCostSpentUsd, 0), value);
-  chrome.storage.local.set({ costAllowanceTotalUsd: value });
+  await chrome.storage.local.set({ costAllowanceTotalUsd: value }).catch(() => {});
 });
 
 btnResetCostSpend?.addEventListener('click', async () => {
@@ -479,35 +481,41 @@ btnResetCostSpend?.addEventListener('click', async () => {
 });
 
 if (strictSecretToggle) {
-  strictSecretToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ strictSecretMode: strictSecretToggle.checked });
+  strictSecretToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ strictSecretMode: strictSecretToggle.checked }).catch(() => {});
   });
 }
 
 if (allowLocalNetworkToggle) {
-  allowLocalNetworkToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ agentAllowLocalNetwork: allowLocalNetworkToggle.checked });
+  allowLocalNetworkToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ agentAllowLocalNetwork: allowLocalNetworkToggle.checked }).catch(() => {});
   });
 }
 
 if (scheduledTasksToggle) {
-  scheduledTasksToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ scheduledTasksEnabled: scheduledTasksToggle.checked });
+  scheduledTasksToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ scheduledTasksEnabled: scheduledTasksToggle.checked }).catch(() => {});
   });
 }
 
 if (scheduledConfirmToggle) {
-  scheduledConfirmToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ scheduledRequireConsequentialConfirmation: scheduledConfirmToggle.checked });
+  scheduledConfirmToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ scheduledRequireConsequentialConfirmation: scheduledConfirmToggle.checked }).catch(() => {});
   });
 }
 
 // --- Vision Model ---
 
-function flashVisionResult(className, text) {
-  visionTestResult.className = `test-result show ${className}`;
+function showVisionResult(className, text, color = '') {
+  visionTestResult.className = `test-result show${className ? ` ${className}` : ''}`;
   visionTestResult.textContent = text;
-  setTimeout(() => visionTestResult.classList.remove('show'), 2000);
+  visionTestResult.style.color = color || '';
+  return visionTestResult;
+}
+
+function flashVisionResult(className, text) {
+  const resultEl = showVisionResult(className, text);
+  setTimeout(() => resultEl.classList.remove('show'), 2000);
 }
 
 btnSaveVision.addEventListener('click', async () => {
@@ -533,9 +541,8 @@ btnTestVision.addEventListener('click', async () => {
   const model = visionModelInput.value.trim();
 
   if (!baseUrl || !model) {
-    visionTestResult.className = 'test-result show fail';
-    visionTestResult.textContent = t('st.vision.fill_required');
-    setTimeout(() => visionTestResult.classList.remove('show'), 2500);
+    const resultEl = showVisionResult('fail', t('st.vision.fill_required'));
+    setTimeout(() => resultEl.classList.remove('show'), 2500);
     return;
   }
 
@@ -543,17 +550,17 @@ btnTestVision.addEventListener('click', async () => {
     visionModel: { baseUrl, apiKey, model },
   });
 
-  visionTestResult.className = 'test-result show';
-  visionTestResult.textContent = t('st.vision.testing');
-  visionTestResult.style.color = 'var(--text2)';
+  showVisionResult('', t('st.vision.testing'), 'var(--text2)');
 
-  const res = await sendToBackground('test_vision_provider');
-  if (res.ok) {
-    visionTestResult.className = 'test-result show ok';
-    visionTestResult.textContent = t('st.vision.connected', { model: res.model || model });
-  } else {
-    visionTestResult.className = 'test-result show fail';
-    visionTestResult.textContent = t('st.vision.failed', { error: res.error });
+  try {
+    const res = await sendToBackground('test_vision_provider');
+    if (res?.ok) {
+      showVisionResult('ok', t('st.vision.connected', { model: res.model || model }));
+    } else {
+      showVisionResult('fail', t('st.vision.failed', { error: res?.error || 'Unknown error' }));
+    }
+  } catch (e) {
+    showVisionResult('fail', t('st.vision.failed', { error: e.message }));
   }
 });
 
@@ -573,11 +580,17 @@ btnClearVision.addEventListener('click', async () => {
 // filled, and falls back to the auto-pick-from-providers behavior when
 // any field is empty.
 
-function flashTranscriptionResult(className, text) {
+function showTranscriptionResult(className, text, color = '') {
   if (!transcriptionTestResult) return;
-  transcriptionTestResult.className = `test-result show ${className}`;
+  transcriptionTestResult.className = `test-result show${className ? ` ${className}` : ''}`;
   transcriptionTestResult.textContent = text;
-  setTimeout(() => transcriptionTestResult.classList.remove('show'), 2000);
+  transcriptionTestResult.style.color = color || '';
+  return transcriptionTestResult;
+}
+
+function flashTranscriptionResult(className, text) {
+  const resultEl = showTranscriptionResult(className, text);
+  if (resultEl) setTimeout(() => resultEl.classList.remove('show'), 2000);
 }
 
 if (btnSaveTranscription) {
@@ -606,9 +619,8 @@ if (btnTestTranscription) {
     const model = transcriptionModelInput.value.trim();
 
     if (!baseUrl || !model) {
-      transcriptionTestResult.className = 'test-result show fail';
-      transcriptionTestResult.textContent = t('st.transcription.fill_required');
-      setTimeout(() => transcriptionTestResult.classList.remove('show'), 2500);
+      const resultEl = showTranscriptionResult('fail', t('st.transcription.fill_required'));
+      if (resultEl) setTimeout(() => resultEl.classList.remove('show'), 2500);
       return;
     }
 
@@ -617,17 +629,17 @@ if (btnTestTranscription) {
       transcriptionModel: { baseUrl, apiKey, model },
     });
 
-    transcriptionTestResult.className = 'test-result show';
-    transcriptionTestResult.textContent = t('st.transcription.testing');
-    transcriptionTestResult.style.color = 'var(--text2)';
+    showTranscriptionResult('', t('st.transcription.testing'), 'var(--text2)');
 
-    const res = await sendToBackground('test_transcription_provider');
-    if (res.ok) {
-      transcriptionTestResult.className = 'test-result show ok';
-      transcriptionTestResult.textContent = t('st.transcription.connected', { model: res.model || model });
-    } else {
-      transcriptionTestResult.className = 'test-result show fail';
-      transcriptionTestResult.textContent = t('st.transcription.failed', { error: res.error });
+    try {
+      const res = await sendToBackground('test_transcription_provider');
+      if (res?.ok) {
+        showTranscriptionResult('ok', t('st.transcription.connected', { model: res.model || model }));
+      } else {
+        showTranscriptionResult('fail', t('st.transcription.failed', { error: res?.error || 'Unknown error' }));
+      }
+    } catch (e) {
+      showTranscriptionResult('fail', t('st.transcription.failed', { error: e.message }));
     }
   });
 }
@@ -658,8 +670,8 @@ function flashProfileResult(className, text) {
 // for the on/off state so users don't get confused when the toggle
 // appears to not do anything.
 if (profileEnabledToggle) {
-  profileEnabledToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ profileEnabled: profileEnabledToggle.checked });
+  profileEnabledToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ profileEnabled: profileEnabledToggle.checked }).catch(() => {});
   });
 }
 
@@ -683,16 +695,22 @@ if (btnClearProfile) {
 // Toggle persists immediately so the prompt updates on the next agent turn
 // without forcing a Save click. The API key needs an explicit Save.
 
-function flashCaptchaResult(className, text) {
+function showCaptchaResult(className, text, color = '') {
   if (!captchaTestResult) return;
-  captchaTestResult.className = `test-result show ${className}`;
+  captchaTestResult.className = `test-result show${className ? ` ${className}` : ''}`;
   captchaTestResult.textContent = text;
-  setTimeout(() => captchaTestResult.classList.remove('show'), 3000);
+  captchaTestResult.style.color = color || '';
+  return captchaTestResult;
+}
+
+function flashCaptchaResult(className, text) {
+  const resultEl = showCaptchaResult(className, text);
+  if (resultEl) setTimeout(() => resultEl.classList.remove('show'), 3000);
 }
 
 if (captchaEnabledToggle) {
-  captchaEnabledToggle.addEventListener('change', () => {
-    chrome.storage.local.set({ captchaSolverEnabled: captchaEnabledToggle.checked });
+  captchaEnabledToggle.addEventListener('change', async () => {
+    await chrome.storage.local.set({ captchaSolverEnabled: captchaEnabledToggle.checked }).catch(() => {});
   });
 }
 
@@ -711,14 +729,16 @@ if (btnTestCaptcha) {
       flashCaptchaResult('fail', t('st.captcha.need_key'));
       return;
     }
-    captchaTestResult.className = 'test-result show';
-    captchaTestResult.textContent = t('st.captcha.checking');
-    captchaTestResult.style.color = 'var(--text2)';
-    const res = await sendToBackground('test_capsolver_balance', { apiKey: key });
-    if (res.ok) {
-      flashCaptchaResult('ok', t('st.captcha.balance_ok', { balance: `$${Number(res.balance).toFixed(4)}` }));
-    } else {
-      flashCaptchaResult('fail', t('st.captcha.balance_fail', { error: res.error }));
+    showCaptchaResult('', t('st.captcha.checking'), 'var(--text2)');
+    try {
+      const res = await sendToBackground('test_capsolver_balance', { apiKey: key });
+      if (res?.ok) {
+        flashCaptchaResult('ok', t('st.captcha.balance_ok', { balance: `$${Number(res.balance).toFixed(4)}` }));
+      } else {
+        flashCaptchaResult('fail', t('st.captcha.balance_fail', { error: res?.error || 'Unknown error' }));
+      }
+    } catch (e) {
+      flashCaptchaResult('fail', t('st.captcha.balance_fail', { error: e.message }));
     }
   });
 }
@@ -816,7 +836,7 @@ function renderProviders() {
     ollama: {
       fields: [
         { key: 'baseUrl', labelKey: 'st.provider.field.server_url', type: 'text', placeholder: 'http://localhost:11434/v1' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'llama3.1' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'qwen3.6:35b-a3b' },
         CONTEXT_WINDOW_FIELD,
         { key: 'supportsVision', labelKey: 'st.provider.field.supports_vision', type: 'checkbox' },
         PROMPT_TIER_FIELD,
@@ -835,7 +855,7 @@ function renderProviders() {
       fields: [
         { key: 'baseUrl', labelKey: 'st.provider.field.server_url', type: 'text', placeholder: 'http://localhost:1337/v1' },
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'optional' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'llama3.2-3b-instruct' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gemma-4-12b-qat' },
         CONTEXT_WINDOW_FIELD,
         { key: 'supportsVision', labelKey: 'st.provider.field.supports_vision', type: 'checkbox' },
         PROMPT_TIER_FIELD,
@@ -845,7 +865,7 @@ function renderProviders() {
       fields: [
         { key: 'baseUrl', labelKey: 'st.provider.field.server_url', type: 'text', placeholder: 'http://localhost:8000/v1' },
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'optional' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'NousResearch/Meta-Llama-3-8B-Instruct' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gemma/gemma4-31b-qat' },
         CONTEXT_WINDOW_FIELD,
         { key: 'supportsVision', labelKey: 'st.provider.field.supports_vision', type: 'checkbox' },
         PROMPT_TIER_FIELD,
@@ -855,7 +875,7 @@ function renderProviders() {
       fields: [
         { key: 'baseUrl', labelKey: 'st.provider.field.server_url', type: 'text', placeholder: 'http://localhost:30000/v1' },
         { key: 'apiKey', labelKey: 'st.provider.field.api_key', type: 'password', placeholder: 'optional' },
-        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'Qwen/Qwen3-4B' },
+        { key: 'model', labelKey: 'st.provider.field.model', type: 'text', placeholder: 'gemma/gemma4-31b-qat' },
         CONTEXT_WINDOW_FIELD,
         { key: 'supportsVision', labelKey: 'st.provider.field.supports_vision', type: 'checkbox' },
         PROMPT_TIER_FIELD,
@@ -1174,7 +1194,7 @@ function renderProviderFilterBar() {
     btn.className = `provider-filter-pill${providerFilter === f.key ? ' active' : ''}`;
     btn.dataset.filter = f.key;
     btn.textContent = t(f.labelKey);
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       if (providerFilter === f.key) return;
       // Snapshot whatever the user has typed but not yet saved BEFORE we
       // rebuild the DOM — otherwise input values for the currently-rendered
@@ -1182,7 +1202,7 @@ function renderProviderFilterBar() {
       // to compare two providers).
       syncInputsIntoProvidersData();
       providerFilter = f.key;
-      try { chrome.storage.local.set({ providerFilter: f.key }); } catch {}
+      await chrome.storage.local.set({ providerFilter: f.key }).catch(() => {});
       renderProviders();
     });
     bar.appendChild(btn);
@@ -1353,29 +1373,54 @@ async function signOutOfClaude(id) {
   await refreshClaudeOAuthStatus(id);
 }
 
-async function loadProviderModels(id) {
+function setProviderLoadModelsStatus(id, message, color = 'var(--text2)') {
   const statusEl = document.querySelector(`.load-models-status[data-provider="${id}"]`);
-  const datalistEl = document.getElementById(`models-${id}`);
+  if (!statusEl) return null;
+  statusEl.textContent = message;
+  statusEl.style.color = color;
+  return statusEl;
+}
+
+async function loadProviderModels(id) {
+  let datalistEl = document.getElementById(`models-${id}`);
   if (!datalistEl) return;
   // Persist whatever the user has typed in baseUrl/model so the background
   // call uses the current values, not stale storage.
-  await saveProvider(id, { showFlash: false });
-  if (statusEl) statusEl.textContent = t('st.providers.loading');
-  const res = await sendToBackground('list_provider_models', { providerId: id });
-  if (res.ok) {
+  try {
+    await saveProvider(id, { showFlash: false });
+  } catch (e) {
+    setProviderLoadModelsStatus(id, e.message, 'var(--danger, #c33)');
+    return;
+  }
+
+  setProviderLoadModelsStatus(id, t('st.providers.loading'));
+  let res;
+  try {
+    res = await sendToBackground('list_provider_models', { providerId: id });
+  } catch (e) {
+    setProviderLoadModelsStatus(id, e.message, 'var(--danger, #c33)');
+    return;
+  }
+
+  datalistEl = document.getElementById(`models-${id}`);
+  if (!datalistEl) return;
+  if (res?.ok) {
     datalistEl.innerHTML = res.models
       .map((m) => `<option value="${escapeHtml(m)}"></option>`)
       .join('');
-    if (statusEl) {
-      statusEl.textContent = t('st.providers.models_loaded', { count: res.models.length });
-      statusEl.style.color = 'var(--text2)';
-    }
+    setProviderLoadModelsStatus(id, t('st.providers.models_loaded', { count: res.models.length }));
   } else {
-    if (statusEl) {
-      statusEl.textContent = res.error || 'Failed to load models';
-      statusEl.style.color = 'var(--danger, #c33)';
-    }
+    setProviderLoadModelsStatus(id, res?.error || 'Failed to load models', 'var(--danger, #c33)');
   }
+}
+
+function setProviderTestResult(id, className, message, color) {
+  const testEl = document.getElementById(`test-${id}`);
+  if (!testEl) return null;
+  testEl.className = `test-result show${className ? ` ${className}` : ''}`;
+  testEl.textContent = message;
+  testEl.style.color = color || '';
+  return testEl;
 }
 
 async function saveProvider(id, { showFlash = true } = {}) {
@@ -1385,33 +1430,41 @@ async function saveProvider(id, { showFlash = true } = {}) {
     config[input.dataset.key] = providerInputValue(input);
   });
 
-  await sendToBackground('update_provider', { providerId: id, config });
+  try {
+    await sendToBackground('update_provider', { providerId: id, config });
+  } catch (e) {
+    if (showFlash) setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
+    throw e;
+  }
+  if (providersData[id]) Object.assign(providersData[id], config);
 
   if (showFlash) {
-    const testEl = document.getElementById(`test-${id}`);
-    testEl.className = 'test-result show ok';
-    testEl.textContent = t('st.providers.saved');
-    setTimeout(() => testEl.classList.remove('show'), 2000);
+    const testEl = setProviderTestResult(id, 'ok', t('st.providers.saved'));
+    if (testEl) setTimeout(() => testEl.classList.remove('show'), 2000);
   }
 }
 
 async function testProvider(id) {
   // Skip the save-flash so its 2s auto-hide doesn't blank out the test result
   // mid-flight on slow endpoints.
-  await saveProvider(id, { showFlash: false });
+  try {
+    await saveProvider(id, { showFlash: false });
+  } catch (e) {
+    setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
+    return;
+  }
 
-  const testEl = document.getElementById(`test-${id}`);
-  testEl.className = 'test-result show';
-  testEl.textContent = t('st.providers.testing');
-  testEl.style.color = 'var(--text2)';
+  if (!setProviderTestResult(id, '', t('st.providers.testing'), 'var(--text2)')) return;
 
-  const res = await sendToBackground('test_provider', { providerId: id });
-  if (res.ok) {
-    testEl.className = 'test-result show ok';
-    testEl.textContent = t('st.providers.connected', { model: res.model || t('st.providers.unknown_model') });
-  } else {
-    testEl.className = 'test-result show fail';
-    testEl.textContent = t('st.providers.failed', { error: res.error });
+  try {
+    const res = await sendToBackground('test_provider', { providerId: id });
+    if (res.ok) {
+      setProviderTestResult(id, 'ok', t('st.providers.connected', { model: res.model || t('st.providers.unknown_model') }));
+    } else {
+      setProviderTestResult(id, 'fail', t('st.providers.failed', { error: res.error }));
+    }
+  } catch (e) {
+    setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
   }
 }
 
@@ -1432,7 +1485,23 @@ function syncInputsIntoProvidersData() {
 
 async function activateProvider(id) {
   syncInputsIntoProvidersData();
-  await sendToBackground('set_active_provider', { providerId: id });
+  requestedActiveProviderId = id;
+  const requestId = ++providerActivationRequestId;
+  try {
+    await sendToBackground('set_active_provider', { providerId: id });
+  } catch (e) {
+    if (requestId === providerActivationRequestId && requestedActiveProviderId === id) {
+      setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));
+    }
+    return;
+  }
+  if (requestId !== providerActivationRequestId || requestedActiveProviderId !== id) {
+    const latestProviderId = requestedActiveProviderId;
+    if (latestProviderId) {
+      sendToBackground('set_active_provider', { providerId: latestProviderId }).catch(() => {});
+    }
+    return;
+  }
   activeProviderId = id;
   renderProviders();
 }

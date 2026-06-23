@@ -11,6 +11,7 @@ import { strict as assert } from 'node:assert';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import vm from 'node:vm';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +42,18 @@ const { sanitizeLink, sanitizeMarkdownLinks } = await import(
 );
 const { sanitizeMarkdownLinks: sanitizeMarkdownLinksFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/markdown-link.js').replace(/\\/g, '/')
+);
+const { createContextMenuStorage: createContextMenuStorageCh } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/context-menu-storage.js').replace(/\\/g, '/')
+);
+const { createContextMenuStorage: createContextMenuStorageFx } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/context-menu-storage.js').replace(/\\/g, '/')
+);
+const { createContextMenuPromptHandler: createContextMenuPromptHandlerCh } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/ui/context-menu-prompts.js').replace(/\\/g, '/')
+);
+const { createContextMenuPromptHandler: createContextMenuPromptHandlerFx } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/ui/context-menu-prompts.js').replace(/\\/g, '/')
 );
 
 // permission-gate.js is pure JS (deterministic capability × origin gate).
@@ -160,6 +173,7 @@ const { Agent: AgentFx } = await import(
 const {
   COMPACT_TOOL_NAMES: COMPACT_TOOL_NAMES_CH,
   SYSTEM_PROMPT_ACT: SYSTEM_PROMPT_ACT_CH,
+  SYSTEM_PROMPT_ASK: SYSTEM_PROMPT_ASK_CH,
   SYSTEM_PROMPT_ACT_COMPACT: SYSTEM_PROMPT_ACT_COMPACT_CH,
   SYSTEM_PROMPT_ACT_MID: SYSTEM_PROMPT_ACT_MID_CH,
   getToolsForMode: getToolsForModeCh,
@@ -169,6 +183,7 @@ const {
 const {
   COMPACT_TOOL_NAMES: COMPACT_TOOL_NAMES_FX,
   SYSTEM_PROMPT_ACT: SYSTEM_PROMPT_ACT_FX,
+  SYSTEM_PROMPT_ASK: SYSTEM_PROMPT_ASK_FX,
   SYSTEM_PROMPT_ACT_COMPACT: SYSTEM_PROMPT_ACT_COMPACT_FX,
   SYSTEM_PROMPT_ACT_MID: SYSTEM_PROMPT_ACT_MID_FX,
   getToolsForMode: getToolsForModeFx,
@@ -1825,6 +1840,42 @@ test('getToolsForMode: compact mode restricts act tools in both browsers', () =>
   }
 });
 
+test('Chrome model-facing tools and prompts do not advertise execute_js', () => {
+  const chromePromptTexts = [
+    ['ask', SYSTEM_PROMPT_ASK_CH],
+    ['act:full', SYSTEM_PROMPT_ACT_CH],
+    ['act:mid', SYSTEM_PROMPT_ACT_MID_CH],
+    ['act:compact', SYSTEM_PROMPT_ACT_COMPACT_CH],
+  ];
+  for (const [label, prompt] of chromePromptTexts) {
+    assert.doesNotMatch(prompt, /\bexecute_js\b/, `chrome ${label} prompt must not mention execute_js`);
+  }
+
+  const chromeToolSets = [
+    ['ask', getToolsForModeCh('ask')],
+    ['act:full', getToolsForModeCh('act')],
+    ['act:mid', getToolsForModeCh('act', { tier: 'mid' })],
+    ['act:compact', getToolsForModeCh('act', { tier: 'compact' })],
+  ];
+  for (const [label, tools] of chromeToolSets) {
+    const names = tools.map(t => t.function?.name).filter(Boolean);
+    assert.equal(names.includes('execute_js'), false, `chrome ${label} tools must not expose execute_js`);
+    for (const tool of tools) {
+      assert.doesNotMatch(
+        JSON.stringify(tool.function),
+        /\bexecute_js\b/,
+        `chrome ${label} tool ${tool.function?.name} must not mention execute_js`
+      );
+    }
+  }
+});
+
+test('Firefox full act mode still exposes execute_js', () => {
+  const firefoxFullNames = getToolsForModeFx('act').map(t => t.function.name);
+  assert.equal(firefoxFullNames.includes('execute_js'), true);
+  assert.match(SYSTEM_PROMPT_ASK_FX + SYSTEM_PROMPT_ACT_FX, /\bexecute_js\b/);
+});
+
 test('getToolsForMode: compact flag does not shrink ask mode', () => {
   for (const getTools of [getToolsForModeCh, getToolsForModeFx]) {
     assert.deepEqual(
@@ -1889,8 +1940,21 @@ test('sidepanel exposes schedule slash commands in both builds', () => {
     assert.match(panel, /let assistantEl = currentAssistantEl/, `${label}: forced scheduled clarify cards should not overwrite the active assistant bubble`);
     assert.match(panel, /currentAssistantEl\.dataset\?\.scheduledJobId === scheduledJobId/, `${label}: scheduled clarify submission should not steal an unrelated active reply`);
     assert.match(panel, /res\?\.success === false \|\| res\?\.ok === false \|\| !res\?\.scheduledAt/, `${label}: schedule form should reject failed create responses before showing success`);
-    assert.match(panel, /async function renderScheduleComposer/, `${label}: schedule form should resolve initial defaults before display`);
-    assert.match(panel, /const initialScheduleUrl = await getCurrentScheduleUrl\(\)/, `${label}: schedule form should inspect the active tab URL before rendering`);
+    assert.match(panel, /async function getCurrentScheduleUrl\(tabId = currentTabId\)/, `${label}: schedule URL lookup should accept a captured tab id`);
+    assert.match(panel, /function replaceCachedScheduleComposer\(tabId, composerId, html\) \{[\s\S]*?form\.remove\(\);[\s\S]*?textEl\.innerHTML = html;[\s\S]*?\}/, `${label}: completed off-tab schedule creates should update cached composer HTML`);
+    assert.match(panel, /function updateCachedScheduleComposerError\(tabId, composerId, message\) \{[\s\S]*?form\.schedule-composer\[data-composer-id="\$\{composerId\}"\][\s\S]*?submit\.disabled = false;[\s\S]*?errorEl\.textContent = message \|\| '';[\s\S]*?\}/, `${label}: failed off-tab schedule creates should re-enable cached composers with the error`);
+    assert.match(panel, /async function renderScheduleComposer\(prefillPrompt = '', tabId = currentTabId\)/, `${label}: schedule form should capture the requested tab`);
+    assert.match(panel, /const initialScheduleUrl = await getCurrentScheduleUrl\(tabId\);[\s\S]*?if \(currentTabId !== tabId\) return;[\s\S]*?addMessage\('system', t\('sp\.schedule_form\.opened'\)\)/, `${label}: schedule form should resolve target defaults before rendering and drop stale tab switches`);
+    assert.match(panel, /form\.dataset\.tabId = String\(tabId\);/, `${label}: schedule form should retain its captured target tab`);
+    assert.match(panel, /form\.dataset\.composerId = `schedule-\$\{Date\.now\(\)\}-\$\{Math\.random\(\)\.toString\(36\)\.slice\(2\)\}`;/, `${label}: schedule form should tag its cached composer instance`);
+    assert.match(panel, /titleInput\.className = 'schedule-title'[\s\S]*?promptInput\.className = 'schedule-prompt'[\s\S]*?modeInput\.className = 'schedule-mode'/, `${label}: schedule form controls should have stable selectors for restore rebinding`);
+    assert.match(panel, /function getScheduleComposerTabId\(form\) \{[\s\S]*?form\?\.dataset\?\.tabId[\s\S]*?currentTabId[\s\S]*?\}/, `${label}: restored schedule composers should recover their captured tab id`);
+    assert.match(panel, /function bindScheduleComposer\(form\) \{[\s\S]*?form\.dataset\.bound = 'true';[\s\S]*?form\.addEventListener\('submit', \(e\) => submitScheduleComposer\(e, form\)\);[\s\S]*?\}/, `${label}: schedule composer listeners should be reusable after serialized restore`);
+    assert.match(panel, /bindScheduleComposer\(form\);[\s\S]*?content\.appendChild\(form\)/, `${label}: initial schedule composer render should use the reusable binder`);
+    assert.match(panel, /create_scheduled_job'[\s\S]*?\{\s*tabId,[\s\S]*?job:/, `${label}: schedule form should create jobs for the captured tab`);
+    assert.match(panel, /const createdHtml = tSystemHtml\('sp\.schedule_form\.created'[\s\S]*?if \(currentTabId !== tabId\) \{[\s\S]*?replaceCachedScheduleComposer\(tabId, form\.dataset\.composerId, createdHtml\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?form\.remove\(\);/, `${label}: schedule form should update hidden cached composers instead of leaving stale disabled forms`);
+    assert.match(panel, /catch \(err\) \{[\s\S]*?if \(currentTabId !== tabId\) \{[\s\S]*?updateCachedScheduleComposerError\(tabId, form\.dataset\.composerId, err\.message\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?submit\.disabled = false;[\s\S]*?errorEl\.textContent = err\.message;/, `${label}: schedule form failures should update hidden cached composers instead of leaving disabled forms`);
+    assert.match(panel, /renderScheduleComposer\(text\.slice\(mSchedule\[0\]\.length\)\.trim\(\), tabId\)/, `${label}: /schedule should pass the initiating tab into the async composer`);
     assert.match(panel, /urlInput\.value = initialScheduleUrl/, `${label}: schedule form should prefill URL targets from the active tab`);
     assert.match(panel, /targetType\.value = 'url'/, `${label}: schedule form should default http(s) pages to URL targets`);
     assert.match(panel, /content\.appendChild\(form\)/, `${label}: schedule form should append after initial target defaults are applied`);
@@ -1928,6 +1992,35 @@ test('sidepanel exposes show-scratchpad slash command in both builds', () => {
   }
 });
 
+test('sidepanel awaits onboarding completion persistence before hiding', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(
+      panel,
+      /async function dismissOnboarding\(\) \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ onboardingComplete: true \}\)\.catch\(\(\) => \{\}\);[\s\S]*?overlay\.classList\.add\('hidden'\);[\s\S]*?\}/,
+      `${label}: onboarding completion should persist before the overlay is hidden`,
+    );
+    assert.match(
+      panel,
+      /changeLink\.addEventListener\('click', async \(event\) => \{[\s\S]*?await dismissOnboarding\(\);[\s\S]*?\}\);/,
+      `${label}: onboarding change link should await completion persistence`,
+    );
+    assert.match(
+      panel,
+      /settingsBtn\.addEventListener\('click', async \(\) => \{[\s\S]*?if \(cloudReady\) \{[\s\S]*?await dismissOnboarding\(\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?await dismissOnboarding\(\);[\s\S]*?\}\);/,
+      `${label}: onboarding settings flow should await completion persistence before closing`,
+    );
+    assert.match(
+      panel,
+      /skipBtn\.addEventListener\('click', async \(\) => \{[\s\S]*?await dismissOnboarding\(\);[\s\S]*?\}\);/,
+      `${label}: onboarding skip button should await completion persistence`,
+    );
+  }
+});
+
 test('chrome /record reports mic denial as a warning, not recording failure', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
   const locale = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/locales/en.js'), 'utf8');
@@ -1935,6 +2028,477 @@ test('chrome /record reports mic denial as a warning, not recording failure', ()
   assert.match(panel, /sp\.record\.mic_unavailable/, 'chrome: /record mic denial should use warning copy');
   assert.match(locale, /sp\.record\.mic_unavailable/, 'chrome: missing mic unavailable locale key');
   assert.match(locale, /Recording started with tab audio and video only/, 'chrome: mic warning should say recording started');
+});
+
+test('chrome offscreen helper recreates an evicted document after ready cache is stale', async () => {
+  const previousChrome = globalThis.chrome;
+  let documentExists = false;
+  const createCalls = [];
+  globalThis.chrome = {
+    offscreen: {
+      async hasDocument() {
+        return documentExists;
+      },
+      async createDocument(args) {
+        createCalls.push(args);
+        documentExists = true;
+      },
+    },
+  };
+  try {
+    const ensureUrl = 'file://' + path.join(ROOT, 'src/chrome/src/offscreen/ensure.js').replace(/\\/g, '/') + `?test=${Date.now()}`;
+    const { ensureOffscreen } = await import(ensureUrl);
+
+    await ensureOffscreen();
+    assert.equal(createCalls.length, 1, 'chrome: first ensure should create the offscreen document');
+
+    documentExists = false;
+    await ensureOffscreen();
+    assert.equal(createCalls.length, 2, 'chrome: stale ready cache should not skip recreation after eviction');
+    assert.equal(createCalls[1].url, 'src/offscreen/offscreen.html', 'chrome: recreated document should use the shared offscreen URL');
+  } finally {
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+  }
+});
+
+test('chrome fetch fallback clears offscreen proxy timeout after success', async () => {
+  const previousChrome = globalThis.chrome;
+  const previousFetch = globalThis.fetch;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const previousWarn = console.warn;
+  const timers = [];
+  console.warn = () => {};
+  globalThis.setTimeout = (fn, ms) => {
+    const handle = { fn, ms, cleared: false };
+    timers.push(handle);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => {
+    if (handle) handle.cleared = true;
+  };
+  globalThis.fetch = async () => {
+    throw new TypeError('Failed to fetch');
+  };
+  globalThis.chrome = {
+    offscreen: {
+      async hasDocument() {
+        return true;
+      },
+    },
+    runtime: {
+      async sendMessage() {
+        return {
+          ok: true,
+          status: 200,
+          contentType: 'application/json',
+          body: '{"ok":true}',
+        };
+      },
+    },
+  };
+  try {
+    const fetchUrl = 'file://' + path.join(ROOT, 'src/chrome/src/providers/fetch-with-fallback.js').replace(/\\/g, '/') + `?test=${Date.now()}`;
+    const { fetchWithFallback } = await import(fetchUrl);
+    const res = await fetchWithFallback('http://127.0.0.1:11434/api/chat', {
+      method: 'POST',
+      timeoutMs: 12345,
+      body: '{}',
+    });
+
+    assert.equal(res.status, 200, 'chrome: fallback should synthesize the proxied response');
+    assert.equal(await res.text(), '{"ok":true}', 'chrome: fallback response body should survive proxy conversion');
+    assert.equal(timers.length, 2, 'chrome: direct fetch and offscreen proxy should each install one timeout');
+    assert.equal(timers.every((timer) => timer.cleared), true, 'chrome: offscreen proxy timeout should be cleared after success');
+  } finally {
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+    if (previousFetch === undefined) {
+      delete globalThis.fetch;
+    } else {
+      globalThis.fetch = previousFetch;
+    }
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+    console.warn = previousWarn;
+  }
+});
+
+test('trace viewer revokes screenshot object URLs when replacing rendered timelines', () => {
+  for (const [label, tracesRel] of [
+    ['chrome', 'src/chrome/src/ui/traces.js'],
+    ['firefox', 'src/firefox/src/ui/traces.js'],
+  ]) {
+    const traces = fs.readFileSync(path.join(ROOT, tracesRel), 'utf8');
+    assert.match(traces, /let timelineObjectUrls = new Set\(\);/, `${label}: trace viewer should track timeline object URLs`);
+    assert.match(traces, /async function buildRunView\(run, events, compact, objectUrls = new Set\(\)\)/, `${label}: buildRunView should collect object URLs for each render`);
+    assert.match(traces, /function renderEvent\(ev, shotCache, compact, objectUrls = new Set\(\)\)/, `${label}: renderEvent should receive the current object URL collection`);
+    assert.match(traces, /if \(shot\?\.blob\) src = createTrackedObjectUrl\(shot\.blob, objectUrls\);/, `${label}: screenshots should create tracked object URLs`);
+    assert.match(
+      traces,
+      /function createTrackedObjectUrl\(blob, objectUrls\) \{[\s\S]*?const url = URL\.createObjectURL\(blob\);[\s\S]*?objectUrls\.add\(url\);[\s\S]*?return url;[\s\S]*?\}/,
+      `${label}: tracked object URL helper missing`,
+    );
+    assert.match(
+      traces,
+      /function revokeObjectUrls\(urls\) \{[\s\S]*?for \(const url of urls\) URL\.revokeObjectURL\(url\);[\s\S]*?\}/,
+      `${label}: trace viewer should have a reusable object URL revocation helper`,
+    );
+    assert.match(
+      traces,
+      /function replaceTimelineObjectUrls\(nextUrls\) \{[\s\S]*?const oldUrls = timelineObjectUrls;[\s\S]*?revokeObjectUrls\(oldUrls\);[\s\S]*?imgModal\.classList\.remove\('show'\);[\s\S]*?imgModalImg\.removeAttribute\('src'\);[\s\S]*?timelineObjectUrls = nextUrls;[\s\S]*?\}/,
+      `${label}: replacing a rendered timeline should revoke old URLs and clear stale modal images`,
+    );
+
+    const renderRunStart = traces.indexOf('async function renderRun(runId) {');
+    assert.notEqual(renderRunStart, -1, `${label}: renderRun missing`);
+    const renderRunBody = traces.slice(renderRunStart, traces.indexOf('\n}\n\nasync function renderCompare', renderRunStart) + 2);
+    assert.match(
+      renderRunBody,
+      /if \(!run\) \{[\s\S]*?replaceTimelineObjectUrls\(new Set\(\)\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?const objectUrls = new Set\(\);[\s\S]*?const html = await buildRunView\(run, events, false, objectUrls\);[\s\S]*?revokeObjectUrls\(objectUrls\);[\s\S]*?mainPane\.classList\.remove\('compare-mode'\);[\s\S]*?replaceTimelineObjectUrls\(objectUrls\);[\s\S]*?mainPane\.innerHTML = html;/,
+      `${label}: single-run rendering should swap object URL ownership before replacing HTML`,
+    );
+    assert.equal(
+      (traces.match(/replaceTimelineObjectUrls\(new Set\(\)\);/g) || []).length >= 5,
+      true,
+      `${label}: empty-state transitions should clear timeline object URLs`,
+    );
+  }
+});
+
+test('trace viewer drops stale async render completions', () => {
+  for (const [label, tracesRel] of [
+    ['chrome', 'src/chrome/src/ui/traces.js'],
+    ['firefox', 'src/firefox/src/ui/traces.js'],
+  ]) {
+    const traces = fs.readFileSync(path.join(ROOT, tracesRel), 'utf8');
+    assert.match(traces, /let traceRenderRequestId = 0;/, `${label}: trace renders should be sequenced`);
+    assert.match(
+      traces,
+      /function isCurrentRunRender\(requestId, runId\) \{[\s\S]*?requestId === traceRenderRequestId && !compareMode && selectedRunId === runId;[\s\S]*?\}/,
+      `${label}: single-run renders should verify the active selection before committing`,
+    );
+    assert.match(
+      traces,
+      /function isCurrentCompareRender\(requestId, aId, bId\) \{[\s\S]*?requestId === traceRenderRequestId[\s\S]*?compareMode[\s\S]*?compareIds\.length === 2[\s\S]*?compareIds\[0\] === aId[\s\S]*?compareIds\[1\] === bId;[\s\S]*?\}/,
+      `${label}: compare renders should verify the active compare pair before committing`,
+    );
+
+    const renderRunStart = traces.indexOf('async function renderRun(runId) {');
+    assert.notEqual(renderRunStart, -1, `${label}: renderRun missing`);
+    const renderRunBody = traces.slice(renderRunStart, traces.indexOf('\n}\n\nasync function renderCompare', renderRunStart) + 2);
+    const runRequestIdx = renderRunBody.indexOf('const requestId = ++traceRenderRequestId;');
+    const getRunIdx = renderRunBody.indexOf('const run = await getRun(runId);');
+    const firstRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) return;', getRunIdx);
+    const getEventsIdx = renderRunBody.indexOf('const events = await getRunEvents(runId);');
+    const secondRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) return;', getEventsIdx);
+    const buildRunIdx = renderRunBody.indexOf('const html = await buildRunView(run, events, false, objectUrls);');
+    const thirdRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) {', buildRunIdx);
+    const runRevokeIdx = renderRunBody.indexOf('revokeObjectUrls(objectUrls);', thirdRunGuardIdx);
+    const runReplaceIdx = renderRunBody.indexOf('replaceTimelineObjectUrls(objectUrls);', thirdRunGuardIdx);
+    assert.notEqual(runRequestIdx, -1, `${label}: renderRun should create a render request id`);
+    assert.notEqual(getRunIdx, -1, `${label}: renderRun should load the run`);
+    assert.notEqual(firstRunGuardIdx, -1, `${label}: renderRun should drop stale completions after getRun`);
+    assert.notEqual(getEventsIdx, -1, `${label}: renderRun should load events`);
+    assert.notEqual(secondRunGuardIdx, -1, `${label}: renderRun should drop stale completions after getRunEvents`);
+    assert.notEqual(buildRunIdx, -1, `${label}: renderRun should build the view`);
+    assert.notEqual(thirdRunGuardIdx, -1, `${label}: renderRun should re-check before replacing the pane`);
+    assert.notEqual(runRevokeIdx, -1, `${label}: stale renderRun views should revoke newly-created object URLs`);
+    assert.notEqual(runReplaceIdx, -1, `${label}: current renderRun views should transfer object URL ownership`);
+    assert.equal(runRequestIdx < getRunIdx && getRunIdx < firstRunGuardIdx && firstRunGuardIdx < getEventsIdx && getEventsIdx < secondRunGuardIdx && secondRunGuardIdx < buildRunIdx && buildRunIdx < thirdRunGuardIdx && thirdRunGuardIdx < runRevokeIdx && runRevokeIdx < runReplaceIdx, true, `${label}: renderRun stale guards should run before pane replacement`);
+
+    const renderCompareStart = traces.indexOf('async function renderCompare(aId, bId) {');
+    assert.notEqual(renderCompareStart, -1, `${label}: renderCompare missing`);
+    const renderCompareBody = traces.slice(renderCompareStart, traces.indexOf('\n}\n\n/**', renderCompareStart) + 2);
+    const compareRequestIdx = renderCompareBody.indexOf('const requestId = ++traceRenderRequestId;');
+    const compareLoadIdx = renderCompareBody.indexOf('const [a, b, aEv, bEv] = await Promise.all');
+    const firstCompareGuardIdx = renderCompareBody.indexOf('if (!isCurrentCompareRender(requestId, aId, bId)) return;', compareLoadIdx);
+    const buildAIdx = renderCompareBody.indexOf('const aHtml = await buildRunView(a, aEv, true, objectUrls);');
+    const buildBIdx = renderCompareBody.indexOf('const bHtml = await buildRunView(b, bEv, true, objectUrls);');
+    const secondCompareGuardIdx = renderCompareBody.indexOf('if (!isCurrentCompareRender(requestId, aId, bId)) {', buildBIdx);
+    const compareRevokeIdx = renderCompareBody.indexOf('revokeObjectUrls(objectUrls);', secondCompareGuardIdx);
+    const compareReplaceIdx = renderCompareBody.indexOf('replaceTimelineObjectUrls(objectUrls);', secondCompareGuardIdx);
+    assert.notEqual(compareRequestIdx, -1, `${label}: renderCompare should create a render request id`);
+    assert.notEqual(compareLoadIdx, -1, `${label}: renderCompare should load both runs and event lists`);
+    assert.notEqual(firstCompareGuardIdx, -1, `${label}: renderCompare should drop stale completions after loading`);
+    assert.notEqual(buildAIdx, -1, `${label}: renderCompare should build the first pane`);
+    assert.notEqual(buildBIdx, -1, `${label}: renderCompare should build the second pane`);
+    assert.notEqual(secondCompareGuardIdx, -1, `${label}: renderCompare should re-check before replacing the pane`);
+    assert.notEqual(compareRevokeIdx, -1, `${label}: stale renderCompare views should revoke newly-created object URLs`);
+    assert.notEqual(compareReplaceIdx, -1, `${label}: current renderCompare views should transfer object URL ownership`);
+    assert.equal(compareRequestIdx < compareLoadIdx && compareLoadIdx < firstCompareGuardIdx && firstCompareGuardIdx < buildAIdx && buildAIdx < buildBIdx && buildBIdx < secondCompareGuardIdx && secondCompareGuardIdx < compareRevokeIdx && compareRevokeIdx < compareReplaceIdx, true, `${label}: renderCompare stale guards should run before pane replacement`);
+  }
+});
+
+test('trace viewer escapes attribute data from stored trace records', () => {
+  for (const [label, tracesRel] of [
+    ['chrome', 'src/chrome/src/ui/traces.js'],
+    ['firefox', 'src/firefox/src/ui/traces.js'],
+  ]) {
+    const traces = fs.readFileSync(path.join(ROOT, tracesRel), 'utf8');
+    assert.match(
+      traces,
+      /function safeClassToken\(value, fallback = 'unknown'\) \{[\s\S]*?String\(value == null \? '' : value\)\.trim\(\);[\s\S]*?\^\[A-Za-z0-9_-\]\+\$[\s\S]*?fallback;[\s\S]*?\}/,
+      `${label}: trace viewer should constrain stored values before using them as CSS classes`,
+    );
+    assert.match(
+      traces,
+      /const status = r\.status \|\| 'done';\s*const statusClass = safeClassToken\(status, 'done'\);[\s\S]*?<span class="status-dot \$\{statusClass\}"><\/span>/,
+      `${label}: trace list status class should use a sanitized token`,
+    );
+    assert.doesNotMatch(
+      traces,
+      /<span class="status-dot \$\{status\}"><\/span>/,
+      `${label}: trace list must not interpolate raw status into a class attribute`,
+    );
+    assert.match(
+      traces,
+      /<img src="\$\{escapeAttr\(src\)\}" alt="\$\{escapeAttr\(caption\)\}" loading="lazy">/,
+      `${label}: trace screenshot src and alt should be attribute-escaped`,
+    );
+  }
+});
+
+test('trace viewer export keeps blob URLs alive until the download is committed', () => {
+  for (const [label, tracesRel] of [
+    ['chrome', 'src/chrome/src/ui/traces.js'],
+    ['firefox', 'src/firefox/src/ui/traces.js'],
+  ]) {
+    const traces = fs.readFileSync(path.join(ROOT, tracesRel), 'utf8');
+    const exportStart = traces.indexOf("document.getElementById('btn-export').addEventListener('click', async () => {");
+    assert.notEqual(exportStart, -1, `${label}: trace export handler missing`);
+    const exportBody = traces.slice(exportStart, traces.indexOf("document.getElementById('btn-delete')", exportStart));
+    assert.match(
+      exportBody,
+      /const url = URL\.createObjectURL\(blob\);[\s\S]*?const a = document\.createElement\('a'\);[\s\S]*?document\.body\.appendChild\(a\);[\s\S]*?try \{[\s\S]*?a\.click\(\);[\s\S]*?\} finally \{[\s\S]*?a\.remove\(\);[\s\S]*?setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 7000\);[\s\S]*?\}/,
+      `${label}: trace export should click a connected anchor and revoke the blob URL asynchronously`,
+    );
+    assert.doesNotMatch(
+      exportBody,
+      /a\.click\(\);\s*setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 1000\);/,
+      `${label}: trace export should not use a detached anchor with short-lived blob URL cleanup`,
+    );
+  }
+});
+
+test('trace viewer toolbar actions use a captured run selection across awaits', () => {
+  for (const [label, tracesRel] of [
+    ['chrome', 'src/chrome/src/ui/traces.js'],
+    ['firefox', 'src/firefox/src/ui/traces.js'],
+  ]) {
+    const traces = fs.readFileSync(path.join(ROOT, tracesRel), 'utf8');
+
+    const exportStart = traces.indexOf("document.getElementById('btn-export').addEventListener('click', async () => {");
+    assert.notEqual(exportStart, -1, `${label}: trace export handler missing`);
+    const exportBody = traces.slice(exportStart, traces.indexOf("document.getElementById('btn-delete')", exportStart));
+    const exportCaptureIdx = exportBody.indexOf('const runId = selectedRunId;');
+    const getRunIdx = exportBody.indexOf('const run = await getRun(runId);');
+    const missingRunGuardIdx = exportBody.indexOf("if (!run) return alert(t('tr.select_first'));");
+    const eventsIdx = exportBody.indexOf('const events = await getRunEvents(runId);');
+    const screenshotIdx = exportBody.indexOf('const shot = await getScreenshot(runId, ev.seq);');
+    assert.notEqual(exportCaptureIdx, -1, `${label}: trace export should capture selectedRunId once`);
+    assert.notEqual(getRunIdx, -1, `${label}: trace export should load the captured run`);
+    assert.notEqual(missingRunGuardIdx, -1, `${label}: trace export should handle a missing captured run`);
+    assert.notEqual(eventsIdx, -1, `${label}: trace export should load events for the captured run`);
+    assert.notEqual(screenshotIdx, -1, `${label}: trace export should load screenshots for the captured run`);
+    assert.equal(exportCaptureIdx < getRunIdx && getRunIdx < missingRunGuardIdx && missingRunGuardIdx < eventsIdx && eventsIdx < screenshotIdx, true, `${label}: trace export should keep the same run id across async work`);
+    assert.doesNotMatch(exportBody, /getRun\(selectedRunId\)|getRunEvents\(selectedRunId\)|getScreenshot\(selectedRunId,/, `${label}: trace export must not reread mutable selectedRunId after starting`);
+
+    const deleteStart = traces.indexOf("document.getElementById('btn-delete').addEventListener('click', async () => {");
+    assert.notEqual(deleteStart, -1, `${label}: trace delete handler missing`);
+    const deleteBody = traces.slice(deleteStart, traces.indexOf("document.getElementById('btn-clear-all')", deleteStart));
+    const deleteCaptureIdx = deleteBody.indexOf('const runId = selectedRunId;');
+    const confirmIdx = deleteBody.indexOf("if (!confirm(t('tr.confirm_delete'))) return;");
+    const deleteIdx = deleteBody.indexOf('await deleteRun(runId);');
+    const guardIdx = deleteBody.indexOf('if (selectedRunId === runId) {');
+    const clearIdx = deleteBody.indexOf('selectedRunId = null;', guardIdx);
+    const refreshIdx = deleteBody.indexOf('await refresh();');
+    assert.notEqual(deleteCaptureIdx, -1, `${label}: trace delete should capture selectedRunId once`);
+    assert.notEqual(confirmIdx, -1, `${label}: trace delete confirmation missing`);
+    assert.notEqual(deleteIdx, -1, `${label}: trace delete should delete the captured run`);
+    assert.notEqual(guardIdx, -1, `${label}: trace delete should guard visible cleanup against selection changes`);
+    assert.notEqual(clearIdx, -1, `${label}: trace delete should clear selection only for the deleted active run`);
+    assert.notEqual(refreshIdx, -1, `${label}: trace delete should refresh after deletion completes`);
+    assert.equal(deleteCaptureIdx < confirmIdx && confirmIdx < deleteIdx && deleteIdx < guardIdx && guardIdx < clearIdx && clearIdx < refreshIdx, true, `${label}: trace delete should not clear a newer selection after async deletion`);
+    assert.doesNotMatch(deleteBody, /deleteRun\(selectedRunId\)/, `${label}: trace delete must not reread mutable selectedRunId after starting`);
+  }
+});
+
+test('trace viewer locale changes rerender the active pane', () => {
+  for (const [label, tracesRel] of [
+    ['chrome', 'src/chrome/src/ui/traces.js'],
+    ['firefox', 'src/firefox/src/ui/traces.js'],
+  ]) {
+    const traces = fs.readFileSync(path.join(ROOT, tracesRel), 'utf8');
+    const listenerStart = traces.indexOf("document.addEventListener('wb-locale-changed', async () => {");
+    assert.notEqual(listenerStart, -1, `${label}: locale-change handler should be async`);
+    const listenerBody = traces.slice(listenerStart, traces.indexOf("filterText.addEventListener('input'", listenerStart));
+    assert.match(listenerBody, /await refresh\(\);/, `${label}: locale changes should refresh translated run-list UI before rerendering`);
+    assert.match(listenerBody, /compareBtn\.textContent = compareMode \? t\('tr\.btn\.compare\.picking'\) : t\('tr\.btn\.compare'\);/, `${label}: locale changes should update the compare button label`);
+    assert.match(listenerBody, /if \(compareMode\) \{[\s\S]*?if \(compareIds\.length === 2\) \{[\s\S]*?renderCompare\(compareIds\[0\], compareIds\[1\]\);/, `${label}: locale changes should rerender active compare panes`);
+    assert.match(listenerBody, /const textKey = compareIds\.length === 0 \? 'tr\.compare_mode\.hint' : 'tr\.compare_mode\.picked';[\s\S]*?mainPane\.innerHTML = `<div id="empty-state">/, `${label}: locale changes should rerender compare picking empty states`);
+    assert.match(listenerBody, /\} else if \(selectedRunId\) \{[\s\S]*?renderRun\(selectedRunId\);/, `${label}: locale changes should rerender the selected run pane`);
+    assert.match(listenerBody, /\} else \{[\s\S]*?replaceTimelineObjectUrls\(new Set\(\)\);[\s\S]*?tr\.empty\.title/, `${label}: locale changes should rerender the default empty state`);
+  }
+});
+
+test('sidepanel export keeps blob URLs alive until the download is committed', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const exportStart = panel.indexOf('// /export');
+    assert.notEqual(exportStart, -1, `${label}: /export handler missing`);
+    const exportBody = panel.slice(exportStart, panel.indexOf('// /profile', exportStart));
+    assert.match(
+      exportBody,
+      /const url = URL\.createObjectURL\(blob\);[\s\S]*?const a = document\.createElement\('a'\);[\s\S]*?document\.body\.appendChild\(a\);[\s\S]*?try \{[\s\S]*?a\.click\(\);[\s\S]*?\} finally \{[\s\S]*?a\.remove\(\);[\s\S]*?setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 7000\);[\s\S]*?\}/,
+      `${label}: export downloads should click a connected anchor and revoke the blob URL asynchronously`,
+    );
+    assert.doesNotMatch(
+      exportBody,
+      /a\.click\(\);\s*URL\.revokeObjectURL\(url\);/,
+      `${label}: export should not revoke the blob URL synchronously after click`,
+    );
+  }
+});
+
+test('sidepanel escapes dynamic system-message interpolation before raw HTML insertion', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /function escapeHtml\(str\) \{[\s\S]*?String\(str == null \? '' : str\)/, `${label}: escapeHtml should normalize nullish values`);
+    assert.equal(panel.includes("replace(/[&<>\"']/g"), true, `${label}: escapeHtml should cover attribute-breaking quotes as well as HTML tags`);
+    assert.match(
+      panel,
+      /function tSystemHtml\(key, params\) \{[\s\S]*?Object\.entries\(params \|\| \{\}\)[\s\S]*?safeParams\[name\] = escapeHtml\(value\);[\s\S]*?return t\(key, safeParams\);[\s\S]*?\}/,
+      `${label}: dynamic system HTML helper missing`,
+    );
+    assert.doesNotMatch(
+      panel,
+      /addMessage\('system',\s*t\('[^']+',\s*\{/,
+      `${label}: system messages inserted as raw HTML must not interpolate unescaped params directly`,
+    );
+    for (const key of [
+      'sp.scheduled.created',
+      'sp.scheduled.needs_user_input',
+      'sp.schedule_form.created',
+      'sp.scratchpad.error',
+      'sp.compact.failed',
+      'sp.screenshot.error',
+      'sp.record.error',
+      'sp.vision.error',
+    ]) {
+      assert.match(panel, new RegExp(`tSystemHtml\\('${key.replace(/\./g, '\\.')}'`), `${label}: ${key} should escape dynamic params for system HTML`);
+    }
+  }
+});
+
+test('sidepanel verbose tool-call headers treat tool names as text', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const start = panel.indexOf('function appendVerboseToolCall(name, args) {');
+    assert.notEqual(start, -1, `${label}: appendVerboseToolCall missing`);
+    const body = panel.slice(start, panel.indexOf('\n}\n\nfunction appendVerboseToolResult', start) + 2);
+    assert.doesNotMatch(
+      body,
+      /header\.innerHTML\s*=/,
+      `${label}: verbose tool-call header must not interpolate tool names through innerHTML`,
+    );
+    assert.match(
+      body,
+      /const icon = document\.createElement\('span'\);[\s\S]*?icon\.textContent = '\\u26A1';[\s\S]*?header\.append\(icon, document\.createTextNode\(` \$\{name \|\| ''\}`\)\);/,
+      `${label}: verbose tool-call header should append the icon element and tool name text node`,
+    );
+  }
+});
+
+function runSettingsTabsScript(script, { saved = null, hash = '' } = {}) {
+  function makeClassList() {
+    return {
+      active: false,
+      toggle(name, on) {
+        if (name === 'active') this.active = !!on;
+      },
+    };
+  }
+  const buttons = ['display', 'providers', 'multimodal', 'profile'].map((name) => ({
+    dataset: { tab: name },
+    classList: makeClassList(),
+    addEventListener(type, handler) {
+      if (type === 'click') this.clickHandler = handler;
+    },
+  }));
+  const panels = ['display', 'providers', 'multimodal', 'profile'].map((name) => ({
+    dataset: { panel: name },
+    classList: makeClassList(),
+  }));
+  const selectorCalls = [];
+  const context = {
+    document: {
+      querySelectorAll(selector) {
+        selectorCalls.push(selector);
+        if (selector === '.tab-btn') return buttons;
+        if (selector === '.tab-panel') return panels;
+        return [];
+      },
+      querySelector(selector) {
+        selectorCalls.push(selector);
+        if (selector.includes('[data-tab="')) {
+          throw new Error(`unsafe tab selector: ${selector}`);
+        }
+        return null;
+      },
+    },
+    localStorage: {
+      value: saved,
+      getItem() {
+        return this.value;
+      },
+      setItem(_key, value) {
+        this.value = value;
+      },
+    },
+    location: { hash },
+  };
+  vm.runInNewContext(script, context, { timeout: 1000 });
+  return {
+    activeButton: buttons.find((button) => button.classList.active)?.dataset.tab,
+    activePanel: panels.find((panel) => panel.classList.active)?.dataset.panel,
+    stored: context.localStorage.value,
+    selectorCalls,
+  };
+}
+
+test('settings tabs validate saved and hash tab names without selector interpolation', () => {
+  for (const [label, tabsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings-tabs.js'],
+    ['firefox', 'src/firefox/src/ui/settings-tabs.js'],
+  ]) {
+    const script = fs.readFileSync(path.join(ROOT, tabsRel), 'utf8');
+    const malformed = runSettingsTabsScript(script, { saved: 'display"] .boom', hash: '#bad"]' });
+    assert.equal(malformed.activeButton, 'providers', `${label}: malformed tab values should fall back to providers`);
+    assert.equal(malformed.activePanel, 'providers', `${label}: malformed tab values should activate provider panel`);
+    assert.deepEqual(malformed.selectorCalls, ['.tab-btn', '.tab-panel'], `${label}: dynamic tab values must not be interpolated into selectors`);
+
+    const valid = runSettingsTabsScript(script, { saved: 'display', hash: '#multimodal' });
+    assert.equal(valid.activeButton, 'multimodal', `${label}: valid hash should override saved tab`);
+    assert.equal(valid.activePanel, 'multimodal', `${label}: valid hash should activate its panel`);
+    assert.equal(valid.stored, 'multimodal', `${label}: activated hash tab should persist`);
+  }
 });
 
 test('chrome sidepanel Escape abort honors slash autocomplete dismissal', () => {
@@ -1971,25 +2535,1138 @@ test('sidepanel reports missing background responses without res.content crash',
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     assert.match(panel, /No response from WebBrain background/, `${label}: missing background response should become a clear error`);
     assert.match(panel, /response == null/, `${label}: sendToBackground should reject nullish responses`);
-    assert.equal((panel.match(/res\?\.content && currentAssistantEl/g) || []).length >= 2, true, `${label}: chat and continue should not dereference missing responses`);
-    assert.doesNotMatch(panel, /(?:else\s+)?if \(res\.content && currentAssistantEl\)/, `${label}: unsafe res.content render guard returned`);
+    assert.equal((panel.match(/res\?\.content && (?:currentAssistantEl|assistantEl)/g) || []).length >= 2, true, `${label}: chat and continue should not dereference missing responses`);
+    assert.doesNotMatch(panel, /res\.content && (?:currentAssistantEl|assistantEl)/, `${label}: unsafe res.content render guard returned`);
   }
 });
 
-test('sidepanel drains queued context-menu prompts after Continue finishes', () => {
+test('sidepanel rebinds interactive controls after restoring serialized tab chat', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
-    const match = panel.match(/async function continueAgent\(\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n\}/);
-    assert.ok(match, `${label}: continueAgent finally block missing`);
-    const finallyBody = match[1];
-    const idleIdx = finallyBody.indexOf('isProcessing = false;');
-    const drainIdx = finallyBody.indexOf('drainQueuedContextMenuPrompts();');
-    assert.notEqual(idleIdx, -1, `${label}: continueAgent should clear processing state`);
-    assert.notEqual(drainIdx, -1, `${label}: Continue completion should drain queued context-menu prompts`);
-    assert.equal(idleIdx < drainIdx, true, `${label}: context-menu queue must drain after processing is cleared`);
+    assert.match(panel, /function rebindCopyButtons\(\)/, `${label}: copy-button rebinding helper missing`);
+    assert.match(panel, /document\.querySelectorAll\('\.msg-copy-btn'\)[\s\S]*?addEventListener\('click'/, `${label}: assistant message copy buttons should be rebound`);
+    assert.match(panel, /document\.querySelectorAll\('\.code-copy-btn'\)[\s\S]*?addEventListener\('click'/, `${label}: code copy buttons should be rebound`);
+    assert.match(panel, /function rebindContinueButtons\(\) \{[\s\S]*?document\.querySelectorAll\('\.continue-btn'\)[\s\S]*?addEventListener\('click', continueAgent\)/, `${label}: restored Continue buttons should be rebound`);
+    assert.match(panel, /function rebindClarifyCards\(\) \{[\s\S]*?document\.querySelectorAll\('\.clarify-card'\)[\s\S]*?submitClarify\(card, tabId, clarifyId/, `${label}: restored clarify cards should be rebound`);
+    assert.match(panel, /function rebindScheduleComposers\(\) \{[\s\S]*?document\.querySelectorAll\('form\.schedule-composer'\)[\s\S]*?bindScheduleComposer\(form\)/, `${label}: restored schedule composers should be rebound`);
+    assert.match(panel, /function rebindRestoredMessageControls\(\) \{[\s\S]*?rebindCopyButtons\(\);[\s\S]*?rebindContinueButtons\(\);[\s\S]*?rebindClarifyCards\(\);[\s\S]*?rebindScheduleComposers\(\);[\s\S]*?\}/, `${label}: restored tab chat should rebind all durable message controls`);
+    assert.match(panel, /card\.dataset\.tabId = String\(tabId\);/, `${label}: clarify cards should persist their target tab for restore rebinding`);
+    assert.match(panel, /b\.dataset\.value = value;[\s\S]*?submitClarify\(card, tabId, clarifyId, value, 'option'\)/, `${label}: restored permission choices need stable values, not localized labels`);
+
+    const match = panel.match(/(?:async\s+)?function switchToTab\(newTabId\) \{[\s\S]*?consumePendingContextMenuPrompt\(\)/);
+    assert.ok(match, `${label}: switchToTab body missing`);
+    const body = match[0];
+    const restoreIdx = body.indexOf('messagesEl.innerHTML =');
+    const clearBoundIdx = body.indexOf("messagesEl.querySelectorAll('[data-bound]')");
+    const rebindIdx = body.indexOf('rebindRestoredMessageControls();');
+    assert.notEqual(restoreIdx, -1, `${label}: restored tab chat should write serialized HTML`);
+    assert.notEqual(clearBoundIdx, -1, `${label}: restored controls should clear serialized bound markers`);
+    assert.notEqual(rebindIdx, -1, `${label}: restored tab chat should rebind interactive controls`);
+    assert.equal(restoreIdx < clearBoundIdx && clearBoundIdx < rebindIdx, true, `${label}: control handlers must be rebound immediately after restoring tab chat HTML`);
+  }
+});
+
+test('chrome sidepanel drops stale async tab-chat restores', () => {
+  const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
+  assert.match(panel, /let renderedTabId = null;/, 'chrome: sidepanel should track which tab is actually rendered in the DOM');
+  const match = panel.match(/async function switchToTab\(newTabId\) \{([\s\S]*?)\n\}/);
+  assert.ok(match, 'chrome: switchToTab body missing');
+  const body = match[1];
+  const setIdx = body.indexOf('currentTabId = newTabId;');
+  const loadIdx = body.indexOf('const html = await loadTabChat(newTabId);');
+  const guardIdx = body.indexOf('if (currentTabId !== newTabId) return;');
+  const renderedSetIdx = body.indexOf('renderedTabId = newTabId;');
+  const restoreIdx = body.indexOf('messagesEl.innerHTML =');
+  const consumeIdx = body.indexOf('consumePendingContextMenuPrompt()');
+  assert.notEqual(setIdx, -1, 'chrome: switchToTab should set the visible tab before restoring chat');
+  assert.notEqual(loadIdx, -1, 'chrome: switchToTab should load persisted tab chat asynchronously');
+  assert.notEqual(guardIdx, -1, 'chrome: stale async tab-chat restores should be dropped');
+  assert.notEqual(renderedSetIdx, -1, 'chrome: switchToTab should mark the rendered tab only after stale async restores are dropped');
+  assert.notEqual(restoreIdx, -1, 'chrome: switchToTab restore point missing');
+  assert.notEqual(consumeIdx, -1, 'chrome: switchToTab context-menu consume point missing');
+  assert.equal(setIdx < loadIdx && loadIdx < guardIdx && guardIdx < renderedSetIdx && renderedSetIdx < restoreIdx && guardIdx < consumeIdx, true, 'chrome: stale guard must run after async chat load and before rendered-tab/DOM/context-menu work');
+  assert.match(body, /if \(renderedTabId != null\) \{[\s\S]*?persistTabChat\(renderedTabId, messagesEl\.innerHTML\);[\s\S]*?captureInputDraftForTab\(renderedTabId\);[\s\S]*?\}/, 'chrome: overlapping tab switches should save drafts for the tab represented by the DOM');
+  assert.doesNotMatch(body, /persistTabChat\(currentTabId,\s*messagesEl\.innerHTML\)|captureInputDraftForTab\(currentTabId\)/, 'chrome: overlapping tab switches must not save DOM or drafts under a pending target tab');
+});
+
+test('chrome sidepanel persists tab chat to the tab captured before debounce', () => {
+  const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
+  const start = panel.indexOf('function schedulePersist() {');
+  assert.notEqual(start, -1, 'chrome: schedulePersist missing');
+  const body = panel.slice(start, panel.indexOf('\n}\n\n// Observe', start) + 2);
+  const captureTabIdx = body.indexOf('const tabId = renderedTabId;');
+  const captureHtmlIdx = body.indexOf('const html = messagesEl.innerHTML;');
+  const timerIdx = body.indexOf('persistTimer = setTimeout(() => {');
+  const persistIdx = body.indexOf('persistTabChat(tabId, html);');
+  assert.notEqual(captureTabIdx, -1, 'chrome: persistence should capture the rendered tab id before the debounce delay');
+  assert.notEqual(captureHtmlIdx, -1, 'chrome: persistence should capture the chat HTML before the debounce delay');
+  assert.notEqual(timerIdx, -1, 'chrome: persistence debounce missing');
+  assert.notEqual(persistIdx, -1, 'chrome: persistence should write the captured tab/html');
+  assert.equal(captureTabIdx < timerIdx && captureHtmlIdx < timerIdx && timerIdx < persistIdx, true, 'chrome: persistence must not read mutable tab state after the debounce delay');
+  assert.doesNotMatch(body, /persistTabChat\(currentTabId,\s*messagesEl\.innerHTML\)/, 'chrome: debounced persistence should not save live DOM under the later currentTabId');
+});
+
+test('chrome sidepanel serializes tab-chat storage writes with clears and reads', () => {
+  const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
+  assert.match(panel, /const tabChatOperations = new Map\(\);/, 'chrome: tab-chat operations should be queued per tab');
+  assert.match(panel, /function enqueueTabChatOperation\(tabId, fn\) \{[\s\S]*?const previous = tabChatOperations\.get\(numericTabId\) \|\| Promise\.resolve\(\);[\s\S]*?tabChatOperations\.set\(numericTabId, operation\);[\s\S]*?\}/, 'chrome: tab-chat writes should be serialized behind prior operations');
+  const loadStart = panel.indexOf('async function loadTabChat(tabId) {');
+  assert.notEqual(loadStart, -1, 'chrome: loadTabChat missing');
+  const loadBody = panel.slice(loadStart, panel.indexOf('\n}\n\nfunction persistTabChat', loadStart) + 2);
+  assert.match(loadBody, /const numericTabId = Number\(tabId\);[\s\S]*?if \(!Number\.isFinite\(numericTabId\)\) return null;/, 'chrome: tab-chat restore should normalize tab ids before checking the cache');
+  assert.match(loadBody, /if \(!tabChatOperations\.has\(numericTabId\) && tabChats\.has\(numericTabId\)\) return tabChats\.get\(numericTabId\);/, 'chrome: tab-chat restore should only trust cached HTML when no queued operation can update it');
+  assert.match(loadBody, /return await enqueueTabChatOperation\(numericTabId, async \(queuedTabId\) => \{[\s\S]*?if \(tabChats\.has\(queuedTabId\)\) return tabChats\.get\(queuedTabId\);[\s\S]*?const stored = await chrome\.storage\.session\.get\(key\);/, 'chrome: tab-chat restore should wait behind pending per-tab operations before reading cache or storage');
+  assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?await chrome\.storage\.session\.set\(\{ \[key\]: html \}\)\.catch\(\(\) => \{\}\);/, 'chrome: tab-chat persistence should be serialized through the queue');
+  const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
+  assert.notEqual(clearStart, -1, 'chrome: clearCachedTabChat missing');
+  const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nfunction renderClearedConversationForTab', clearStart) + 2);
+  assert.match(clearBody, /tabChats\.delete\(tabId\);/, 'chrome: clearing tab chat should delete the cached HTML before queuing storage removal');
+  assert.match(clearBody, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{/, 'chrome: clearing tab chat should be serialized through the queue');
+  assert.match(clearBody, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?tabChats\.delete\(numericTabId\);[\s\S]*?chrome\.storage\.session\?\.remove\(TAB_CHAT_PREFIX \+ numericTabId\)/, 'chrome: queued clears should delete stale HTML re-cached by older queued writes before removing storage');
+});
+
+test('chrome sidepanel cancels stale tab-chat persistence when clearing a tab', () => {
+  const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
+  assert.match(panel, /let persistTimer = null;\s*let persistTimerTabId = null;/, 'chrome: pending persistence should remember its target tab');
+
+  const scheduleStart = panel.indexOf('function schedulePersist() {');
+  assert.notEqual(scheduleStart, -1, 'chrome: schedulePersist missing');
+  const scheduleBody = panel.slice(scheduleStart, panel.indexOf('\n}\n\n// Observe', scheduleStart) + 2);
+  assert.match(
+    scheduleBody,
+    /const tabId = renderedTabId;[\s\S]*?const html = messagesEl\.innerHTML;[\s\S]*?persistTimerTabId = tabId;[\s\S]*?persistTimer = setTimeout\(\(\) => \{[\s\S]*?persistTimer = null;[\s\S]*?persistTimerTabId = null;[\s\S]*?persistTabChat\(tabId, html\);/,
+    'chrome: debounced persistence should associate and clear the pending tab id',
+  );
+
+  const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
+  assert.notEqual(clearStart, -1, 'chrome: clearCachedTabChat missing');
+  const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nfunction renderClearedConversationForTab', clearStart) + 2);
+  assert.match(
+    clearBody,
+    /if \(persistTimer && persistTimerTabId === tabId\) \{[\s\S]*?clearTimeout\(persistTimer\);[\s\S]*?persistTimer = null;[\s\S]*?persistTimerTabId = null;[\s\S]*?\}[\s\S]*?tabChats\.delete\(tabId\);[\s\S]*?return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?tabChats\.delete\(numericTabId\);[\s\S]*?chrome\.storage\.session\?\.remove\(TAB_CHAT_PREFIX \+ numericTabId\)/,
+    'chrome: clearing a tab should cancel any pending stale write before removing cached chat',
+  );
+});
+
+test('sidepanel does not miss startup tab switches before consuming tab-scoped state', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const start = panel.indexOf('async function init() {');
+    const end = panel.indexOf('\nif (verboseBtn)', start);
+    assert.notEqual(start, -1, `${label}: init missing`);
+    assert.notEqual(end, -1, `${label}: init boundary missing`);
+    const body = panel.slice(start, end);
+    const listenerIdx = body.indexOf('tabs.onActivated.addListener');
+    const loadProvidersIdx = body.indexOf('await loadProviders();');
+    const testConnectionIdx = body.indexOf("await testConnection({ skipWebBrainCloud: true });");
+    const resyncQueryIdx = body.lastIndexOf('tabs.query({ active: true, currentWindow: true })');
+    const resyncSwitchIdx = body.indexOf('await switchToTab(activeTab.id);');
+    const refreshJobsIdx = body.indexOf('refreshScheduledJobs({ tabId: currentTabId });', resyncSwitchIdx);
+    const refreshActionsIdx = body.indexOf('refreshRecommendedActions();', resyncSwitchIdx);
+    const consumeIdx = body.indexOf('await consumePendingContextMenuPrompt();', resyncSwitchIdx);
+    assert.notEqual(listenerIdx, -1, `${label}: startup should register tab activation listener`);
+    assert.notEqual(loadProvidersIdx, -1, `${label}: startup provider load missing`);
+    assert.notEqual(testConnectionIdx, -1, `${label}: startup connection test missing`);
+    assert.notEqual(resyncQueryIdx, -1, `${label}: startup should re-query the active tab after async setup`);
+    assert.notEqual(resyncSwitchIdx, -1, `${label}: startup should switch to the active tab after async setup`);
+    assert.notEqual(refreshJobsIdx, -1, `${label}: startup scheduled-job refresh missing`);
+    assert.notEqual(refreshActionsIdx, -1, `${label}: startup recommended-action refresh missing`);
+    assert.notEqual(consumeIdx, -1, `${label}: startup context-menu consume missing`);
+    assert.equal(listenerIdx < loadProvidersIdx, true, `${label}: tab activation listener must be registered before startup awaits`);
+    assert.equal(testConnectionIdx < resyncQueryIdx && resyncQueryIdx < resyncSwitchIdx, true, `${label}: startup should resync the active tab after async setup`);
+    assert.equal(resyncSwitchIdx < refreshJobsIdx && resyncSwitchIdx < refreshActionsIdx && resyncSwitchIdx < consumeIdx, true, `${label}: startup must resync before tab-scoped refreshes and context-menu consume`);
+
+    if (label === 'chrome') {
+      const restoreCaptureIdx = body.indexOf('const restoreTabId = currentTabId;');
+      const restoreLoadIdx = body.indexOf('const html = await loadTabChat(restoreTabId);');
+      const restoreGuardIdx = body.indexOf('if (currentTabId === restoreTabId && html)');
+      assert.notEqual(restoreCaptureIdx, -1, 'chrome: initial tab-chat restore should capture the target tab');
+      assert.notEqual(restoreLoadIdx, -1, 'chrome: initial tab-chat restore should load the captured tab');
+      assert.notEqual(restoreGuardIdx, -1, 'chrome: initial tab-chat restore should drop stale async results');
+      assert.equal(listenerIdx < restoreCaptureIdx && restoreCaptureIdx < restoreLoadIdx && restoreLoadIdx < restoreGuardIdx, true, 'chrome: initial restore must be guarded after listener-driven tab changes');
+    }
+  }
+});
+
+test('sidepanel drops stale recommended-action refreshes after tab changes or run start', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const match = panel.match(/async function refreshRecommendedActions\(\) \{([\s\S]*?)\n\}/);
+    assert.ok(match, `${label}: refreshRecommendedActions missing`);
+    const body = match[1];
+    const captureIdx = body.indexOf('const tabId = currentTabId;');
+    const sendIdx = body.indexOf("sendToBackground('get_page_info', { tabId })");
+    const guard = 'requestId !== recommendationsRequestId || currentTabId !== tabId || isProcessing';
+    const guardIdx = body.indexOf(guard);
+    const renderIdx = body.indexOf('recommendedActionsListEl.replaceChildren();');
+    assert.notEqual(captureIdx, -1, `${label}: recommended-action refresh should capture the requested tab`);
+    assert.notEqual(sendIdx, -1, `${label}: recommended-action refresh should request page info for the captured tab`);
+    assert.notEqual(guardIdx, -1, `${label}: stale recommended-action refreshes should be dropped after tab switches or run start`);
+    assert.notEqual(renderIdx, -1, `${label}: recommended-action refresh render point missing`);
+    assert.equal(captureIdx < sendIdx && sendIdx < guardIdx && guardIdx < renderIdx, true, `${label}: stale guard must run after the async page-info read and before rendering chips`);
+  }
+});
+
+test('sidepanel drops stale recommended-action clicks after async act confirmation', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const match = panel.match(/async function runRecommendedAction\(action\) \{([\s\S]*?)\n\}/);
+    assert.ok(match, `${label}: runRecommendedAction missing`);
+    const body = match[1];
+    const captureIdx = body.indexOf('const tabId = currentTabId;');
+    const initialGuard = '!prompt || tabId == null || isProcessing';
+    const initialGuardIdx = body.indexOf(initialGuard);
+    const ensureIdx = body.indexOf('await ensureActMode();');
+    const staleGuard = '!ok || currentTabId !== tabId || isProcessing';
+    const staleGuardIdx = body.indexOf(staleGuard);
+    const inputIdx = body.indexOf('inputEl.value = prompt;');
+    assert.notEqual(captureIdx, -1, `${label}: recommended-action click should capture the initiating tab`);
+    assert.notEqual(initialGuardIdx, -1, `${label}: recommended-action click should reject missing tabs before sending`);
+    assert.notEqual(ensureIdx, -1, `${label}: act recommended-action click should await act confirmation`);
+    assert.notEqual(staleGuardIdx, -1, `${label}: stale recommended-action clicks should be dropped after act confirmation`);
+    assert.notEqual(inputIdx, -1, `${label}: recommended-action click composer write missing`);
+    assert.equal(captureIdx < initialGuardIdx && initialGuardIdx < ensureIdx && ensureIdx < staleGuardIdx && staleGuardIdx < inputIdx, true, `${label}: stale click guard must run after async act confirmation and before mutating the composer`);
+  }
+});
+
+test('sidepanel awaits act confirmation persistence before switching modes', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const ensureStart = panel.indexOf('async function ensureActMode() {');
+    assert.notEqual(ensureStart, -1, `${label}: ensureActMode missing`);
+    const ensureBody = panel.slice(ensureStart, panel.indexOf('\n}\n\nmodeAskBtn.addEventListener', ensureStart) + 2);
+    assert.match(
+      ensureBody,
+      /const stored = await (chrome|browser)\.storage\.local\.get\('actConfirmed'\);[\s\S]*?if \(!stored\.actConfirmed\) \{[\s\S]*?const ok = confirm\(t\('sp\.mode\.act\.confirm'\)\);[\s\S]*?if \(!ok\) return false;[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ actConfirmed: true \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}[\s\S]*?setMode\('act'\);/,
+      `${label}: act confirmation should persist before mode switches to Act`,
+    );
+    assert.match(
+      panel,
+      /modeActBtn\.addEventListener\('click', async \(\) => \{[\s\S]*?await ensureActMode\(\);[\s\S]*?\}\);/,
+      `${label}: Act button should await confirmation persistence`,
+    );
+    if (label === 'chrome') {
+      assert.match(
+        panel,
+        /async function handleGlobalKeydown\(e\) \{[\s\S]*?await ensureActMode\(\);[\s\S]*?\}/,
+        `${label}: Ctrl+Shift+X should await act confirmation persistence`,
+      );
+    }
+  }
+});
+
+test('sidepanel drops stale provider selection and connection checks', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /let providerSelectionRequestId = 0;/, `${label}: provider selection requests should be sequenced`);
+    assert.match(panel, /let providerTestRequestId = 0;/, `${label}: provider test requests should be sequenced`);
+
+    const testStart = panel.indexOf('async function testConnection(options = {}) {');
+    assert.notEqual(testStart, -1, `${label}: testConnection missing`);
+    const testBody = panel.slice(testStart, panel.indexOf('\n}\n\nfunction getSlashCommandQuery', testStart) + 2);
+    const captureIdx = testBody.indexOf('const providerId = options.providerId || providerSelect.value;');
+    const requestIdx = testBody.indexOf('const requestId = ++providerTestRequestId;');
+    const sendIdx = testBody.indexOf("sendToBackground('test_provider'");
+    const staleGuardIdx = testBody.indexOf('if (requestId !== providerTestRequestId || providerSelect.value !== providerId) return;');
+    const statusIdx = testBody.indexOf("statusDot.className = `status-dot ${res.ok ? 'online' : 'offline'}`;");
+    assert.notEqual(captureIdx, -1, `${label}: provider test should capture the intended provider`);
+    assert.notEqual(requestIdx, -1, `${label}: provider test should increment a request sequence`);
+    assert.notEqual(sendIdx, -1, `${label}: provider test background request missing`);
+    assert.notEqual(staleGuardIdx, -1, `${label}: stale provider test results should be dropped`);
+    assert.notEqual(statusIdx, -1, `${label}: provider status update missing`);
+    assert.equal(captureIdx < requestIdx && requestIdx < sendIdx && sendIdx < staleGuardIdx && staleGuardIdx < statusIdx, true, `${label}: provider test stale guard must run after the async request and before status updates`);
+    assert.doesNotMatch(testBody, /providerId: providerSelect\.value/, `${label}: provider test should not read the mutable selection after async delay`);
+    assert.match(panel, /function markSelectedProviderFailed\(error\) \{[\s\S]*?const msg = error\?\.message \|\| t\('sp\.status\.failed'\);[\s\S]*?statusDot\.className = 'status-dot offline';[\s\S]*?statusDot\.title = t\('sp\.status\.error', \{ msg \}\);[\s\S]*?\}/, `${label}: provider activation failures should surface on the selected provider`);
+
+    const changeStart = panel.indexOf("providerSelect.addEventListener('change', async () => {");
+    assert.notEqual(changeStart, -1, `${label}: provider change handler missing`);
+    const changeBody = panel.slice(changeStart, panel.indexOf('\n});', changeStart) + 4);
+    const changeCaptureIdx = changeBody.indexOf('const providerId = providerSelect.value;');
+    const changeRequestIdx = changeBody.indexOf('const requestId = ++providerSelectionRequestId;');
+    const invalidateIdx = changeBody.indexOf('providerTestRequestId += 1;');
+    const activateIdx = changeBody.indexOf("await sendToBackground('set_active_provider', { providerId });");
+    const catchIdx = changeBody.indexOf('} catch (e) {');
+    const failureGuardIdx = changeBody.indexOf('if (requestId === providerSelectionRequestId && providerSelect.value === providerId) {');
+    const failureStatusIdx = changeBody.indexOf('markSelectedProviderFailed(e);');
+    const changeStaleGuardIdx = changeBody.indexOf('if (requestId !== providerSelectionRequestId || providerSelect.value !== providerId) {');
+    const repairIdx = changeBody.indexOf("sendToBackground('set_active_provider', { providerId: latestProviderId }).catch(() => {});");
+    const changeTestIdx = changeBody.indexOf('await testConnection({ providerId });');
+    assert.notEqual(changeCaptureIdx, -1, `${label}: provider change should capture the intended provider`);
+    assert.notEqual(changeRequestIdx, -1, `${label}: provider change should increment a request sequence`);
+    assert.notEqual(invalidateIdx, -1, `${label}: provider change should invalidate pending provider tests`);
+    assert.notEqual(activateIdx, -1, `${label}: provider activation request missing`);
+    assert.notEqual(catchIdx, -1, `${label}: provider activation failures should be caught`);
+    assert.notEqual(failureGuardIdx, -1, `${label}: stale provider activation failures should be dropped`);
+    assert.notEqual(failureStatusIdx, -1, `${label}: current provider activation failures should update status`);
+    assert.notEqual(changeStaleGuardIdx, -1, `${label}: stale provider activation completions should be dropped`);
+    assert.notEqual(repairIdx, -1, `${label}: stale provider activation completions should repair the latest selected provider`);
+    assert.notEqual(changeTestIdx, -1, `${label}: provider change should test the captured provider`);
+    assert.equal(
+      changeCaptureIdx < changeRequestIdx
+        && changeRequestIdx < invalidateIdx
+        && invalidateIdx < activateIdx
+        && activateIdx < catchIdx
+        && catchIdx < failureGuardIdx
+        && failureGuardIdx < failureStatusIdx
+        && failureStatusIdx < changeStaleGuardIdx
+        && changeStaleGuardIdx < repairIdx
+        && repairIdx < changeTestIdx,
+      true,
+      `${label}: provider activation failure/stale guards should run before testing the captured provider`,
+    );
+    assert.match(panel, /await testConnection\(\{ providerId: choice\.providerId \}\);/, `${label}: onboarding provider enablement should test the selected provider explicitly`);
+  }
+});
+
+test('settings page drops stale provider activation completions', () => {
+  for (const [label, settingsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js'],
+    ['firefox', 'src/firefox/src/ui/settings.js'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    assert.match(settings, /let providerActivationRequestId = 0;/, `${label}: settings provider activation should be sequenced`);
+    assert.match(settings, /let requestedActiveProviderId = '';/, `${label}: settings should track the latest requested provider`);
+
+    const activateStart = settings.indexOf('async function activateProvider(id) {');
+    assert.notEqual(activateStart, -1, `${label}: activateProvider missing`);
+    const activateBody = settings.slice(activateStart, settings.indexOf('\n}\n\n', activateStart) + 2);
+    const requestedIdx = activateBody.indexOf('requestedActiveProviderId = id;');
+    const requestIdx = activateBody.indexOf('const requestId = ++providerActivationRequestId;');
+    const activateIdx = activateBody.indexOf("await sendToBackground('set_active_provider', { providerId: id });");
+    const catchIdx = activateBody.indexOf('} catch (e) {');
+    const failureGuardIdx = activateBody.indexOf('if (requestId === providerActivationRequestId && requestedActiveProviderId === id) {');
+    const failureStatusIdx = activateBody.indexOf("setProviderTestResult(id, 'fail', t('st.providers.failed', { error: e.message }));");
+    const staleGuardIdx = activateBody.indexOf('if (requestId !== providerActivationRequestId || requestedActiveProviderId !== id) {');
+    const repairIdx = activateBody.indexOf("sendToBackground('set_active_provider', { providerId: latestProviderId }).catch(() => {});");
+    const activeIdx = activateBody.indexOf('activeProviderId = id;');
+    const renderIdx = activateBody.indexOf('renderProviders();');
+    assert.notEqual(requestedIdx, -1, `${label}: settings activation should track the latest requested provider`);
+    assert.notEqual(requestIdx, -1, `${label}: settings activation should increment a request sequence`);
+    assert.notEqual(activateIdx, -1, `${label}: settings activation request missing`);
+    assert.notEqual(catchIdx, -1, `${label}: settings activation failures should be caught`);
+    assert.notEqual(failureGuardIdx, -1, `${label}: stale settings activation failures should be dropped`);
+    assert.notEqual(failureStatusIdx, -1, `${label}: current settings activation failures should update the provider status`);
+    assert.notEqual(staleGuardIdx, -1, `${label}: stale settings activation completions should be dropped`);
+    assert.notEqual(repairIdx, -1, `${label}: stale settings activation completions should repair the latest provider`);
+    assert.notEqual(activeIdx, -1, `${label}: successful settings activation should update active provider`);
+    assert.notEqual(renderIdx, -1, `${label}: successful settings activation should rerender providers`);
+    assert.equal(
+      requestedIdx < requestIdx
+        && requestIdx < activateIdx
+        && activateIdx < catchIdx
+        && catchIdx < failureGuardIdx
+        && failureGuardIdx < failureStatusIdx
+        && failureStatusIdx < staleGuardIdx
+        && staleGuardIdx < repairIdx
+        && repairIdx < activeIdx
+        && activeIdx < renderIdx,
+      true,
+      `${label}: settings activation should handle failures and stale completions before rendering success`,
+    );
+  }
+});
+
+test('settings provider save and test status updates are DOM-safe', () => {
+  for (const [label, settingsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js'],
+    ['firefox', 'src/firefox/src/ui/settings.js'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    assert.match(
+      settings,
+      /function setProviderTestResult\(id, className, message, color\) \{[\s\S]*?const testEl = document\.getElementById\(`test-\$\{id\}`\);[\s\S]*?if \(!testEl\) return null;[\s\S]*?testEl\.className = `test-result show\$\{className \? ` \$\{className\}` : ''\}`;[\s\S]*?testEl\.style\.color = color \|\| '';[\s\S]*?return testEl;[\s\S]*?\}/,
+      `${label}: provider status writes should tolerate re-rendered or filtered-away cards`,
+    );
+    assert.match(settings, /visionTestResult\.style\.color = color \|\| '';/, `${label}: vision results should clear stale inline colors`);
+    assert.match(settings, /transcriptionTestResult\.style\.color = color \|\| '';/, `${label}: transcription results should clear stale inline colors`);
+    assert.match(settings, /captchaTestResult\.style\.color = color \|\| '';/, `${label}: captcha results should clear stale inline colors`);
+
+    const saveStart = settings.indexOf('async function saveProvider(id, { showFlash = true } = {}) {');
+    assert.notEqual(saveStart, -1, `${label}: saveProvider missing`);
+    const saveBody = settings.slice(saveStart, settings.indexOf('\n}\n\nasync function testProvider', saveStart) + 2);
+    assert.match(
+      saveBody,
+      /try \{[\s\S]*?await sendToBackground\('update_provider', \{ providerId: id, config \}\);[\s\S]*?\} catch \(e\) \{[\s\S]*?setProviderTestResult\(id, 'fail', t\('st\.providers\.failed', \{ error: e\.message \}\)\);[\s\S]*?throw e;[\s\S]*?\}[\s\S]*?if \(providersData\[id\]\) Object\.assign\(providersData\[id\], config\);/,
+      `${label}: successful saves should update in-memory provider data and failed saves should report safely`,
+    );
+    assert.match(
+      saveBody,
+      /const testEl = setProviderTestResult\(id, 'ok', t\('st\.providers\.saved'\)\);[\s\S]*?if \(testEl\) setTimeout\(\(\) => testEl\.classList\.remove\('show'\), 2000\);/,
+      `${label}: save flash should only touch an existing provider result node`,
+    );
+
+    const testStart = settings.indexOf('async function testProvider(id) {');
+    assert.notEqual(testStart, -1, `${label}: testProvider missing`);
+    const testEnd = settings.indexOf('\n}\n\nfunction syncInputsIntoProvidersData', testStart);
+    const testEndWithComment = settings.indexOf('\n}\n\n/**', testStart);
+    const testBoundary = testEnd === -1 ? testEndWithComment : testEnd;
+    assert.notEqual(testBoundary, -1, `${label}: testProvider boundary missing`);
+    const testBody = settings.slice(testStart, testBoundary + 2);
+    assert.match(
+      testBody,
+      /try \{[\s\S]*?await saveProvider\(id, \{ showFlash: false \}\);[\s\S]*?\} catch \(e\) \{[\s\S]*?setProviderTestResult\(id, 'fail', t\('st\.providers\.failed', \{ error: e\.message \}\)\);[\s\S]*?return;[\s\S]*?\}/,
+      `${label}: provider tests should surface save failures without continuing`,
+    );
+    assert.match(
+      testBody,
+      /if \(!setProviderTestResult\(id, '', t\('st\.providers\.testing'\), 'var\(--text2\)'\)\) return;/,
+      `${label}: provider tests should stop if the card was re-rendered away`,
+    );
+    assert.match(
+      testBody,
+      /try \{[\s\S]*?const res = await sendToBackground\('test_provider', \{ providerId: id \}\);[\s\S]*?setProviderTestResult\(id, 'ok'[\s\S]*?setProviderTestResult\(id, 'fail'[\s\S]*?\} catch \(e\) \{[\s\S]*?setProviderTestResult\(id, 'fail', t\('st\.providers\.failed', \{ error: e\.message \}\)\);[\s\S]*?\}/,
+      `${label}: provider tests should handle background failures through safe status writes`,
+    );
+
+    const loadStart = settings.indexOf('async function loadProviderModels(id) {');
+    assert.notEqual(loadStart, -1, `${label}: loadProviderModels missing`);
+    const loadBody = settings.slice(loadStart, settings.indexOf('\n}\n\nfunction setProviderTestResult', loadStart) + 2);
+    assert.match(
+      loadBody,
+      /try \{[\s\S]*?await saveProvider\(id, \{ showFlash: false \}\);[\s\S]*?\} catch \(e\) \{[\s\S]*?setProviderLoadModelsStatus\(id, e\.message, 'var\(--danger, #c33\)'\);[\s\S]*?return;[\s\S]*?\}/,
+      `${label}: model loading should stop and report if the pre-save fails`,
+    );
+  }
+});
+
+test('settings async test controls surface rejected background results', () => {
+  for (const [label, settingsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js'],
+    ['firefox', 'src/firefox/src/ui/settings.js'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+
+    assert.match(
+      settings,
+      /function showVisionResult\(className, text, color = ''\) \{[\s\S]*?visionTestResult\.style\.color = color \|\| '';[\s\S]*?return visionTestResult;[\s\S]*?\}/,
+      `${label}: vision status helper should clear stale inline colors and return the current node`,
+    );
+    assert.match(
+      settings,
+      /function showTranscriptionResult\(className, text, color = ''\) \{[\s\S]*?if \(!transcriptionTestResult\) return;[\s\S]*?transcriptionTestResult\.style\.color = color \|\| '';[\s\S]*?return transcriptionTestResult;[\s\S]*?\}/,
+      `${label}: transcription status helper should clear stale inline colors and tolerate absent controls`,
+    );
+    assert.match(
+      settings,
+      /function showCaptchaResult\(className, text, color = ''\) \{[\s\S]*?if \(!captchaTestResult\) return;[\s\S]*?captchaTestResult\.style\.color = color \|\| '';[\s\S]*?return captchaTestResult;[\s\S]*?\}/,
+      `${label}: captcha status helper should clear stale inline colors and tolerate absent controls`,
+    );
+
+    const visionStart = settings.indexOf("btnTestVision.addEventListener('click', async () => {");
+    assert.notEqual(visionStart, -1, `${label}: vision test handler missing`);
+    const visionBody = settings.slice(visionStart, settings.indexOf('\n});\n\nbtnClearVision', visionStart) + 4);
+    assert.match(
+      visionBody,
+      /showVisionResult\('', t\('st\.vision\.testing'\), 'var\(--text2\)'\);[\s\S]*?try \{[\s\S]*?const res = await sendToBackground\('test_vision_provider'\);[\s\S]*?showVisionResult\('ok'[\s\S]*?showVisionResult\('fail'[\s\S]*?\} catch \(e\) \{[\s\S]*?showVisionResult\('fail', t\('st\.vision\.failed', \{ error: e\.message \}\)\);[\s\S]*?\}/,
+      `${label}: rejected vision provider checks should replace the testing state with a failure`,
+    );
+
+    const transcriptionStart = settings.indexOf("btnTestTranscription.addEventListener('click', async () => {");
+    assert.notEqual(transcriptionStart, -1, `${label}: transcription test handler missing`);
+    const transcriptionEnd = settings.indexOf('\n  });\n}\n\nif (btnClearTranscription', transcriptionStart);
+    assert.notEqual(transcriptionEnd, -1, `${label}: transcription test handler boundary missing`);
+    const transcriptionBody = settings.slice(transcriptionStart, transcriptionEnd + 7);
+    assert.match(
+      transcriptionBody,
+      /showTranscriptionResult\('', t\('st\.transcription\.testing'\), 'var\(--text2\)'\);[\s\S]*?try \{[\s\S]*?const res = await sendToBackground\('test_transcription_provider'\);[\s\S]*?showTranscriptionResult\('ok'[\s\S]*?showTranscriptionResult\('fail'[\s\S]*?\} catch \(e\) \{[\s\S]*?showTranscriptionResult\('fail', t\('st\.transcription\.failed', \{ error: e\.message \}\)\);[\s\S]*?\}/,
+      `${label}: rejected transcription provider checks should replace the testing state with a failure`,
+    );
+
+    const captchaStart = settings.indexOf("btnTestCaptcha.addEventListener('click', async () => {");
+    assert.notEqual(captchaStart, -1, `${label}: captcha test handler missing`);
+    const captchaEnd = settings.indexOf('\n  });\n}\n\nif (btnClearCaptcha', captchaStart);
+    assert.notEqual(captchaEnd, -1, `${label}: captcha test handler boundary missing`);
+    const captchaBody = settings.slice(captchaStart, captchaEnd + 7);
+    assert.match(
+      captchaBody,
+      /showCaptchaResult\('', t\('st\.captcha\.checking'\), 'var\(--text2\)'\);[\s\S]*?try \{[\s\S]*?const res = await sendToBackground\('test_capsolver_balance', \{ apiKey: key \}\);[\s\S]*?flashCaptchaResult\('ok'[\s\S]*?flashCaptchaResult\('fail'[\s\S]*?\} catch \(e\) \{[\s\S]*?flashCaptchaResult\('fail', t\('st\.captcha\.balance_fail', \{ error: e\.message \}\)\);[\s\S]*?\}/,
+      `${label}: rejected captcha balance checks should replace the checking state with a failure`,
+    );
+
+    assert.match(
+      settings,
+      /function setProviderLoadModelsStatus\(id, message, color = 'var\(--text2\)'\) \{[\s\S]*?document\.querySelector\(`\.load-models-status\[data-provider="\$\{id\}"\]`\);[\s\S]*?statusEl\.textContent = message;[\s\S]*?statusEl\.style\.color = color;[\s\S]*?return statusEl;[\s\S]*?\}/,
+      `${label}: model-load status writes should re-query the current provider card`,
+    );
+
+    const loadStart = settings.indexOf('async function loadProviderModels(id) {');
+    assert.notEqual(loadStart, -1, `${label}: loadProviderModels missing`);
+    const loadBody = settings.slice(loadStart, settings.indexOf('\n}\n\nfunction setProviderTestResult', loadStart) + 2);
+    assert.match(
+      loadBody,
+      /let datalistEl = document\.getElementById\(`models-\$\{id\}`\);[\s\S]*?setProviderLoadModelsStatus\(id, t\('st\.providers\.loading'\)\);[\s\S]*?try \{[\s\S]*?res = await sendToBackground\('list_provider_models', \{ providerId: id \}\);[\s\S]*?\} catch \(e\) \{[\s\S]*?setProviderLoadModelsStatus\(id, e\.message, 'var\(--danger, #c33\)'\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?datalistEl = document\.getElementById\(`models-\$\{id\}`\);[\s\S]*?if \(!datalistEl\) return;[\s\S]*?setProviderLoadModelsStatus\(id, res\?\.error \|\| 'Failed to load models', 'var\(--danger, #c33\)'\);/,
+      `${label}: model loading should report rejected background results and avoid stale datalist writes`,
+    );
+  }
+});
+
+test('settings waits for immediate preference writes and theme persistence', () => {
+  for (const [label, settingsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js'],
+    ['firefox', 'src/firefox/src/ui/settings.js'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    assert.match(
+      settings,
+      /themeSelect\.addEventListener\('change', async \(\) => \{[\s\S]*?await applyMode\(mode\);[\s\S]*?\}\);/,
+      `${label}: theme selection should await persistence`,
+    );
+    assert.match(
+      settings,
+      /profileEnabledToggle\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ profileEnabled: profileEnabledToggle\.checked \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: profile toggle should await persistence`,
+    );
+    assert.match(
+      settings,
+      /captchaEnabledToggle\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ captchaSolverEnabled: captchaEnabledToggle\.checked \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: captcha toggle should await persistence`,
+    );
+    assert.match(
+      settings,
+      /btn\.addEventListener\('click', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ providerFilter: f\.key \}\)\.catch\(\(\) => \{\}\);[\s\S]*?renderProviders\(\);[\s\S]*?\}\);/,
+      `${label}: provider filter clicks should await persistence before rerendering`,
+    );
+
+    const theme = fs.readFileSync(path.join(ROOT, label === 'chrome' ? 'src/chrome/src/ui/theme.js' : 'src/firefox/src/ui/theme.js'), 'utf8');
+    assert.match(
+      theme,
+      /export async function applyMode\(mode, opts = \{\}\) \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ themeMode: mode \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}/,
+      `${label}: shared theme helper should await storage persistence`,
+    );
+
+    const i18n = fs.readFileSync(path.join(ROOT, label === 'chrome' ? 'src/chrome/src/ui/i18n.js' : 'src/firefox/src/ui/i18n.js'), 'utf8');
+    assert.match(
+      i18n,
+      /export async function setLocale\(code\) \{[\s\S]*?await api\?\.storage\?\.local\?\.set\?\.?\(\{ wbLocale: code \}\);[\s\S]*?applyDOMTranslations\(document\);/,
+      `${label}: locale helper should await storage persistence before broadcasting`,
+    );
+    assert.match(
+      settings,
+      /languageSelect\.addEventListener\('change', async \(\) => \{[\s\S]*?await setLocale\(languageSelect\.value\);[\s\S]*?renderSubtitle\(\);/,
+      `${label}: settings language change should await locale persistence`,
+    );
+  }
+});
+
+test('settings page awaits immediate preference writes before moving on', () => {
+  for (const [label, settingsRel] of [
+    ['chrome', 'src/chrome/src/ui/settings.js'],
+    ['firefox', 'src/firefox/src/ui/settings.js'],
+  ]) {
+    const settings = fs.readFileSync(path.join(ROOT, settingsRel), 'utf8');
+    assert.match(
+      settings,
+      /window\.addEventListener\('message', async \(event\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ authToken, authEmail, authDefaultModel \}\)\.catch\(\(\) => \{\}\);[\s\S]*?renderAuthSection\(\);/,
+      `${label}: auth token hydration should persist before the settings UI proceeds`,
+    );
+    assert.match(
+      settings,
+      /verboseToggle\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode: verboseToggle\.checked \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: verbose toggle should await its storage write`,
+    );
+    assert.match(
+      settings,
+      /requestTimeoutRange\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ requestTimeoutMs: sec \* 1000 \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: request timeout changes should await persistence`,
+    );
+  }
+});
+
+test('sidepanel scopes allow-api override to the tab conversation', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /const apiMutationsAllowedByTab = new Map\(\);/, `${label}: /allow-api should be tracked per tab`);
+    assert.match(panel, /function isApiMutationsAllowedForTab\(tabId\) \{[\s\S]*?apiMutationsAllowedByTab\.get\(tabId\) === true;[\s\S]*?\}/, `${label}: /allow-api per-tab read helper missing`);
+    assert.match(panel, /function syncApiMutationsAllowedForCurrentTab\(\) \{[\s\S]*?apiMutationsAllowed = isApiMutationsAllowedForTab\(currentTabId\);[\s\S]*?updateApiBadge\(\);[\s\S]*?\}/, `${label}: tab switches should resync /allow-api badge state`);
+
+    const switchStart = panel.indexOf('function switchToTab(newTabId)');
+    assert.notEqual(switchStart, -1, `${label}: switchToTab missing`);
+    const switchBody = panel.slice(switchStart, panel.indexOf('refreshScheduledJobs({', switchStart));
+    assert.match(switchBody, /currentTabId = newTabId;[\s\S]*?syncApiMutationsAllowedForCurrentTab\(\);/, `${label}: switching tabs should load the selected tab's /allow-api state`);
+
+    const resetStart = panel.indexOf('function renderClearedConversationForTab(tabId)');
+    assert.notEqual(resetStart, -1, `${label}: renderClearedConversationForTab missing`);
+    const resetBody = panel.slice(resetStart, panel.indexOf('refreshScheduledJobs({', resetStart));
+    assert.match(resetBody, /clearCachedTabChat\(tabId\);[\s\S]*?setApiMutationsAllowedForTab\(tabId, false\);[\s\S]*?if \(currentTabId !== tabId\) return;/, `${label}: reset should clear the target tab's /allow-api state before visible-tab guards`);
+
+    const allowIdx = panel.indexOf('// /allow-api');
+    assert.notEqual(allowIdx, -1, `${label}: /allow-api parser missing`);
+    const allowBody = panel.slice(allowIdx, panel.indexOf('// /compact', allowIdx));
+    assert.match(allowBody, /const wasAlreadyAllowed = isApiMutationsAllowedForTab\(tabId\);[\s\S]*?setApiMutationsAllowedForTab\(tabId, true\);/, `${label}: /allow-api should enable only the initiating tab conversation`);
+    assert.doesNotMatch(allowBody, /apiMutationsAllowed = true;/, `${label}: /allow-api should not enable a global mutation override`);
+  }
+});
+
+test('sidepanel scopes async tab commands to the original tab', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /async function parseSlashCommands\(text, tabId = currentTabId\) \{/, `${label}: slash-command parsing should accept the initiating tab id`);
+
+    const helperStart = panel.indexOf('function renderClearedConversationForTab(tabId)');
+    assert.notEqual(helperStart, -1, `${label}: clear helper missing`);
+    const helperBody = panel.slice(helperStart, panel.indexOf('\n}', helperStart) + 2);
+    assert.match(helperBody, /clearCachedTabChat\(tabId\);[\s\S]*?if \(currentTabId !== tabId\) return;[\s\S]*?messagesEl\.innerHTML = '';/, `${label}: clear helper should clear cached target tab and only mutate visible UI for the same tab`);
+    assert.match(helperBody, /refreshScheduledJobs\(\{ tabId \}\);/, `${label}: clear helper should scope async scheduled-job refresh to the cleared tab`);
+
+    const resetIdx = panel.indexOf("// /reset");
+    const resetBody = panel.slice(resetIdx, panel.indexOf("// /screenshot", resetIdx));
+    assert.match(resetBody, /await sendToBackground\('clear_conversation', \{ tabId \}\);[\s\S]*?renderClearedConversationForTab\(tabId\);/, `${label}: /reset should clear the originally requested tab only`);
+    assert.doesNotMatch(resetBody, /sendToBackground\('clear_conversation', \{ tabId: currentTabId \}\)/, `${label}: /reset should not use currentTabId after async delay`);
+
+    const clearStart = panel.indexOf("clearBtn.addEventListener('click', async () => {");
+    const clearBody = panel.slice(clearStart, panel.indexOf('\n});', clearStart) + 4);
+    assert.match(clearBody, /const tabId = currentTabId;[\s\S]*?await sendToBackground\('clear_conversation', \{ tabId \}\);[\s\S]*?renderClearedConversationForTab\(tabId\);/, `${label}: clear button should clear the originally requested tab only`);
+
+    const compactIdx = panel.indexOf('// /compact');
+    const compactBody = panel.slice(compactIdx, panel.indexOf('// /verbose', compactIdx));
+    assert.match(compactBody, /const remainder = text\.slice\(mCompact\[0\]\.length\)\.trim\(\);[\s\S]*?sendToBackground\('compact_conversation', \{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return remainder;/, `${label}: /compact should preserve residual prompt text after tab switches without rendering into a different tab`);
+
+    const listIdx = panel.indexOf('// /list-schedules');
+    const listBody = panel.slice(listIdx, panel.indexOf('// /show-scratchpad', listIdx));
+    assert.match(listBody, /const jobs = await refreshScheduledJobs\(\{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return '';/, `${label}: /list-schedules should not render or refresh results into a different tab`);
+
+    assert.match(panel, /async function refreshScheduledJobs\(\{ tabId = null \} = \{\}\) \{[\s\S]*?const jobs = response\?\.jobs \|\| \[\];[\s\S]*?if \(tabId != null && currentTabId !== tabId\) return jobs;[\s\S]*?renderScheduledJobs\(jobs\);/, `${label}: scheduled-job refreshes should be able to drop stale tab completions before rendering`);
+    assert.match(panel, /await refreshScheduledJobs\(\{ tabId \}\);/, `${label}: tab-scoped scheduled-job actions should not repaint a later visible tab`);
+
+    assert.match(panel, /async function showScratchpad\(tabId = currentTabId\) \{[\s\S]*?sendToBackground\('get_scratchpad', \{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return;[\s\S]*?catch \(e\) \{[\s\S]*?if \(currentTabId !== tabId\) return;[\s\S]*?sp\.scratchpad\.error/, `${label}: /show-scratchpad should not render success or error results into a different tab`);
+    assert.match(panel, /\/\/ \/show-scratchpad[\s\S]*?await showScratchpad\(tabId\);/, `${label}: /show-scratchpad should use the initiating tab id from the parser`);
+
+    const screenshotIdx = panel.indexOf('// /screenshot');
+    const screenshotEnd = panel.indexOf('// /record', screenshotIdx);
+    const screenshotBody = panel.slice(screenshotIdx, screenshotEnd);
+    assert.match(screenshotBody, /if \(currentTabId !== tabId \|\| !tab\?\.active\) return '';[\s\S]*?captureVisibleTab[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system', imgHtml\);/, `${label}: /screenshot should not render a captured image into a different tab`);
+
+    if (label === 'chrome') {
+      const recordIdx = panel.indexOf('// /record');
+      const recordBody = panel.slice(recordIdx, panel.indexOf('// /export', recordIdx));
+      assert.match(recordBody, /sendToBackground\('start_tab_recording', \{[\s\S]*?tabId,[\s\S]*?\}\);[\s\S]*?if \(currentTabId !== tabId\) return '';/, `${label}: /record should not render recording status into a different tab`);
+    }
+
+    const profileIdx = panel.indexOf('// /profile');
+    const profileBody = panel.slice(profileIdx, panel.indexOf('// /ask', profileIdx));
+    assert.match(profileBody, /storage\.local\.get\(\['profileEnabled', 'profileText'\]\);[\s\S]*?storage\.local\.set\(\{ profileEnabled: newState \}\);[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system'/, `${label}: /profile should not render a result into a different tab`);
+
+    const visionIdx = panel.indexOf('// /vision');
+    const visionBody = panel.slice(visionIdx, panel.indexOf('return text;', visionIdx));
+    assert.match(visionBody, /sendToBackground\('get_providers'\);[\s\S]*?sendToBackground\('update_provider'[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system'/, `${label}: /vision should not render a result into a different tab`);
+  }
+});
+
+test('sidepanel awaits immediate verbose preference writes', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(
+      panel,
+      /verboseMode = !verboseMode;[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode \}\)\.catch\(\(\) => \{\}\);/,
+      `${label}: verbose toggles should await persistence before continuing`,
+    );
+    assert.match(
+      panel,
+      /if \(\s*\/\^\\\/verbose\\b\\s\*\/i\.test\(text\)\s*\) \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode \}\)\.catch\(\(\) => \{\}\);[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system', verboseMode/,
+      `${label}: /verbose should guard against stale tabs after persisting the mode change`,
+    );
+  }
+});
+
+test('sidepanel awaits recommended-actions collapse persistence', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(
+      panel,
+      /recommendedActionsToggleEl\.addEventListener\('click', async \(\) => \{[\s\S]*?const next = !recommendedActionsCollapsed;[\s\S]*?setRecommendedActionsCollapsed\(next, \{ persist: false \}\);[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ \[RECOMMENDED_ACTIONS_COLLAPSED_KEY\]: next \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: recommended-actions collapse should update local state before awaiting persistence`,
+    );
+  }
+});
+
+test('sidepanel language changes await locale persistence', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(
+      panel,
+      /languageSelect\.addEventListener\('change', async \(\) => \{[\s\S]*?await setLocale\(languageSelect\.value\);[\s\S]*?applyDOMTranslations\(document\);/,
+      `${label}: sidepanel language change should await locale persistence`,
+    );
+  }
+});
+
+test('sidepanel preserves stale residual slash-command prompts without hidden runs', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /const tabInputDrafts = new Map\(\);/, `${label}: sidepanel should track per-tab composer drafts`);
+    assert.match(panel, /function saveInputDraftForTab\(tabId, text\) \{[\s\S]*?tabInputDrafts\.set\(numericTabId, draft\);[\s\S]*?tabInputDrafts\.delete\(numericTabId\);[\s\S]*?\}/, `${label}: tab drafts should save non-empty text and clear empty text`);
+    assert.match(panel, /function restoreInputDraftForTab\(tabId\) \{[\s\S]*?inputEl\.value = draft;[\s\S]*?autoResizeInput\(\);[\s\S]*?updateSlashCommandAutocomplete\(\);[\s\S]*?\}/, `${label}: tab drafts should restore into the composer when returning to a tab`);
+
+    const switchStart = panel.indexOf('function switchToTab(newTabId)');
+    assert.notEqual(switchStart, -1, `${label}: switchToTab missing`);
+    const switchBody = panel.slice(switchStart, panel.indexOf('refreshScheduledJobs({', switchStart));
+    const captureDraftPattern = label === 'chrome'
+      ? /captureInputDraftForTab\(renderedTabId\);[\s\S]*?restoreInputDraftForTab\(newTabId\);/
+      : /captureInputDraftForTab\(currentTabId\);[\s\S]*?restoreInputDraftForTab\(newTabId\);/;
+    assert.match(switchBody, captureDraftPattern, `${label}: tab switches should capture and restore per-tab composer drafts`);
+
+    const sendMatch = panel.match(/async function sendMessage\(extraChatParams\) \{[\s\S]*?\n  return accepted;\n\}/);
+    assert.ok(sendMatch, `${label}: sendMessage missing`);
+    const sendBody = sendMatch[0];
+    const modeCapture = "const modeForSend = /^\\/(?:ask|plan)\\b/i.test(text) ? 'ask' : agentMode;";
+    const apiCapture = "const apiMutationsAllowedForSend = isApiMutationsAllowedForTab(tabId) || /^\\/allow-api\\b/i.test(text);";
+    const modeCaptureIdx = sendBody.indexOf(modeCapture);
+    const apiCaptureIdx = sendBody.indexOf(apiCapture);
+    const parseIdx = sendBody.indexOf('text = await parseSlashCommands(text, tabId);');
+    assert.notEqual(modeCaptureIdx, -1, `${label}: send mode should be captured from the initiating command before async slash parsing`);
+    assert.notEqual(apiCaptureIdx, -1, `${label}: API override should be captured from the initiating tab before async slash parsing`);
+    assert.equal(modeCaptureIdx < parseIdx && apiCaptureIdx < parseIdx, true, `${label}: stale-tab residual sends should not read visible-tab options after slash parsing`);
+    assert.match(
+      sendBody,
+      /const tabId = currentTabId;[\s\S]*?text = await parseSlashCommands\(text, tabId\);[\s\S]*?const renderToCurrentTab = currentTabId === tabId;[\s\S]*?if \(!renderToCurrentTab\) \{[\s\S]*?if \(text\) saveInputDraftForTab\(tabId, text\);[\s\S]*?return false;[\s\S]*?\}/,
+      `${label}: stale residual slash-command prompts should be preserved as drafts instead of hidden runs`,
+    );
+    const staleReturnIdx = sendBody.indexOf('if (!renderToCurrentTab) {');
+    const sendIdx = sendBody.indexOf("sendToBackground('chat'");
+    assert.notEqual(staleReturnIdx, -1, `${label}: stale-tab residual guard missing`);
+    assert.notEqual(sendIdx, -1, `${label}: chat send missing`);
+    assert.equal(staleReturnIdx < sendIdx, true, `${label}: stale-tab residual guard must run before chat dispatch`);
+    assert.match(
+      sendBody,
+      /if \(renderToCurrentTab\) \{\s*isProcessing = true;\s*abortRequested = false;\s*sendBtn\.disabled = true;\s*inputEl\.value = '';\s*autoResizeInput\(\);[\s\S]*?addMessage\('user', text\);[\s\S]*?currentAssistantEl = assistantEl;[\s\S]*?\}/,
+      `${label}: stale-tab residual sends should not mutate or render chat UI in the currently visible tab`,
+    );
+    assert.doesNotMatch(
+      sendBody,
+      /sendToBackground\('chat', \{[\s\S]*?tabId: currentTabId/,
+      `${label}: chat dispatch should not read currentTabId after slash parsing`,
+    );
+  }
+});
+
+test('sidepanel continue runs use the initiating tab state', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const match = panel.match(/async function continueAgent\(\) \{[\s\S]*?\n\}/);
+    assert.ok(match, `${label}: continueAgent missing`);
+    const body = match[0];
+    assert.match(body, /const tabId = currentTabId;[\s\S]*?const modeForSend = agentMode;[\s\S]*?sendToBackground\('continue', \{[\s\S]*?tabId,[\s\S]*?mode: modeForSend,/, `${label}: Continue should send with the tab and mode captured before awaiting`);
+    assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?tabId: currentTabId/, `${label}: Continue should not read currentTabId inside the async send payload`);
+    assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?mode: agentMode/, `${label}: Continue should not read agentMode inside the async send payload`);
+    assert.match(body, /const assistantEl = addMessage\('assistant', ''\);[\s\S]*?currentAssistantEl = assistantEl;[\s\S]*?if \(currentTabId === tabId && res\?\.content && assistantEl\) \{[\s\S]*?addMessageCopyButton\(assistantEl\);/, `${label}: Continue should render only into its captured assistant bubble for the initiating tab`);
+    assert.match(body, /if \(currentTabId === tabId\) finalizeSteps\(assistantEl\);[\s\S]*?if \(currentAssistantEl === assistantEl\) currentAssistantEl = null;/, `${label}: Continue should finalize and clear only its captured assistant bubble`);
+  }
+});
+
+test('sidepanel drains queued context-menu prompts after pending tab switches on run completion', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const completions = [
+      ['sendMessage', /async function sendMessage\([^)]*\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n  return accepted;/],
+      ['continueAgent', /async function continueAgent\(\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n\}/],
+    ];
+    for (const [fnName, pattern] of completions) {
+      const match = panel.match(pattern);
+      assert.ok(match, `${label}: ${fnName} finally block missing`);
+      const finallyBody = match[1];
+      const idleIdx = finallyBody.indexOf('isProcessing = false;');
+      const helperIdx = finallyBody.indexOf('await drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+      assert.notEqual(idleIdx, -1, `${label}: ${fnName} should clear processing state`);
+      assert.notEqual(helperIdx, -1, `${label}: ${fnName} completion should apply pending tab switches before draining queued prompts`);
+      assert.equal(idleIdx < helperIdx, true, `${label}: ${fnName} context-menu queue must drain after processing is cleared`);
+      assert.equal(finallyBody.includes('await switchToTab(pending);'), false, `${label}: ${fnName} should use the non-throwing context-menu drain helper`);
+      assert.equal(finallyBody.includes('drainQueuedContextMenuPrompts();'), false, `${label}: ${fnName} should not drain directly against a potentially stale tab`);
+    }
+  }
+});
+
+test('sidepanel abort safety timeout drains queued prompts after pending tab switches', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const match = panel.match(/setTimeout\(async \(\) => \{[\s\S]*?if \(abortRequested\) \{([\s\S]*?)\n    \}\n  \}, 3000\);/);
+    assert.ok(match, `${label}: abort safety timeout body missing`);
+    const body = match[1];
+    const idleIdx = body.indexOf('isProcessing = false;');
+    const helperIdx = body.indexOf('await drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    assert.notEqual(idleIdx, -1, `${label}: abort timeout should clear processing state`);
+    assert.notEqual(helperIdx, -1, `${label}: abort timeout should apply pending tab switches before draining queued prompts`);
+    assert.equal(idleIdx < helperIdx, true, `${label}: abort timeout should drain after processing is cleared`);
+    assert.equal(body.includes('await switchToTab(pending);'), false, `${label}: abort timeout should use the non-throwing context-menu drain helper`);
+    assert.equal(body.includes('drainQueuedContextMenuPrompts();'), false, `${label}: abort timeout should not drain directly against a potentially stale tab`);
+  }
+});
+
+test('sidepanel drains scheduled-run context-menu prompts after pending tab switches', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /async function drainQueuedContextMenuPromptsAfterPendingTabSwitch\(\) \{[\s\S]*?if \(pendingTabSwitch == null\) \{[\s\S]*?drainQueuedContextMenuPrompts\(\);[\s\S]*?const pending = pendingTabSwitch;[\s\S]*?pendingTabSwitch = null;[\s\S]*?try \{[\s\S]*?await switchToTab\(pending\);[\s\S]*?\} catch \{[\s\S]*?\}[\s\S]*?drainQueuedContextMenuPrompts\(\);/, `${label}: scheduled completions need a non-throwing pending-tab switch before draining context-menu prompts`);
+
+    const scheduledStart = panel.indexOf('function settleScheduledRun(event, job)');
+    const scheduledEnd = panel.indexOf('if (scheduledJobsEl)', scheduledStart);
+    assert.notEqual(scheduledStart, -1, `${label}: scheduled run settlement helper missing`);
+    assert.notEqual(scheduledEnd, -1, `${label}: scheduled job event block missing`);
+    const scheduledBlock = panel.slice(scheduledStart, scheduledEnd);
+    const helperCalls = scheduledBlock.match(/drainQueuedContextMenuPromptsAfterPendingTabSwitch\(\);/g) || [];
+    assert.equal(helperCalls.length >= 2, true, `${label}: scheduled terminal and waiting-idle paths should drain after pending tab switches`);
+  }
+});
+
+test('sidepanel drains scheduled-clarify rejection prompts after pending tab switches', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const match = panel.match(/sendToBackground\('clarify_response', \{ tabId, clarifyId, answer, source \}\)\s*\.catch\(\(\) => \{\s*if \(isScheduledClarify\) \{([\s\S]*?)\n      \}\s*\/\* background may be torn down/);
+    assert.ok(match, `${label}: scheduled clarify rejection handler missing`);
+    const body = match[1];
+    const idleIdx = body.indexOf('isProcessing = false;');
+    const drainIdx = body.indexOf('drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    assert.notEqual(idleIdx, -1, `${label}: scheduled clarify rejection should clear processing state`);
+    assert.notEqual(drainIdx, -1, `${label}: scheduled clarify rejection should apply pending tab switches before draining`);
+    assert.equal(body.includes('drainQueuedContextMenuPrompts();'), false, `${label}: scheduled clarify rejection must not drain against the stale tab`);
+    assert.equal(idleIdx < drainIdx, true, `${label}: scheduled clarify rejection should drain after processing is cleared`);
+  }
+});
+
+test('sidepanel keeps scheduled job action errors on the initiating tab', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const start = panel.indexOf('async function scheduledJobAction(action, jobId)');
+    const end = panel.indexOf('function drainQueuedContextMenuPromptsAfterPendingTabSwitch', start);
+    assert.notEqual(start, -1, `${label}: scheduledJobAction missing`);
+    assert.notEqual(end, -1, `${label}: scheduledJobAction boundary missing`);
+    const body = panel.slice(start, end);
+    const captureIdx = body.indexOf('const tabId = currentTabId;');
+    const sendIdx = body.indexOf('const response = await sendToBackground(bgAction, { jobId });');
+    const responseErrorIdx = body.indexOf("response.error || 'Scheduled job action failed.'");
+    const responseGuardIdx = body.lastIndexOf('if (currentTabId === tabId) {', responseErrorIdx);
+    const catchIdx = body.indexOf('} catch (e) {');
+    const catchGuardIdx = body.indexOf('if (currentTabId === tabId) {', catchIdx);
+    assert.notEqual(captureIdx, -1, `${label}: scheduled job actions should capture the initiating tab`);
+    assert.notEqual(sendIdx, -1, `${label}: scheduled job action background call missing`);
+    assert.notEqual(responseErrorIdx, -1, `${label}: scheduled job action response error path missing`);
+    assert.notEqual(responseGuardIdx, -1, `${label}: scheduled job action response errors should be tab-scoped`);
+    assert.notEqual(catchIdx, -1, `${label}: scheduled job action catch block missing`);
+    assert.notEqual(catchGuardIdx, -1, `${label}: scheduled job action thrown errors should be tab-scoped`);
+    assert.equal(captureIdx < sendIdx && sendIdx < responseGuardIdx && responseGuardIdx < responseErrorIdx, true, `${label}: response errors must be guarded after the async action returns`);
+    assert.equal(sendIdx < catchIdx && catchIdx < catchGuardIdx, true, `${label}: thrown errors must be guarded after the async action returns`);
+  }
+});
+
+test('background awaits context-menu prompt clear before agent chat starts', () => {
+  for (const [label, bgRel] of [
+    ['chrome', 'src/chrome/src/background.js'],
+    ['firefox', 'src/firefox/src/background.js'],
+  ]) {
+    const bg = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    const match = bg.match(/case 'chat': \{([\s\S]*?)\n\s+case 'chat_stream':/);
+    assert.ok(match, `${label}: chat handler missing`);
+    const chatBody = match[1];
+    const clear = 'await contextMenuStorage.clear(msg.contextMenuClear.tabId, msg.contextMenuClear.promptId);';
+    const clearIdx = chatBody.indexOf(clear);
+    const processIdx = chatBody.indexOf('agent.processMessage(');
+    assert.notEqual(clearIdx, -1, `${label}: context-menu prompt clear should be awaited`);
+    assert.notEqual(processIdx, -1, `${label}: chat handler should start an agent run`);
+    assert.equal(clearIdx < processIdx, true, `${label}: context-menu prompt clear must finish before the agent run starts`);
+    assert.doesNotMatch(chatBody, /contextMenuStorage\.clear\(msg\.contextMenuClear\.tabId,\s*msg\.contextMenuClear\.promptId\)\.catch\(\(\) => \{\}\)/, `${label}: context-menu clear should not be fire-and-forget`);
+  }
+});
+
+test('background saves context-menu prompts before opening the panel', () => {
+  for (const [label, bgRel, openCall] of [
+    ['chrome', 'src/chrome/src/background.js', 'openSidePanelForContextMenu(tab);'],
+    ['firefox', 'src/firefox/src/background.js', 'openSidebarForContextMenu(tab);'],
+  ]) {
+    const bg = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    const match = bg.match(/async function handleContextMenuAsk\(info, tab\) \{([\s\S]*?)\n\}/);
+    assert.ok(match, `${label}: context-menu handler should be async`);
+    const body = match[1];
+    const saveIdx = body.indexOf('await contextMenuStorage.save(tab.id, payload);');
+    const openIdx = body.indexOf(openCall);
+    const notifyIdx = body.indexOf('notifySidePanelOfContextMenuPrompt(payload);');
+    assert.notEqual(saveIdx, -1, `${label}: context-menu prompt save should be awaited`);
+    assert.notEqual(openIdx, -1, `${label}: context-menu handler should open the panel/sidebar`);
+    assert.notEqual(notifyIdx, -1, `${label}: context-menu handler should notify the sidepanel`);
+    assert.equal(saveIdx < openIdx && openIdx < notifyIdx, true, `${label}: prompt recovery storage should be written before the panel is opened/notified`);
+    assert.doesNotMatch(body, /contextMenuStorage\.save\(tab\.id,\s*payload\)\.catch\(\(\) => \{\}\)/, `${label}: context-menu prompt save should not be fire-and-forget`);
+    assert.match(bg, /handleContextMenuAsk\(info, tab\)\.catch\(\(\) => \{\}\);/, `${label}: listener should consume async handler failures`);
+  }
+});
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+function createDeferredRemoveStore() {
+  const data = new Map();
+  const removes = [];
+  const store = {
+    async set(obj) {
+      for (const [k, v] of Object.entries(obj || {})) data.set(k, v);
+    },
+    async get(k) {
+      return data.has(k) ? { [k]: data.get(k) } : {};
+    },
+    remove(k) {
+      const gate = deferred();
+      removes.push({ key: k, gate });
+      return gate.promise.then(() => { data.delete(k); });
+    },
+  };
+  return { store, data, removes };
+}
+
+async function waitMicrotasks(count = 2) {
+  for (let i = 0; i < count; i += 1) await Promise.resolve();
+}
+
+function createContextMenuPromptHarness(createHandler, prompt, sendMessage) {
+  let currentTabId = prompt.tabId;
+  let isProcessing = false;
+  let mode = 'act';
+  const sends = [];
+  const input = {
+    value: '',
+    events: [],
+    dispatchEvent(ev) {
+      this.events.push(ev?.type || '');
+    },
+  };
+  const handler = createHandler({
+    getCurrentTabId: () => currentTabId,
+    getIsProcessing: () => isProcessing,
+    getAgentMode: () => mode,
+    setMode: (nextMode) => { mode = nextMode; },
+    getInputEl: () => input,
+    autoResizeInput: () => {},
+    sendMessage: async (extra) => {
+      sends.push({ extra, text: input.value, mode });
+      return sendMessage(extra, sends.length);
+    },
+    sendToBackground: async (action, params) => {
+      assert.equal(action, 'consume_context_menu_prompt');
+      assert.deepEqual(params, { tabId: currentTabId });
+      return { prompt };
+    },
+  });
+  return {
+    handler,
+    input,
+    sends,
+    setProcessing(value) { isProcessing = value; },
+    setTabId(value) { currentTabId = value; },
+  };
+}
+
+test('context-menu prompt recovery retries after an unaccepted send', async () => {
+  for (const [label, createHandler] of [
+    ['chrome', createContextMenuPromptHandlerCh],
+    ['firefox', createContextMenuPromptHandlerFx],
+  ]) {
+    const prompt = { id: `${label}-retry`, tabId: 7, text: 'Ask about this selected text' };
+    const h = createContextMenuPromptHarness(createHandler, prompt, async (_extra, attempt) => attempt > 1);
+
+    h.handler.acceptContextMenuPrompt(prompt);
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 1, `${label}: direct prompt should attempt one send`);
+    assert.equal(h.sends[0].text, prompt.text, `${label}: prompt text should be submitted`);
+
+    await h.handler.consumePendingContextMenuPrompt();
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 2, `${label}: stored prompt should retry after the first send was not accepted`);
+    assert.deepEqual(
+      h.sends[1].extra,
+      { contextMenuClear: { tabId: prompt.tabId, promptId: prompt.id } },
+      `${label}: retry should still clear the stored prompt when accepted`,
+    );
+  }
+});
+
+test('context-menu prompt recovery does not duplicate an in-flight send', async () => {
+  for (const [label, createHandler] of [
+    ['chrome', createContextMenuPromptHandlerCh],
+    ['firefox', createContextMenuPromptHandlerFx],
+  ]) {
+    const prompt = { id: `${label}-inflight`, tabId: 9, text: 'Summarize this selection' };
+    const gate = deferred();
+    const h = createContextMenuPromptHarness(createHandler, prompt, async () => {
+      await gate.promise;
+      return true;
+    });
+
+    h.handler.acceptContextMenuPrompt(prompt);
+    await waitMicrotasks(3);
+    await h.handler.consumePendingContextMenuPrompt();
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 1, `${label}: duplicate stored prompt should be ignored while direct send is in flight`);
+
+    gate.resolve();
+    await waitMicrotasks(3);
+    await h.handler.consumePendingContextMenuPrompt();
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 1, `${label}: accepted prompts should not be replayed from storage`);
+  }
+});
+
+test('context-menu deferred prompts dispatch one at a time', async () => {
+  for (const [label, createHandler] of [
+    ['chrome', createContextMenuPromptHandlerCh],
+    ['firefox', createContextMenuPromptHandlerFx],
+  ]) {
+    const first = { id: `${label}-deferred-1`, tabId: 11, text: 'First selected text prompt' };
+    const second = { id: `${label}-deferred-2`, tabId: 11, text: 'Second selected text prompt' };
+    const gate = deferred();
+    const h = createContextMenuPromptHarness(createHandler, first, async () => {
+      await gate.promise;
+      return true;
+    });
+
+    h.setTabId(null);
+    h.handler.acceptContextMenuPrompt(first);
+    h.handler.acceptContextMenuPrompt(second);
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 0, `${label}: prompts should defer until the panel has an active tab`);
+
+    h.setTabId(11);
+    h.handler.drainQueuedContextMenuPrompts();
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 1, `${label}: only the first deferred prompt should start while sendMessage is still settling`);
+    assert.equal(h.sends[0].text, first.text, `${label}: first deferred prompt should be submitted first`);
+
+    gate.resolve();
+    await waitMicrotasks(6);
+    assert.equal(h.sends.length, 2, `${label}: queued deferred prompt should start after the first send settles`);
+    assert.equal(h.sends[1].text, second.text, `${label}: second deferred prompt should be submitted after the first settles`);
+  }
+});
+
+test('context-menu send failures release the deferred prompt drain', async () => {
+  for (const [label, createHandler] of [
+    ['chrome', createContextMenuPromptHandlerCh],
+    ['firefox', createContextMenuPromptHandlerFx],
+  ]) {
+    const first = { id: `${label}-failed-send-1`, tabId: 13, text: 'First selected text prompt' };
+    const second = { id: `${label}-failed-send-2`, tabId: 13, text: 'Second selected text prompt' };
+    const h = createContextMenuPromptHarness(createHandler, first, async (_extra, attempt) => {
+      if (attempt === 1) throw new Error('background unavailable');
+      return true;
+    });
+
+    h.handler.acceptContextMenuPrompt(first);
+    h.handler.acceptContextMenuPrompt(second);
+    await waitMicrotasks(6);
+
+    assert.equal(h.sends.length, 2, `${label}: queued prompt should drain after the previous send rejects`);
+    assert.equal(h.sends[0].text, first.text, `${label}: first prompt should be attempted before the failure`);
+    assert.equal(h.sends[1].text, second.text, `${label}: second prompt should run after the failure releases the guard`);
+
+    await h.handler.consumePendingContextMenuPrompt();
+    await waitMicrotasks(3);
+    assert.equal(h.sends.length, 3, `${label}: failed prompt should remain retryable from stored recovery`);
+    assert.equal(h.sends[2].text, first.text, `${label}: stored recovery should retry the failed prompt`);
+  }
+});
+
+test('context-menu cleanup blocks stale consume until storage removal finishes', async () => {
+  for (const [label, createStorage] of [
+    ['chrome', createContextMenuStorageCh],
+    ['firefox', createContextMenuStorageFx],
+  ]) {
+    const { store, removes } = createDeferredRemoveStore();
+    const storage = createStorage(() => store);
+    const prompt = { id: 'old', tabId: 7, text: 'old prompt' };
+    await storage.save(7, prompt);
+
+    const cleanupPromise = storage.cleanup(7);
+    await waitMicrotasks();
+    assert.equal(removes.length, 1, `${label}: cleanup should start storage removal`);
+
+    let consumed = false;
+    const consumePromise = storage.consume(7).then((res) => {
+      consumed = true;
+      return res;
+    });
+    await waitMicrotasks();
+    assert.equal(consumed, false, `${label}: consume should wait for cleanup removal`);
+
+    removes[0].gate.resolve();
+    await cleanupPromise;
+    const res = await consumePromise;
+    assert.equal(res.prompt, null, `${label}: stale prompt should not be consumed after cleanup`);
+  }
+});
+
+test('context-menu save after cleanup is not erased by the older cleanup', async () => {
+  for (const [label, createStorage] of [
+    ['chrome', createContextMenuStorageCh],
+    ['firefox', createContextMenuStorageFx],
+  ]) {
+    const { store, data, removes } = createDeferredRemoveStore();
+    const storage = createStorage(() => store);
+    await storage.save(7, { id: 'old', tabId: 7, text: 'old prompt' });
+
+    const cleanupPromise = storage.cleanup(7);
+    await waitMicrotasks();
+    assert.equal(removes.length, 1, `${label}: cleanup should start storage removal`);
+
+    const next = { id: 'new', tabId: 7, text: 'new prompt' };
+    const savePromise = storage.save(7, next);
+    removes[0].gate.resolve();
+    await cleanupPromise;
+    await savePromise;
+
+    assert.deepEqual(data.get(storage.key(7)), next, `${label}: newer prompt should remain in storage after older cleanup`);
+    const res = await storage.consume(7);
+    assert.deepEqual(res.prompt, next, `${label}: newer prompt should remain consumable after older cleanup`);
   }
 });
 
@@ -2283,6 +3960,85 @@ test('ScheduledJobManager does not dedupe against paused jobs', async () => {
     assert.equal(h.jobs().find((job) => job.id === second.jobId)?.status, 'pending', `${label}: new job should be pending`);
     assert.equal(h.alarms.has(h.alarmName(first.jobId)), false, `${label}: paused job alarm should stay cleared`);
     assert.equal(h.alarms.get(h.alarmName(second.jobId)).when, now + 60000, `${label}: new job should have a scheduled alarm`);
+  }
+});
+
+test('ScheduledJobManager only resumes paused jobs', async () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    const h = makeSchedulerHarness(SchedulerMod, { now });
+    const created = await h.manager.createResumeJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      mode: 'act',
+      args: { after_seconds: 60, reason: 'wait', resume_instruction: 'continue' },
+    });
+
+    const pendingResume = await h.manager.resumeJob(created.jobId);
+    assert.equal(pendingResume.ok, false, `${label}: pending jobs should not be resumed`);
+    assert.equal(h.jobs().find((job) => job.id === created.jobId)?.status, 'pending', `${label}: pending resume attempt should not change status`);
+
+    const paused = await h.manager.pauseJob(created.jobId);
+    const resumed = await h.manager.resumeJob(created.jobId);
+    assert.equal(paused.ok, true, `${label}: pause should succeed`);
+    assert.equal(resumed.ok, true, `${label}: paused job should resume`);
+    assert.equal(h.jobs().find((job) => job.id === created.jobId)?.status, 'pending', `${label}: resumed job should become pending`);
+    assert.equal(h.alarms.has(h.alarmName(created.jobId)), true, `${label}: resumed job should get an alarm`);
+  }
+});
+
+test('ScheduledJobManager does not resurrect terminal jobs through stale actions', async () => {
+  const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+  for (const [label, SchedulerMod] of [['chrome', SchedulerCh], ['firefox', SchedulerFx]]) {
+    const h = makeSchedulerHarness(SchedulerMod, { now });
+    const completed = await h.manager.createTaskJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      args: {
+        title: 'Complete me',
+        prompt: 'finish',
+        schedule: { type: 'once', after_seconds: 60 },
+        target: { type: 'current_tab' },
+        mode: 'act',
+      },
+      source: 'user',
+      currentUrl: 'https://example.com/',
+      currentTitle: 'Example',
+    });
+    await h.manager.handleAlarm(h.alarmName(completed.jobId));
+    assert.equal(h.jobs().find((job) => job.id === completed.jobId)?.status, 'completed', `${label}: setup should complete the job`);
+
+    for (const [actionName, action] of [
+      ['runNow', () => h.manager.runNow(completed.jobId)],
+      ['pauseJob', () => h.manager.pauseJob(completed.jobId)],
+      ['resumeJob', () => h.manager.resumeJob(completed.jobId)],
+      ['cancelJob', () => h.manager.cancelJob(completed.jobId, 'stale cancel')],
+    ]) {
+      const res = await action();
+      assert.equal(res.ok, false, `${label}: ${actionName} should reject completed jobs`);
+      assert.equal(h.jobs().find((job) => job.id === completed.jobId)?.status, 'completed', `${label}: ${actionName} should not mutate completed jobs`);
+    }
+
+    const cancellable = await h.manager.createResumeJob({
+      tabId: 77,
+      conversationId: 'conv-1',
+      mode: 'act',
+      args: { after_seconds: 120, reason: 'cancel setup', resume_instruction: 'continue' },
+    });
+    const cancelled = await h.manager.cancelJob(cancellable.jobId, 'cancelled by user');
+    assert.equal(cancelled.ok, true, `${label}: setup cancel should succeed`);
+    assert.equal(h.jobs().find((job) => job.id === cancellable.jobId)?.status, 'cancelled', `${label}: setup should cancel the job`);
+
+    for (const [actionName, action] of [
+      ['runNow', () => h.manager.runNow(cancellable.jobId)],
+      ['pauseJob', () => h.manager.pauseJob(cancellable.jobId)],
+      ['resumeJob', () => h.manager.resumeJob(cancellable.jobId)],
+      ['cancelJob', () => h.manager.cancelJob(cancellable.jobId, 'second cancel')],
+    ]) {
+      const res = await action();
+      assert.equal(res.ok, false, `${label}: ${actionName} should reject cancelled jobs`);
+      assert.equal(h.jobs().find((job) => job.id === cancellable.jobId)?.status, 'cancelled', `${label}: ${actionName} should not mutate cancelled jobs`);
+    }
   }
 });
 
@@ -3718,6 +5474,156 @@ test('listProviderModels sends saved API keys for auth-enabled OpenAI-compatible
   }
 });
 
+test('ProviderManager load ignores unsupported stored provider configs', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+  const validGuid = '11111111-1111-4111-8111-111111111111';
+
+  function makeRuntime(storageData) {
+    const local = {
+      async get(keys) {
+        if (Array.isArray(keys)) {
+          const out = {};
+          for (const key of keys) out[key] = storageData[key];
+          return out;
+        }
+        if (typeof keys === 'string') return { [keys]: storageData[keys] };
+        return { ...storageData };
+      },
+      async set(patch) {
+        Object.assign(storageData, patch);
+      },
+    };
+    return {
+      storage: { local },
+      runtime: {
+        id: 'test-runtime',
+        getPlatformInfo(cb) {
+          const info = { os: 'test', arch: 'x64', nacl_arch: 'x64' };
+          if (typeof cb === 'function') cb(info);
+          return Promise.resolve(info);
+        },
+      },
+    };
+  }
+
+  try {
+    for (const [label, PM, runtimeKey] of [
+      ['chrome', ProviderManagerCh, 'chrome'],
+      ['firefox', ProviderManagerFx, 'browser'],
+    ]) {
+      const storageData = {
+        webbrainDeviceGuid: validGuid,
+        activeProvider: 'bad_legacy',
+        providers: {
+          openai: {
+            type: 'not-a-provider',
+            apiKey: `${label}-kept-key`,
+            model: `${label}-kept-model`,
+          },
+          custom_proxy: {
+            type: 'openai',
+            category: 'router',
+            label: 'Custom proxy',
+            providerName: 'custom-proxy',
+            baseUrl: 'https://models.example.test/v1',
+            model: 'custom-model',
+            apiKey: 'custom-key',
+            enabled: true,
+          },
+          'unsafe"]provider': {
+            type: 'openai',
+            category: 'router',
+            label: 'Unsafe custom proxy',
+            providerName: 'unsafe-proxy',
+            baseUrl: 'https://unsafe.example.test/v1',
+            model: 'unsafe-model',
+            apiKey: 'unsafe-key',
+            enabled: true,
+          },
+          bad_legacy: {
+            type: 'removed-provider',
+            label: 'Removed provider',
+            enabled: true,
+          },
+          missing_type: {
+            label: 'Missing type',
+            enabled: true,
+          },
+        },
+      };
+      globalThis[runtimeKey] = makeRuntime(storageData);
+
+      const mgr = new PM();
+      await mgr.load();
+
+      assert.equal(mgr.activeProviderId, 'webbrain_cloud', `${label}: invalid active provider should fall back`);
+      assert.equal(mgr.providers.has('bad_legacy'), false, `${label}: unsupported stored-only provider should be dropped`);
+      assert.equal(mgr.providers.has('missing_type'), false, `${label}: typeless stored-only provider should be dropped`);
+      assert.equal(mgr.providers.has('unsafe"]provider'), false, `${label}: unsafe stored-only provider id should be dropped`);
+      assert.equal(mgr.providers.get('openai')?.config.type, 'openai', `${label}: built-in type should stay pinned`);
+      assert.equal(mgr.providers.get('openai')?.config.apiKey, `${label}-kept-key`, `${label}: built-in overrides should survive`);
+      assert.equal(mgr.providers.get('openai')?.config.model, `${label}-kept-model`, `${label}: built-in model should survive`);
+      assert.equal(mgr.providers.get('custom_proxy')?.config.type, 'openai', `${label}: supported custom provider should load`);
+      assert.equal(mgr.providers.get('custom_proxy')?.config.model, 'custom-model', `${label}: custom provider config should survive`);
+    }
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.browser = originalBrowser;
+  }
+});
+
+test('ProviderManager update rejects unknown providers and pins existing provider type', async () => {
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+
+  function makeRuntime(writes) {
+    return {
+      storage: {
+        local: {
+          async set(patch) {
+            writes.push(patch);
+          },
+        },
+      },
+    };
+  }
+
+  try {
+    for (const [label, PM, runtimeKey] of [
+      ['chrome', ProviderManagerCh, 'chrome'],
+      ['firefox', ProviderManagerFx, 'browser'],
+    ]) {
+      const writes = [];
+      globalThis[runtimeKey] = makeRuntime(writes);
+      const mgr = new PM();
+      const defaults = mgr._defaultConfigs();
+      mgr.providers.set('openai', mgr._createProvider('openai', defaults.openai));
+      mgr.activeProviderId = 'openai';
+
+      await assert.rejects(
+        () => mgr.updateProvider('unsafe"]provider', {
+          type: 'openai',
+          baseUrl: 'https://unsafe.example.test/v1',
+          model: 'unsafe-model',
+        }),
+        /Provider not found/,
+        `${label}: unknown provider updates should be rejected`,
+      );
+      assert.equal(mgr.providers.has('unsafe"]provider'), false, `${label}: rejected update should not create a provider`);
+      assert.equal(writes.length, 0, `${label}: rejected update should not persist provider state`);
+
+      await mgr.updateProvider('openai', { type: 'llamacpp', model: 'updated-model' });
+      assert.equal(mgr.providers.get('openai')?.config.type, 'openai', `${label}: provider type should remain pinned`);
+      assert.equal(mgr.providers.get('openai')?.config.model, 'updated-model', `${label}: normal provider fields should update`);
+      assert.equal(writes.length, 1, `${label}: accepted update should persist provider state`);
+    }
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.browser = originalBrowser;
+  }
+});
+
 test('_defaultConfigs: every entry carries an explicit category', () => {
   // Walk the actual default config table on each platform and assert
   // each entry has a category field. Catches "I added a provider but
@@ -4306,6 +6212,84 @@ test('isNetworkMutation: only write-method fetches (so /allow-api cannot waive G
   assert.equal(isNetworkMutation('fetch_url', { url: 'https://evil.example/?leak=x' }), false);
   assert.equal(isNetworkMutation('fetch_url', { url: 'https://x.com', method: 'GET' }), false);
   assert.equal(isNetworkMutation('navigate', { url: 'https://x.com' }), false);
+});
+
+test('agent clearConversation drops /allow-api override in both builds', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 4891;
+    agent.conversations.set(tabId, [{ role: 'system', content: 'sys' }]);
+    agent.setApiMutationsAllowed(tabId, true);
+    agent.apiAllowedInjected.add(tabId);
+
+    agent.clearConversation(tabId);
+
+    assert.equal(agent.apiAllowedTabs.has(tabId), false, `${AgentClass.name}: /allow-api survived clearConversation`);
+    assert.equal(agent.apiAllowedInjected.has(tabId), false, `${AgentClass.name}: injected /allow-api marker survived clearConversation`);
+  }
+});
+
+test('agent clearConversation drops transient page-run state in both builds', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 4892;
+    agent.conversations.set(tabId, [{ role: 'system', content: 'sys' }]);
+    agent.lastAutoScreenshotTs.set(tabId, Date.now());
+    agent.lastSeenAdapter.set(tabId, 'GitHub');
+
+    agent.clearConversation(tabId);
+
+    assert.equal(agent.lastAutoScreenshotTs.has(tabId), false, `${AgentClass.name}: stale screenshot debounce survived clearConversation`);
+    assert.equal(agent.lastSeenAdapter.has(tabId), false, `${AgentClass.name}: stale site adapter survived clearConversation`);
+  }
+});
+
+test('agent tab cleanup drops active run trace state in both builds', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 4893;
+    agent._runningTabs.add(tabId);
+    agent.currentRunId.set(tabId, 'run_stale');
+
+    agent._cleanupTab(tabId);
+
+    assert.equal(agent._runningTabs.has(tabId), false, `${AgentClass.name}: running tab guard survived tab cleanup`);
+    assert.equal(agent.currentRunId.has(tabId), false, `${AgentClass.name}: stale trace run id survived tab cleanup`);
+  }
+});
+
+test('agent refuses tool calls outside the advertised tool set in both builds', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    let executed = false;
+    agent.executeTool = async () => {
+      executed = true;
+      return { success: true };
+    };
+    agent._ensureGateSetting = async () => {};
+    const updates = [];
+    const messages = [];
+
+    await agent._executeToolBatch(
+      4894,
+      [{
+        id: 'tool_1',
+        function: { name: 'list_downloads', arguments: '{}' },
+      }],
+      messages,
+      (type, data) => updates.push({ type, data }),
+      { supportsVision: false },
+      '',
+      new Set(['done']),
+      1,
+    );
+
+    assert.equal(executed, false, `${AgentClass.name}: dispatched a tool that was not advertised`);
+    assert.ok(updates.some(update => update.type === 'warning' && /not available/.test(update.data?.message || '')), `${AgentClass.name}: missing unadvertised-tool warning`);
+    assert.equal(messages.length, 1, `${AgentClass.name}: missing denied tool result`);
+    const denied = JSON.parse(messages[0].content);
+    assert.equal(denied.denied, true, `${AgentClass.name}: unadvertised tool result was not marked denied`);
+  }
 });
 
 test('capabilityFor: screenshot is read-only, but save:true is a download', () => {
@@ -5554,9 +7538,7 @@ test('blocked done progress result stays wrapped as untrusted content', async ()
     agent.providerManager = { ...(agent.providerManager || {}), getVisionProvider: async () => null };
 
     const toolCalls = [{ id: 'done_call', function: { name: 'done', arguments: JSON.stringify({ summary: 'Done.' }) } }];
-    const result = AgentClass === AgentFx
-      ? await agent._executeToolBatch(tabId, toolCalls, messages, () => {}, { supportsVision: false }, null, new Set(['done']), 1)
-      : await agent._executeToolBatch(tabId, toolCalls, messages, () => {}, { supportsVision: false }, null, 1);
+    const result = await agent._executeToolBatch(tabId, toolCalls, messages, () => {}, { supportsVision: false }, null, new Set(['done']), 1);
     assert.equal(result.action, 'continue', `${AgentClass.name}: blocked done should continue the tool loop`);
 
     const toolMessage = messages.find(msg => msg.role === 'tool' && msg.tool_call_id === 'done_call');
