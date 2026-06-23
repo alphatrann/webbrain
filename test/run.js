@@ -2725,6 +2725,24 @@ test('sidepanel drains scheduled-run context-menu prompts after pending tab swit
   }
 });
 
+test('sidepanel drains scheduled-clarify rejection prompts after pending tab switches', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const match = panel.match(/sendToBackground\('clarify_response', \{ tabId, clarifyId, answer, source \}\)\s*\.catch\(\(\) => \{\s*if \(isScheduledClarify\) \{([\s\S]*?)\n      \}\s*\/\* background may be torn down/);
+    assert.ok(match, `${label}: scheduled clarify rejection handler missing`);
+    const body = match[1];
+    const idleIdx = body.indexOf('isProcessing = false;');
+    const drainIdx = body.indexOf('drainQueuedContextMenuPromptsAfterPendingTabSwitch();');
+    assert.notEqual(idleIdx, -1, `${label}: scheduled clarify rejection should clear processing state`);
+    assert.notEqual(drainIdx, -1, `${label}: scheduled clarify rejection should apply pending tab switches before draining`);
+    assert.equal(body.includes('drainQueuedContextMenuPrompts();'), false, `${label}: scheduled clarify rejection must not drain against the stale tab`);
+    assert.equal(idleIdx < drainIdx, true, `${label}: scheduled clarify rejection should drain after processing is cleared`);
+  }
+});
+
 test('sidepanel keeps scheduled job action errors on the initiating tab', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],

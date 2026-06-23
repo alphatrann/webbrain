@@ -2294,7 +2294,7 @@ function submitClarify(card, tabId, clarifyId, answer, source) {
         isProcessing = false;
         sendBtn.disabled = false;
         hideActivity();
-        drainQueuedContextMenuPrompts();
+        drainQueuedContextMenuPromptsAfterPendingTabSwitch();
       }
       /* background may be torn down — clarify state already lives there */
     });
