@@ -458,28 +458,20 @@ function enqueueTabChatOperation(tabId, fn) {
   return operation;
 }
 
-async function waitForTabChatOperation(tabId) {
-  const numericTabId = Number(tabId);
-  if (!Number.isFinite(numericTabId)) return;
-  while (true) {
-    const operation = tabChatOperations.get(numericTabId);
-    if (!operation) return;
-    try { await operation; } catch { /* ignore */ }
-    if (tabChatOperations.get(numericTabId) === operation) return;
-  }
-}
-
 async function loadTabChat(tabId) {
   if (tabChats.has(tabId)) return tabChats.get(tabId);
   try {
-    await waitForTabChatOperation(tabId);
-    const key = TAB_CHAT_PREFIX + tabId;
-    const stored = await chrome.storage.session.get(key);
-    const html = stored?.[key];
-    if (typeof html === 'string') {
-      tabChats.set(tabId, html);
-      return html;
-    }
+    return await enqueueTabChatOperation(tabId, async (numericTabId) => {
+      if (tabChats.has(numericTabId)) return tabChats.get(numericTabId);
+      const key = TAB_CHAT_PREFIX + numericTabId;
+      const stored = await chrome.storage.session.get(key);
+      const html = stored?.[key];
+      if (typeof html === 'string') {
+        tabChats.set(numericTabId, html);
+        return html;
+      }
+      return null;
+    });
   } catch (e) { /* ignore */ }
   return null;
 }
