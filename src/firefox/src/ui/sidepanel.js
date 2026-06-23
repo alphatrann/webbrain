@@ -685,16 +685,20 @@ async function scheduledJobAction(action, jobId) {
   }
 }
 
-function drainQueuedContextMenuPromptsAfterPendingTabSwitch() {
+async function drainQueuedContextMenuPromptsAfterPendingTabSwitch() {
   if (pendingTabSwitch == null) {
     drainQueuedContextMenuPrompts();
     return;
   }
   const pending = pendingTabSwitch;
   pendingTabSwitch = null;
-  Promise.resolve(switchToTab(pending))
-    .then(() => drainQueuedContextMenuPrompts())
-    .catch(() => drainQueuedContextMenuPrompts());
+  try {
+    await switchToTab(pending);
+  } catch {
+    // Still drain any queued prompt for the current tab; tab activation can fail
+    // when the underlying browser tab disappears during run settlement.
+  }
+  drainQueuedContextMenuPrompts();
 }
 
 function settleScheduledRun(event, job) {
@@ -1970,12 +1974,7 @@ async function sendMessage(extraChatParams) {
     currentAssistantEl = null;
     scrollToBottom();
     refreshRecommendedActions();
-    if (pendingTabSwitch != null) {
-      const pending = pendingTabSwitch;
-      pendingTabSwitch = null;
-      await switchToTab(pending);
-    }
-    drainQueuedContextMenuPrompts();
+    await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
   return accepted;
 }
@@ -2581,12 +2580,7 @@ async function continueAgent() {
     hideActivity();
     currentAssistantEl = null;
     scrollToBottom();
-    if (pendingTabSwitch != null) {
-      const pending = pendingTabSwitch;
-      pendingTabSwitch = null;
-      await switchToTab(pending);
-    }
-    drainQueuedContextMenuPrompts();
+    await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
   }
 }
 
@@ -2888,12 +2882,7 @@ stopBtn.addEventListener('click', async () => {
       hideActivity();
       currentAssistantEl = null;
       abortRequested = false;
-      if (pendingTabSwitch != null) {
-        const pending = pendingTabSwitch;
-        pendingTabSwitch = null;
-        await switchToTab(pending);
-      }
-      drainQueuedContextMenuPrompts();
+      await drainQueuedContextMenuPromptsAfterPendingTabSwitch();
     }
   }, 3000); // safety timeout if background takes too long
 });
