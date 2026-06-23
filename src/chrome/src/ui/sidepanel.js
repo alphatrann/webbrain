@@ -463,6 +463,25 @@ function persistTabChat(tabId, html) {
   } catch (e) { /* ignore */ }
 }
 
+function clearCachedTabChat(tabId) {
+  if (tabId == null) return;
+  tabChats.delete(tabId);
+  try {
+    chrome.storage.session?.remove(TAB_CHAT_PREFIX + tabId).catch(() => {});
+  } catch (e) { /* ignore */ }
+}
+
+function renderClearedConversationForTab(tabId) {
+  clearCachedTabChat(tabId);
+  if (currentTabId !== tabId) return;
+  messagesEl.innerHTML = '';
+  addMessage('system', t('sp.cleared_message'));
+  apiMutationsAllowed = false;
+  updateApiBadge();
+  refreshScheduledJobs();
+  refreshRecommendedActions();
+}
+
 // Save current tab's chat to storage on a debounced cadence — we don't want
 // to thrash storage on every keystroke / streamed token.
 let persistTimer = null;
@@ -1063,9 +1082,10 @@ async function renderScheduleComposer(prefillPrompt = '') {
   scrollToBottom();
 }
 
-async function showScratchpad() {
+async function showScratchpad(tabId = currentTabId) {
   try {
-    const res = await sendToBackground('get_scratchpad', { tabId: currentTabId });
+    const res = await sendToBackground('get_scratchpad', { tabId });
+    if (currentTabId !== tabId) return;
     const body = String(res?.body || '').trim();
     if (!res?.exists || !body || body === '(empty)') {
       addMessage('system', t('sp.scratchpad.empty'));
@@ -1611,7 +1631,9 @@ async function parseSlashCommands(text) {
 
   // /list-schedules — refresh the scheduled job strip
   if (/^\/list-schedules\b\s*/i.test(text)) {
+    const tabId = currentTabId;
     const jobs = await refreshScheduledJobs();
+    if (currentTabId !== tabId) return '';
     addMessage('system', visibleScheduledJobs(jobs).length
       ? t('sp.schedule_form.list_refreshed')
       : t('sp.schedule_form.none'));
@@ -1620,7 +1642,7 @@ async function parseSlashCommands(text) {
 
   // /show-scratchpad — dump the current tab's agent scratchpad
   if (/^\/show-scratchpad\b\s*/i.test(text)) {
-    await showScratchpad();
+    await showScratchpad(currentTabId);
     return '';
   }
 
@@ -1646,7 +1668,9 @@ async function parseSlashCommands(text) {
   // /compact — force context compaction for this conversation
   const mCompact = text.match(/^\/compact\b\s*/i);
   if (mCompact) {
-    const res = await sendToBackground('compact_conversation', { tabId: currentTabId });
+    const tabId = currentTabId;
+    const res = await sendToBackground('compact_conversation', { tabId });
+    if (currentTabId !== tabId) return '';
     if (res?.ok && res.compacted) {
       addContextCompactedNote({ ...res, manual: true });
     } else if (res?.ok && res.reason === 'busy') {
@@ -1672,16 +1696,9 @@ async function parseSlashCommands(text) {
 
   // /reset — clear conversation (same as clear button)
   if (/^\/reset\b\s*/i.test(text)) {
-    await sendToBackground('clear_conversation', { tabId: currentTabId });
-    messagesEl.innerHTML = '';
-    addMessage('system', t('sp.cleared_message'));
-    if (currentTabId != null) {
-      tabChats.delete(currentTabId);
-      chrome.storage.session?.remove(TAB_CHAT_PREFIX + currentTabId).catch(() => {});
-    }
-    apiMutationsAllowed = false;
-    updateApiBadge();
-    refreshScheduledJobs();
+    const tabId = currentTabId;
+    await sendToBackground('clear_conversation', { tabId });
+    renderClearedConversationForTab(tabId);
     return '';
   }
 
@@ -3103,18 +3120,9 @@ document.addEventListener('wb-locale-changed', () => {
 });
 
 clearBtn.addEventListener('click', async () => {
-  await sendToBackground('clear_conversation', { tabId: currentTabId });
-  messagesEl.innerHTML = '';
-  addMessage('system', t('sp.cleared_message'));
-  if (currentTabId != null) {
-    tabChats.delete(currentTabId);
-    chrome.storage.session?.remove(TAB_CHAT_PREFIX + currentTabId).catch(() => {});
-  }
-  // Per-conversation flags reset on clear.
-  apiMutationsAllowed = false;
-  updateApiBadge();
-  refreshScheduledJobs();
-  refreshRecommendedActions();
+  const tabId = currentTabId;
+  await sendToBackground('clear_conversation', { tabId });
+  renderClearedConversationForTab(tabId);
 });
 
 providerSelect.addEventListener('change', async () => {

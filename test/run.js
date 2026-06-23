@@ -2027,6 +2027,39 @@ test('sidepanel drops stale recommended-action refreshes after tab changes or ru
   }
 });
 
+test('sidepanel scopes async tab commands to the original tab', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+
+    const helperStart = panel.indexOf('function renderClearedConversationForTab(tabId)');
+    assert.notEqual(helperStart, -1, `${label}: clear helper missing`);
+    const helperBody = panel.slice(helperStart, panel.indexOf('\n}', helperStart) + 2);
+    assert.match(helperBody, /clearCachedTabChat\(tabId\);[\s\S]*?if \(currentTabId !== tabId\) return;[\s\S]*?messagesEl\.innerHTML = '';/, `${label}: clear helper should clear cached target tab and only mutate visible UI for the same tab`);
+
+    const resetIdx = panel.indexOf("// /reset");
+    const resetBody = panel.slice(resetIdx, panel.indexOf("// /screenshot", resetIdx));
+    assert.match(resetBody, /const tabId = currentTabId;[\s\S]*?await sendToBackground\('clear_conversation', \{ tabId \}\);[\s\S]*?renderClearedConversationForTab\(tabId\);/, `${label}: /reset should clear the originally requested tab only`);
+    assert.doesNotMatch(resetBody, /sendToBackground\('clear_conversation', \{ tabId: currentTabId \}\)/, `${label}: /reset should not use currentTabId after async delay`);
+
+    const clearStart = panel.indexOf("clearBtn.addEventListener('click', async () => {");
+    const clearBody = panel.slice(clearStart, panel.indexOf('\n});', clearStart) + 4);
+    assert.match(clearBody, /const tabId = currentTabId;[\s\S]*?await sendToBackground\('clear_conversation', \{ tabId \}\);[\s\S]*?renderClearedConversationForTab\(tabId\);/, `${label}: clear button should clear the originally requested tab only`);
+
+    const compactIdx = panel.indexOf('// /compact');
+    const compactBody = panel.slice(compactIdx, panel.indexOf('// /verbose', compactIdx));
+    assert.match(compactBody, /const tabId = currentTabId;[\s\S]*?sendToBackground\('compact_conversation', \{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return '';/, `${label}: /compact should not render a result into a different tab`);
+
+    const listIdx = panel.indexOf('// /list-schedules');
+    const listBody = panel.slice(listIdx, panel.indexOf('// /show-scratchpad', listIdx));
+    assert.match(listBody, /const tabId = currentTabId;[\s\S]*?const jobs = await refreshScheduledJobs\(\);[\s\S]*?if \(currentTabId !== tabId\) return '';/, `${label}: /list-schedules should not render a result into a different tab`);
+
+    assert.match(panel, /async function showScratchpad\(tabId = currentTabId\) \{[\s\S]*?sendToBackground\('get_scratchpad', \{ tabId \}\);[\s\S]*?if \(currentTabId !== tabId\) return;/, `${label}: /show-scratchpad should not render a result into a different tab`);
+  }
+});
+
 test('sidepanel drains queued context-menu prompts after Continue finishes', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
