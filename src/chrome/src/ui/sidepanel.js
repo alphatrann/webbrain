@@ -7,6 +7,7 @@ import { t, getLocale, setLocale, LANGUAGES, applyDOMTranslations } from './i18n
 import { sanitizeMarkdownLinks } from './markdown-link.js';
 import { applyMode, loadMode, watch } from './theme.js';
 import { buildRecommendedActions } from './recommended-actions.js';
+import { createContextMenuPromptHandler } from './context-menu-prompts.js';
 
 // Hydrate the theme from chrome.storage.local (the inline <head> bootstrap
 // only sees localStorage; if the user changes the theme on another device
@@ -364,6 +365,20 @@ let recommendationsRequestId = 0;
 let recommendedActionsCollapsed = false;
 let slashCommandMatches = [];
 let slashCommandSelectedIndex = 0;
+const {
+  acceptContextMenuPrompt,
+  drainQueuedContextMenuPrompts,
+  consumePendingContextMenuPrompt,
+} = createContextMenuPromptHandler({
+  getCurrentTabId: () => currentTabId,
+  getIsProcessing: () => isProcessing,
+  getAgentMode: () => agentMode,
+  setMode,
+  getInputEl: () => inputEl,
+  autoResizeInput,
+  sendMessage,
+  sendToBackground,
+});
 // Notification sound on task completion. Default on; togglable via Settings.
 let notifySoundEnabled = true;
 let notifyAudio = null;
@@ -754,6 +769,7 @@ function settleScheduledRun(event, job) {
     hideActivity();
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     abortRequested = false;
+    drainQueuedContextMenuPrompts();
   }
   if (event === 'completed') playCompletionSound();
 }
@@ -801,6 +817,7 @@ function handleScheduledJobEvent(data, tabId) {
       isProcessing = false;
       sendBtn.disabled = false;
       addMessage('system', t('sp.scheduled.needs_user_input', { title: safeTitle }));
+      drainQueuedContextMenuPrompts();
     }
   }
 }
@@ -1051,6 +1068,8 @@ async function init() {
   await testConnection({ skipWebBrainCloud: true });
   refreshScheduledJobs();
   refreshRecommendedActions();
+  await consumePendingContextMenuPrompt();
+  drainQueuedContextMenuPrompts();
 
   chrome.tabs.onActivated.addListener(async (info) => {
     switchToTab(info.tabId);
@@ -1155,6 +1174,7 @@ async function switchToTab(newTabId) {
   scrollToBottom();
   refreshScheduledJobs();
   refreshRecommendedActions();
+  consumePendingContextMenuPrompt().then(() => drainQueuedContextMenuPrompts()).catch(() => {});
 }
 
 function hideRecommendedActions() {
@@ -1825,6 +1845,7 @@ async function sendMessage() {
     scrollToBottom();
     if (!wasAborted) playCompletionSound();
     refreshRecommendedActions();
+    drainQueuedContextMenuPrompts();
   }
 }
 
@@ -1929,6 +1950,11 @@ hydrateRecordingFromBackground();
 // transcript) so Phase 3's "Summarize" CTA can read it.
 let lastRecordingResult = null;
 let lastTranscript = null;
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.target !== 'sidepanel' || msg.action !== 'context_menu_prompt') return;
+  acceptContextMenuPrompt(msg.prompt || msg);
+});
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.target !== 'sidepanel' || msg.action !== 'recording_update') return;
@@ -2326,6 +2352,7 @@ function submitClarify(card, tabId, clarifyId, answer, source) {
         isProcessing = false;
         sendBtn.disabled = false;
         hideActivity();
+        drainQueuedContextMenuPrompts();
       }
       /* background may be torn down — clarify state already lives there */
     });

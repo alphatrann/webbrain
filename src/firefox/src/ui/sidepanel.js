@@ -7,6 +7,7 @@ import { t, getLocale, setLocale, LANGUAGES, applyDOMTranslations } from './i18n
 import { sanitizeMarkdownLinks } from './markdown-link.js';
 import { applyMode, loadMode, watch } from './theme.js';
 import { buildRecommendedActions } from './recommended-actions.js';
+import { createContextMenuPromptHandler } from './context-menu-prompts.js';
 
 // Hydrate the theme from browser.storage.local (the inline <head> bootstrap
 // only sees localStorage; if the user changes the theme on another device
@@ -344,6 +345,20 @@ let recommendationsRequestId = 0;
 let recommendedActionsCollapsed = false;
 let slashCommandMatches = [];
 let slashCommandSelectedIndex = 0;
+const {
+  acceptContextMenuPrompt,
+  drainQueuedContextMenuPrompts,
+  consumePendingContextMenuPrompt,
+} = createContextMenuPromptHandler({
+  getCurrentTabId: () => currentTabId,
+  getIsProcessing: () => isProcessing,
+  getAgentMode: () => agentMode,
+  setMode,
+  getInputEl: () => inputEl,
+  autoResizeInput,
+  sendMessage,
+  sendToBackground,
+});
 
 // Act-mode risk banner is only meaningful when the permission gate is OFF.
 // With "Ask before consequential actions" ON (the default) the user is
@@ -664,6 +679,7 @@ function settleScheduledRun(event, job) {
     hideActivity();
     if (currentAssistantEl === assistantEl) currentAssistantEl = null;
     abortRequested = false;
+    drainQueuedContextMenuPrompts();
   }
 }
 
@@ -710,6 +726,7 @@ function handleScheduledJobEvent(data, tabId) {
       isProcessing = false;
       sendBtn.disabled = false;
       addMessage('system', t('sp.scheduled.needs_user_input', { title: safeTitle }));
+      drainQueuedContextMenuPrompts();
     }
   }
 }
@@ -946,6 +963,8 @@ async function init() {
   await testConnection({ skipWebBrainCloud: true });
   refreshScheduledJobs();
   refreshRecommendedActions();
+  await consumePendingContextMenuPrompt();
+  drainQueuedContextMenuPrompts();
 
   browser.tabs.onActivated.addListener(async (info) => {
     switchToTab(info.tabId);
@@ -1035,6 +1054,7 @@ function switchToTab(newTabId) {
   scrollToBottom();
   refreshScheduledJobs();
   refreshRecommendedActions();
+  consumePendingContextMenuPrompt().then(() => drainQueuedContextMenuPrompts()).catch(() => {});
 }
 
 function hideRecommendedActions() {
@@ -1634,10 +1654,16 @@ async function sendMessage() {
     currentAssistantEl = null;
     scrollToBottom();
     refreshRecommendedActions();
+    drainQueuedContextMenuPrompts();
   }
 }
 
 // --- Listen for Agent Updates ---
+
+browser.runtime.onMessage.addListener((msg) => {
+  if (msg?.target !== 'sidepanel' || msg.action !== 'context_menu_prompt') return;
+  acceptContextMenuPrompt(msg.prompt || msg);
+});
 
 browser.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'sidepanel' || msg.action !== 'agent_update') return;
@@ -1939,6 +1965,7 @@ function submitClarify(card, tabId, clarifyId, answer, source) {
         isProcessing = false;
         sendBtn.disabled = false;
         hideActivity();
+        drainQueuedContextMenuPrompts();
       }
       /* background may be torn down — clarify state already lives there */
     });

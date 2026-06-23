@@ -8,6 +8,7 @@ import {
   getClaudeOAuthStatus,
 } from './providers/oauth-claude.js';
 import { getBalance as capsolverGetBalance } from './agent/captcha-solver.js';
+import { buildContextMenuPrompt, createContextMenuStorage } from './context-menu-storage.js';
 // (ensureOffscreen + transcribeAudio used to be imported here; both are
 // now consumed inside src/recorder/host.js, which background.js calls into.)
 import {
@@ -52,6 +53,31 @@ setRecorderProviderManager(providerManager);
 
 const MAX_AGENT_STEPS_DEFAULT = 130;
 const MAX_AGENT_STEPS_UNLIMITED_SENTINEL = 200;
+const CONTEXT_MENU_ASK_SELECTION_ID = 'webbrain-ask-selection';
+
+function getContextMenuPromptStore() {
+  return chrome.storage?.session || chrome.storage?.local || null;
+}
+
+const contextMenuStorage = createContextMenuStorage(getContextMenuPromptStore);
+
+function createContextMenus() {
+  if (!chrome.contextMenus?.create) return;
+  chrome.contextMenus.remove(CONTEXT_MENU_ASK_SELECTION_ID, () => {
+    // Nonexistent menu IDs set lastError; that is expected on first install.
+    void chrome.runtime.lastError;
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_ASK_SELECTION_ID,
+      title: 'Ask WebBrain about this',
+      contexts: ['selection'],
+    }, () => {
+      const err = chrome.runtime.lastError;
+      if (err && !/duplicate/i.test(String(err.message || err))) {
+        console.warn('[WebBrain] Failed to create context menu:', err.message || err);
+      }
+    });
+  });
+}
 
 function normalizeMaxAgentSteps(value) {
   const n = Number(value);
@@ -113,6 +139,7 @@ loadCaptchaSolver();
 
 // Initialize on install
 chrome.runtime.onInstalled.addListener(async () => {
+  createContextMenus();
   await providerManager.load();
   await loadMaxSteps();
   console.log('[WebBrain] Extension installed, providers loaded.');
@@ -120,6 +147,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 // Also load on startup
 chrome.runtime.onStartup?.addListener(async () => {
+  createContextMenus();
   await providerManager.load();
   await loadMaxSteps();
 });
@@ -320,6 +348,51 @@ async function ensureWebBrainGroup(tab) {
   }
 }
 
+function notifySidePanelOfContextMenuPrompt(payload) {
+  const msg = {
+    target: 'sidepanel',
+    action: 'context_menu_prompt',
+    tabId: payload.tabId,
+    prompt: payload,
+  };
+  chrome.runtime.sendMessage(msg).catch(() => {});
+  setTimeout(() => chrome.runtime.sendMessage(msg).catch(() => {}), 250);
+}
+
+function openSidePanelForContextMenu(tab) {
+  if (!tab?.id) return;
+  panelTabs.add(tab.id);
+  savePanelTabs();
+  chrome.sidePanel.setOptions({
+    tabId: tab.id,
+    path: 'src/ui/sidepanel.html',
+    enabled: true,
+  });
+  chrome.sidePanel.open({ tabId: tab.id });
+  ensureWebBrainGroup(tab).catch(() => {});
+}
+
+function handleContextMenuAsk(info, tab) {
+  if (info?.menuItemId !== CONTEXT_MENU_ASK_SELECTION_ID || !tab?.id) return;
+  const text = buildContextMenuPrompt(info.selectionText);
+  if (!text) return;
+
+  const payload = {
+    id: `ctx-${tab.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    tabId: tab.id,
+    text,
+    createdAt: Date.now(),
+  };
+
+  contextMenuStorage.save(tab.id, payload).catch(() => {});
+  openSidePanelForContextMenu(tab);
+  notifySidePanelOfContextMenuPrompt(payload);
+}
+
+chrome.contextMenus?.onClicked?.addListener?.((info, tab) => {
+  handleContextMenuAsk(info, tab);
+});
+
 // (See the panel visibility comment above for why we no longer
 // pre-disable or re-assert-enable on tab events.)
 
@@ -416,10 +489,18 @@ chrome.windows?.onRemoved?.addListener?.((windowId) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   panelTabs.delete(tabId);
+  contextMenuStorage.cleanup(tabId);
   savePanelTabs();
   chrome.storage.session?.remove(`tabChat:${tabId}`).catch(() => {});
   scheduler.cancelForTab(tabId).catch(() => {});
   try { agent._cleanupTab(tabId); } catch { /* ignore */ }
+});
+
+// Invalidate pending context-menu prompts when the tab navigates to a new URL.
+// Without this a prompt recorded on page A would be injected into chat in the
+// context of page B if the tab redirected before the panel opened.
+chrome.webNavigation?.onCommitted?.addListener((details) => {
+  if (details.frameId === 0) contextMenuStorage.cleanup(details.tabId);
 });
 
 // SPA navigation tracking. Many sites change route via History API without
@@ -580,6 +661,16 @@ async function handleMessage(msg, sender) {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) return { ok: false, error: 'No tab ID' };
       return { ok: true, ...(await agent.getScratchpad(tabId)) };
+    }
+
+    case 'consume_context_menu_prompt': {
+      const tabId = msg.tabId || sender.tab?.id;
+      return await contextMenuStorage.consume(tabId);
+    }
+
+    case 'clear_context_menu_prompt': {
+      const tabId = msg.tabId || sender.tab?.id;
+      return await contextMenuStorage.clear(tabId, msg.promptId);
     }
 
     case 'list_scheduled_jobs': {
