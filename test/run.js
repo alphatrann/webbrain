@@ -2121,6 +2121,27 @@ test('sidepanel drains queued context-menu prompts after pending tab switches on
   }
 });
 
+test('sidepanel abort safety timeout drains queued prompts after pending tab switches', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const match = panel.match(/setTimeout\(async \(\) => \{[\s\S]*?if \(abortRequested\) \{([\s\S]*?)\n    \}\n  \}, 3000\);/);
+    assert.ok(match, `${label}: abort safety timeout body missing`);
+    const body = match[1];
+    const idleIdx = body.indexOf('isProcessing = false;');
+    const pendingIdx = body.indexOf('if (pendingTabSwitch != null)');
+    const switchIdx = body.indexOf('await switchToTab(pending);');
+    const drainIdx = body.indexOf('drainQueuedContextMenuPrompts();');
+    assert.notEqual(idleIdx, -1, `${label}: abort timeout should clear processing state`);
+    assert.notEqual(pendingIdx, -1, `${label}: abort timeout should apply pending tab switches`);
+    assert.notEqual(switchIdx, -1, `${label}: abort timeout should await the pending tab switch`);
+    assert.notEqual(drainIdx, -1, `${label}: abort timeout should drain queued context-menu prompts`);
+    assert.equal(idleIdx < pendingIdx && pendingIdx < switchIdx && switchIdx < drainIdx, true, `${label}: abort timeout must switch tabs before draining queued prompts`);
+  }
+});
+
 test('sidepanel drains scheduled-run context-menu prompts after pending tab switches', () => {
   for (const [label, panelRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],

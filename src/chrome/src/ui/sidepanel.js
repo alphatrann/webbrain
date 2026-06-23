@@ -3166,7 +3166,7 @@ async function abortRun() {
   }
 
   // Force UI to settle even if background doesn't respond cleanly
-  setTimeout(() => {
+  setTimeout(async () => {
     if (abortRequested) {
       finalizeSteps();
       if (currentAssistantEl) {
@@ -3180,6 +3180,12 @@ async function abortRun() {
       hideActivity();
       currentAssistantEl = null;
       abortRequested = false;
+      if (pendingTabSwitch != null) {
+        const pending = pendingTabSwitch;
+        pendingTabSwitch = null;
+        await switchToTab(pending);
+      }
+      drainQueuedContextMenuPrompts();
     }
   }, 3000); // safety timeout if background takes too long
 }

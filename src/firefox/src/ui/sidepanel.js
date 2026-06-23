@@ -2727,7 +2727,7 @@ stopBtn.addEventListener('click', async () => {
   }
 
   // Force UI to settle even if background doesn't respond cleanly
-  setTimeout(() => {
+  setTimeout(async () => {
     if (abortRequested) {
       finalizeSteps();
       if (currentAssistantEl) {
@@ -2741,6 +2741,12 @@ stopBtn.addEventListener('click', async () => {
       hideActivity();
       currentAssistantEl = null;
       abortRequested = false;
+      if (pendingTabSwitch != null) {
+        const pending = pendingTabSwitch;
+        pendingTabSwitch = null;
+        await switchToTab(pending);
+      }
+      drainQueuedContextMenuPrompts();
     }
   }, 3000); // safety timeout if background takes too long
 });
