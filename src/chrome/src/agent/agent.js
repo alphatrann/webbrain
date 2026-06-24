@@ -8762,13 +8762,21 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
     let emptyOutputRecoveryAttempted = false;
+    let finalResponse = '';
+    let _traceStatus = 'done';
+    const finish = (response, status = _traceStatus) => {
+      finalResponse = response || '';
+      _traceStatus = status;
+      return response;
+    };
 
     this.abortFlags.delete(tabId); // clear any stale abort before the agent loop
 
+    try {
     while (steps < this.maxSteps) {
       if (this._checkAbort(tabId)) {
         onUpdate('warning', { message: 'Stopped by user.' });
-        return '[Stopped by user]';
+        return finish('[Stopped by user]', 'cancelled');
       }
 
       if (steps > 0) {
@@ -8796,7 +8804,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           messages.push({ role: 'assistant', content: beforeCost });
           onUpdate('warning', { message: beforeCost });
           this._persist(tabId);
-          return beforeCost;
+          return finish(beforeCost, 'cost_limit');
         }
         let costStopMessage = '';
 
@@ -8853,7 +8861,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             messages.push({ role: 'assistant', content: costStopMessage });
             onUpdate('warning', { message: costStopMessage });
             this._persist(tabId);
-            return costStopMessage;
+            return finish(costStopMessage, 'cost_limit');
           }
           const toolCalls = Object.values(toolCallsAccumulator);
           this._logDebug({ type: 'llm_stream_response', step: steps, content: fullText, toolCalls });
@@ -8867,7 +8875,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             tabId, toolCalls, messages, onUpdate, provider, fullText, allowedToolNames, steps
           );
           if (batchResult.action === 'return') {
-            return batchResult.value;
+            return finish(batchResult.value);
           }
           continue;
         }
@@ -8880,7 +8888,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           messages.push({ role: 'assistant', content: costStopMessage });
           onUpdate('warning', { message: costStopMessage });
           this._persist(tabId);
-          return costStopMessage;
+          return finish(costStopMessage, 'cost_limit');
         }
         if (!fullText || !fullText.trim()) {
           if (!emptyOutputRecoveryAttempted) {
@@ -8896,7 +8904,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           messages.push({ role: 'assistant', content: failMsg });
           onUpdate('warning', { message: failMsg });
           this._persist(tabId);
-          return failMsg;
+          return finish(failMsg, 'empty_output');
         }
         emptyOutputRecoveryAttempted = false;
         const progressFinalBlock = this._plainFinalProgressBlock(tabId);
@@ -8913,7 +8921,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
         messages.push({ role: 'assistant', content: fullText });
         this._persist(tabId);
-        return fullText;
+        return finish(fullText);
 
       } catch (e) {
         this._logDebug({ type: 'llm_stream_error', step: steps, error: e.message });
@@ -8928,7 +8936,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const errMsg = `Error: ${e.message}`;
         messages.push({ role: 'assistant', content: errMsg });
         this._persist(tabId);
-        return errMsg;
+        return finish(errMsg, 'error');
       }
     }
 
@@ -8940,6 +8948,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const summary = this._buildStepLimitSummary(messages, steps);
     messages.push({ role: 'assistant', content: summary });
     onUpdate('text', { content: summary });
-    return summary;
+    return finish(summary, 'max_steps');
+    } finally {
+      if (runId) {
+        try {
+          trace.endRun(runId, { status: _traceStatus, finalContent: finalResponse });
+        } catch {}
+        this.currentRunId.delete(tabId);
+      }
+    }
   }
 }

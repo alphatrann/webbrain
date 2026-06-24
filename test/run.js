@@ -8910,4 +8910,45 @@ test('planner gate: approving plan appends without deleting scratchpad facts', a
   });
 });
 
+test('planner gate: streaming path clears active trace run after completion', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const tabId = label === 'chrome' ? 9251 : 9252;
+      const provider = {
+        supportsTools: false,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+        async *chatStream() {
+          yield { type: 'text', content: 'Streamed plan run complete.' };
+          yield { type: 'done' };
+        },
+      };
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      agent.planBeforeAct = true;
+      agent.maxSteps = 2;
+      agent._manageContext = async () => {};
+      agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+      agent._ensureProgressSessionForCurrentTask = async () => ({ mode: 'inactive' });
+      agent._maybeReinjectAdapter = async () => {};
+      agent._runPlannerGate = async () => ({ proceed: true });
+      agent._persist = () => {};
+      agent._startTraceRun = async () => {
+        agent.currentRunId.set(tabId, 'trace_stream_test');
+        return 'trace_stream_test';
+      };
+
+      const final = await agent.processMessageStream(tabId, 'collect links', () => {}, 'act');
+
+      assert.equal(final, 'Streamed plan run complete.', `${label} final response`);
+      assert.equal(agent.currentRunId.has(tabId), false, `${label} should clear streaming trace run id`);
+    }
+  });
+});
+
 await run();
