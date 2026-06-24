@@ -2904,6 +2904,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         { temperature: 0.3, maxTokens: 2048 },
         costState,
       );
+      if (this._checkAbort(tabId)) {
+        return { proceed: false, message: '[Stopped by user]' };
+      }
       const plan = parsePlanFromContent(result.content);
       if (!plan) {
         onUpdate('warning', { message: 'Planner could not parse a structured plan — continuing without plan review.' });
@@ -2922,7 +2925,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
 
       const scratchpadText = formatPlanScratchpad(plan, choice?.editedText);
-      const scratchResult = this._scratchpadWrite(tabId, { text: scratchpadText, replace: true });
+      const scratchResult = this._scratchpadWrite(tabId, { text: scratchpadText });
       if (!scratchResult?.success) {
         onUpdate('warning', { message: scratchResult?.error || 'Could not pin plan to scratchpad.' });
       } else {
@@ -8319,6 +8322,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
 
+    this.abortFlags.delete(tabId); // clear any stale abort before the optional planner gate
     if (mode === 'act' && this.planBeforeAct) {
       const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState);
       if (!gate.proceed) {
@@ -8347,7 +8351,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // in the main loop to avoid an infinite empty→nudge→empty→nudge loop.
     let emptyOutputRecoveryAttempted = false;
 
-    this.abortFlags.delete(tabId); // clear any stale abort
     let _traceStatus = 'done'; // updated on early exits
 
     // Start a trace run (no-op if tracing is disabled in settings).
@@ -8628,6 +8631,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
 
+    this.abortFlags.delete(tabId); // clear any stale abort before the optional planner gate
     if (mode === 'act' && this.planBeforeAct) {
       const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState);
       if (!gate.proceed) {
@@ -8652,8 +8656,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
     let emptyOutputRecoveryAttempted = false;
-
-    this.abortFlags.delete(tabId);
 
     while (steps < this.maxSteps) {
       if (this._checkAbort(tabId)) {
