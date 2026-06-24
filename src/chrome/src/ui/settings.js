@@ -186,6 +186,11 @@ async function init() {
   // Render once now; render again after providers load so deviceGuid is present.
   renderAuthSection();
 
+  // Migration: the old auth.webbrain.one sign-in stored a bearer token and
+  // account info here. Billing is now device-GUID based and there is no sign-in
+  // UI, so purge any stale credentials left over from that flow.
+  chrome.storage.local.remove(['authToken', 'authEmail', 'authDefaultModel']).catch(() => {});
+
   // Load display settings
   const stored = await chrome.storage.local.get(['verboseMode', 'screenshotFallback', 'maxAgentSteps', 'autoScreenshot', 'useSiteAdapters', 'notifySound', 'tracingEnabled', 'strictSecretMode', 'agentAllowLocalNetwork', 'scheduledTasksEnabled', 'scheduledRequireConsequentialConfirmation', 'providerFilter', 'requestTimeoutMs', 'costAllowanceSessionUsd', 'costAllowanceTotalUsd', 'cloudCostSpentUsd']);
   if (typeof stored.providerFilter === 'string' && ['all','local','cloud','router'].includes(stored.providerFilter)) {
