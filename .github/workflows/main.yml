@@ -8,6 +8,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node scripts/bump-version.mjs
+      - run: rm -rf dist/*
+      - run: node scripts/build-zip.mjs
+      - run: git config --global user.name "github-actions"
+        continue-on-error: true
+      - run: git config --global user.email "github-actions@github.com"
+        continue-on-error: true
+      - run: git add -A
+      - run: git commit -m "chore: bump version and rebuild dist zips" || echo "No changes to commit"
+      - run: git pushname: Build and Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
