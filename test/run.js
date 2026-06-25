@@ -47,6 +47,8 @@ const {
   formatPlanMarkdown,
   formatPlanScratchpad,
   normalizePlan,
+  userMessageToText,
+  buildPlannerMessages,
 } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/agent/planner.js').replace(/\\/g, '/')
 );
@@ -8949,6 +8951,140 @@ test('planner gate: streaming path clears active trace run after completion', as
       assert.equal(agent.currentRunId.has(tabId), false, `${label} should clear streaming trace run id`);
     }
   });
+});
+
+test('planner gate: a stale abort flag does not cancel a fresh task', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const tabId = label === 'chrome' ? 9301 : 9302;
+      const provider = {
+        supportsTools: false,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+        async *chatStream() {
+          yield { type: 'text', content: 'Fresh task ran.' };
+          yield { type: 'done' };
+        },
+      };
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      agent.planBeforeAct = true;
+      agent.maxSteps = 2;
+      agent._manageContext = async () => {};
+      agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+      agent._ensureProgressSessionForCurrentTask = async () => ({ mode: 'inactive' });
+      agent._maybeReinjectAdapter = async () => {};
+      agent._persist = () => {};
+      agent._startTraceRun = async () => null;
+
+      // Probe the abort state the gate would observe; the run must have cleared
+      // any stale flag before the gate so this is false. (#1)
+      let abortSeenByGate = null;
+      agent._runPlannerGate = async (gateTabId) => {
+        abortSeenByGate = agent._checkAbort(gateTabId);
+        return { proceed: true };
+      };
+
+      // Stale abort flag left over from a prior, already-finished run.
+      agent.abort(tabId);
+
+      const final = await agent.processMessageStream(tabId, 'do the new thing', () => {}, 'act');
+
+      assert.equal(abortSeenByGate, false, `${label} stale abort flag should be cleared before the gate`);
+      assert.equal(final, 'Fresh task ran.', `${label} fresh task should run, not be cancelled`);
+    }
+  });
+});
+
+test('planner gate: trace run is ended when run setup throws', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const tabId = label === 'chrome' ? 9351 : 9352;
+      const provider = {
+        supportsTools: false,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+        async *chatStream() { yield { type: 'done' }; },
+      };
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      agent.planBeforeAct = true;
+      agent.maxSteps = 2;
+      agent._manageContext = async () => {};
+      agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+      agent._maybeReinjectAdapter = async () => {};
+      agent._persist = () => {};
+      agent._runPlannerGate = async () => ({ proceed: true });
+      agent._startTraceRun = async () => {
+        agent.currentRunId.set(tabId, 'trace_setup_throw');
+        return 'trace_setup_throw';
+      };
+      // Run setup that sits between the gate and the loop throws — the finally
+      // must still end the trace run and clear currentRunId. (#2)
+      agent._ensureProgressSessionForCurrentTask = async () => { throw new Error('setup boom'); };
+
+      await assert.rejects(
+        agent.processMessageStream(tabId, 'go', () => {}, 'act'),
+        /setup boom/,
+        `${label} should surface the setup error`,
+      );
+      assert.equal(agent.currentRunId.has(tabId), false, `${label} should clear currentRunId after a setup throw`);
+    }
+  });
+});
+
+test('planner input: text is extracted from chat messages without leaking image data', () => {
+  assert.equal(userMessageToText('plain string'), 'plain string', 'string passthrough');
+  assert.equal(
+    userMessageToText([{ type: 'text', text: 'hello' }, { type: 'text', text: 'world' }]),
+    'hello\nworld',
+    'array of text blocks',
+  );
+  // The common Plan-before-Act case: a { role, content } object whose content
+  // is a vision array. Only the text must survive; the base64 data URL must not.
+  const visionMsg = {
+    role: 'user',
+    content: [
+      { type: 'text', text: 'describe this' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAABBBBCCCCDDDD' } },
+    ],
+  };
+  const text = userMessageToText(visionMsg);
+  assert.equal(text, 'describe this', 'extracts only the text block');
+  assert.ok(!text.includes('base64'), 'no base64 wrapper leaks into planner input');
+  assert.ok(!text.includes('AAAABBBB'), 'no image bytes leak into planner input');
+  // { role, content: string } stays textual rather than JSON-serialized.
+  assert.equal(userMessageToText({ role: 'user', content: 'just text' }), 'just text', 'string content unwrapped');
+});
+
+test('planner input: recent conversation digest is included for follow-up acts', () => {
+  const messages = buildPlannerMessages(
+    { role: 'user', content: 'open the first result' },
+    'https://example.com',
+    'Example',
+    'User: search for cats\nAssistant: Found 10 results.',
+  );
+  const userMsg = messages.find((m) => m.role === 'user');
+  assert.ok(userMsg, 'planner user message present');
+  assert.match(userMsg.content, /Recent conversation/, 'history section present');
+  assert.match(userMsg.content, /search for cats/, 'prior user turn included');
+  assert.match(userMsg.content, /Found 10 results/, 'prior assistant turn included');
+  assert.match(userMsg.content, /open the first result/, 'current task still present and authoritative');
+
+  // No history → no history section, no empty-context noise.
+  const noHistory = buildPlannerMessages({ role: 'user', content: 'do it' }, 'https://example.com', 'Example');
+  const plainUser = noHistory.find((m) => m.role === 'user');
+  assert.ok(!/Recent conversation/.test(plainUser.content), 'no history section when there is no prior context');
 });
 
 await run();

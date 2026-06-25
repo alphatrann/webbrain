@@ -2076,7 +2076,15 @@ browser.runtime.onMessage.addListener((msg) => {
   switch (type) {
     case 'thinking':
       if (data?.note) {
-        showActivity(String(data.note));
+        // Keep the step indicator alongside the note when there's real
+        // progress (step > 0) so a slow call still shows movement; the planner
+        // emits step 0, so it shows just "Planning…". (#4)
+        const note = String(data.note);
+        showActivity(
+          data.step
+            ? `${note} · ${t('sp.activity.thinking_step', { step: data.step })}`
+            : note,
+        );
       } else {
         showActivity(t('sp.activity.thinking_step', { step: data.step }));
       }

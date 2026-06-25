@@ -35,7 +35,10 @@ import {
   parsePlanFromContent,
   formatPlanMarkdown,
   formatPlanScratchpad,
+  userMessageToText,
 } from './planner.js';
+import { extractFirstJsonObject } from './json-extract.js';
+import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 const COST_ALLOWANCE_SESSION_KEY = 'costAllowanceSessionUsd';
@@ -2137,48 +2140,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   static _extractFirstJsonObject(raw) {
-    const text = String(raw || '').trim();
-    if (!text) return null;
-    const candidates = [];
-    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fenced) candidates.push(fenced[1].trim());
-    candidates.push(text);
-
-    for (const candidate of candidates) {
-      const start = candidate.indexOf('{');
-      if (start < 0) continue;
-      let depth = 0;
-      let inString = false;
-      let escaped = false;
-      for (let i = start; i < candidate.length; i++) {
-        const ch = candidate[i];
-        if (inString) {
-          if (escaped) {
-            escaped = false;
-          } else if (ch === '\\') {
-            escaped = true;
-          } else if (ch === '"') {
-            inString = false;
-          }
-          continue;
-        }
-        if (ch === '"') {
-          inString = true;
-        } else if (ch === '{') {
-          depth += 1;
-        } else if (ch === '}') {
-          depth -= 1;
-          if (depth === 0) {
-            try {
-              return JSON.parse(candidate.slice(start, i + 1));
-            } catch (_) {
-              break;
-            }
-          }
-        }
-      }
-    }
-    return null;
+    return extractFirstJsonObject(raw);
   }
 
   static _normalizeVisibleMediaLocation(raw, viewport = {}) {
@@ -2895,18 +2857,59 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       tabUrl = tab?.url || '';
       tabTitle = tab?.title || '';
     } catch {}
-    const runId = await trace.startRun({
-      model: provider?.model,
-      providerId: provider?.name,
-      providerClass: provider?.constructor?.name,
-      userMessage: typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage).slice(0, 2000),
-      tabUrl,
-      tabTitle,
-      mode,
-      conversationId: this.conversationIds.get(tabId) || null,
-    });
+    // Tracing must never break a run: a recorder failure returns null and the
+    // run proceeds untraced rather than throwing out of the message path.
+    let runId = null;
+    try {
+      runId = await trace.startRun({
+        model: provider?.model,
+        providerId: provider?.name,
+        providerClass: provider?.constructor?.name,
+        userMessage: typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage).slice(0, 2000),
+        tabUrl,
+        tabTitle,
+        mode,
+        conversationId: this.conversationIds.get(tabId) || null,
+      });
+    } catch {
+      return null;
+    }
     if (runId) this.currentRunId.set(tabId, runId);
     return runId;
+  }
+
+  /**
+   * End a trace run and clear its currentRunId, tolerating recorder errors.
+   * No-op when runId is falsy. Shared by the streaming and non-streaming
+   * message paths so the teardown stays in one place. (#9)
+   */
+  _endTraceRun(tabId, runId, status, finalContent) {
+    if (!runId) return;
+    try {
+      const r = trace.endRun(runId, { status, finalContent });
+      if (r && typeof r.then === 'function') r.catch(() => {});
+    } catch {}
+    this.currentRunId.delete(tabId);
+  }
+
+  /**
+   * Build a compact, single-line-per-turn digest of recent conversation so the
+   * planner can resolve follow-up references ("continue", "open the first
+   * result"). Skips system / scratchpad / progress-ledger bookkeeping turns.
+   */
+  _buildPlannerHistoryDigest(messages, maxChars = 1500) {
+    if (!Array.isArray(messages) || messages.length === 0) return '';
+    const lines = [];
+    for (const m of messages.slice(-10)) {
+      if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+      if (this._isScratchpadMessage(m) || this._isProgressLedgerMessage(m)) continue;
+      const text = sanitizePlannerText(userMessageToText(m), 300, { collapseWhitespace: true });
+      if (!text) continue;
+      lines.push(`${m.role === 'user' ? 'User' : 'Assistant'}: ${text}`);
+    }
+    if (lines.length === 0) return '';
+    const digest = lines.join('\n');
+    return digest.length > maxChars ? `…${digest.slice(digest.length - maxChars)}` : digest;
   }
 
   /**
@@ -2919,7 +2922,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return { proceed: true };
     }
 
-    const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState, runId);
+    const historyDigest = this._buildPlannerHistoryDigest(messages);
+    const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState, runId, historyDigest);
     if (!gate.proceed) {
       messages.push(enriched);
       messages.push({ role: 'assistant', content: gate.message || 'Task cancelled.' });
@@ -2940,9 +2944,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           messages.splice(scratchIdx, 1);
           messages.push(scratchMsg);
         }
-        if (gate.planId) {
-          onUpdate('plan_approved', { planId: gate.planId, bytes: scratchResult.bytes });
-        }
+        // Note: the "Plan approved — running…" confirmation is rendered locally
+        // by submitPlanReview in the sidepanel, so there's no plan_approved
+        // agent_update to emit here (no handler consumed it). (#3)
       }
     }
     this._persist(tabId);
@@ -2953,7 +2957,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * Run the optional pre-execution planner gate for Act mode.
    * Returns { proceed, message?, approvedScratchpadText?, planId? }.
    */
-  async _runPlannerGate(tabId, enriched, onUpdate, costState, runId = null) {
+  async _runPlannerGate(tabId, enriched, onUpdate, costState, runId = null, historyDigest = '') {
     let tabUrl = '';
     let tabTitle = '';
     try {
@@ -2965,7 +2969,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     onUpdate('thinking', { step: 0, note: 'Planning…' });
 
     const provider = this.providerManager.getActive();
-    const plannerMessages = buildPlannerMessages(enriched, tabUrl, tabTitle);
+    const plannerMessages = buildPlannerMessages(enriched, tabUrl, tabTitle, historyDigest);
     const plannerStep = 0;
 
     try {
@@ -8413,24 +8417,34 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
 
     const provider = this.providerManager.getActive();
+
+    // Clear any stale abort flag before any LLM work. The planner gate makes a
+    // paid LLM call and checks/consumes this flag, so a leftover flag from a
+    // prior run must not cancel this fresh task. (#1)
+    this.abortFlags.delete(tabId);
+
     let runId = null;
+    let finalResponse = '';
+    let _traceStatus = 'done'; // updated on early exits
+
+    // Everything that can throw — trace start, planner gate, run setup, and the
+    // agent loop — runs inside this try so the finally always ends the trace
+    // run and clears currentRunId, even on an early throw during setup. (#2)
+    try {
+    // When the planner gate runs, start the trace up-front so the planner LLM
+    // call is recorded under this run; otherwise it's started just before the
+    // loop. _startTraceRun is the single source of truth (no duplicate tab
+    // fetch / startRun payload). (#6)
     if (mode === 'act' && this.planBeforeAct) {
-      try {
-        runId = await this._startTraceRun(tabId, userMessage, mode, provider);
-      } catch {}
+      runId = await this._startTraceRun(tabId, userMessage, mode, provider);
     }
 
     const gateOutcome = await this._maybeRunPlannerGate(
       tabId, messages, enriched, onUpdate, mode, costState, runId,
     );
     if (!gateOutcome.proceed) {
-      if (runId) {
-        try {
-          trace.endRun(runId, { status: 'cancelled', finalContent: gateOutcome.message || 'Task cancelled.' });
-        } catch {}
-        this.currentRunId.delete(tabId);
-      }
-      return gateOutcome.message || 'Task cancelled.';
+      _traceStatus = 'cancelled';
+      return (finalResponse = gateOutcome.message || 'Task cancelled.');
     }
 
     if (mode === 'act') {
@@ -8441,35 +8455,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const allowedToolNames = new Set(tools.map(t => t.function.name));
     const plannerTemperature = mode === 'act' ? 0.15 : 0.3;
     let steps = 0;
-    let finalResponse = '';
     // Tracks whether we've already nudged the model after an empty
     // (no-content + no-tool-call) response. Used by the recovery branch
     // in the main loop to avoid an infinite empty→nudge→empty→nudge loop.
     let emptyOutputRecoveryAttempted = false;
 
-    this.abortFlags.delete(tabId); // clear any stale abort before the agent loop
-
-    let _traceStatus = 'done'; // updated on early exits
-
-    // Start a trace run (no-op if tracing is disabled in settings).
-    let tabUrl = '', tabTitle = '';
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      tabUrl = tab?.url || '';
-      tabTitle = tab?.title || '';
-    } catch {}
     if (!runId) {
-      runId = await trace.startRun({
-        model: provider.model, providerId: provider.name,
-        providerClass: provider.constructor.name,
-        userMessage: typeof userMessage === 'string' ? userMessage : JSON.stringify(userMessage).slice(0, 2000),
-        tabUrl, tabTitle, mode,
-        conversationId: this.conversationIds.get(tabId) || null,
-      });
-      if (runId) this.currentRunId.set(tabId, runId);
+      runId = await this._startTraceRun(tabId, userMessage, mode, provider);
     }
 
-    try {
     while (steps < this.maxSteps) {
       // Check for abort before each step
       if (this._checkAbort(tabId)) {
@@ -8695,10 +8689,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return finalResponse;
     } finally {
       this.currentCostState.delete(tabId);
-      if (runId) {
-        trace.endRun(runId, { status: _traceStatus, finalContent: finalResponse });
-        this.currentRunId.delete(tabId);
-      }
+      this._endTraceRun(tabId, runId, _traceStatus, finalResponse);
     }
   }
 
@@ -8732,24 +8723,34 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const enriched = await this._enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState);
 
     const provider = this.providerManager.getActive();
+
+    // Clear any stale abort flag before any LLM work. The planner gate makes a
+    // paid LLM call and checks/consumes this flag, so a leftover flag from a
+    // prior run must not cancel this fresh task. (#1)
+    this.abortFlags.delete(tabId);
+
     let runId = null;
+    let finalResponse = '';
+    let _traceStatus = 'done';
+    const finish = (response, status = _traceStatus) => {
+      finalResponse = response || '';
+      _traceStatus = status;
+      return response;
+    };
+
+    // All throwing work — trace start, planner gate, run setup, and the agent
+    // loop — runs inside this try so the finally always ends the trace run and
+    // clears currentRunId, even on an early throw during setup. (#2)
+    try {
     if (mode === 'act' && this.planBeforeAct) {
-      try {
-        runId = await this._startTraceRun(tabId, userMessage, mode, provider);
-      } catch {}
+      runId = await this._startTraceRun(tabId, userMessage, mode, provider);
     }
 
     const gateOutcome = await this._maybeRunPlannerGate(
       tabId, messages, enriched, onUpdate, mode, costState, runId,
     );
     if (!gateOutcome.proceed) {
-      if (runId) {
-        try {
-          trace.endRun(runId, { status: 'cancelled', finalContent: gateOutcome.message || 'Task cancelled.' });
-        } catch {}
-        this.currentRunId.delete(tabId);
-      }
-      return gateOutcome.message || 'Task cancelled.';
+      return finish(gateOutcome.message || 'Task cancelled.', 'cancelled');
     }
 
     if (mode === 'act') {
@@ -8762,17 +8763,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
     let emptyOutputRecoveryAttempted = false;
-    let finalResponse = '';
-    let _traceStatus = 'done';
-    const finish = (response, status = _traceStatus) => {
-      finalResponse = response || '';
-      _traceStatus = status;
-      return response;
-    };
 
-    this.abortFlags.delete(tabId); // clear any stale abort before the agent loop
-
-    try {
     while (steps < this.maxSteps) {
       if (this._checkAbort(tabId)) {
         onUpdate('warning', { message: 'Stopped by user.' });
@@ -8950,12 +8941,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     onUpdate('text', { content: summary });
     return finish(summary, 'max_steps');
     } finally {
-      if (runId) {
-        try {
-          trace.endRun(runId, { status: _traceStatus, finalContent: finalResponse });
-        } catch {}
-        this.currentRunId.delete(tabId);
-      }
+      this._endTraceRun(tabId, runId, _traceStatus, finalResponse);
     }
   }
 }

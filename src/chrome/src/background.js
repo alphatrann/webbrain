@@ -141,7 +141,10 @@ async function loadPlanBeforeAct() {
   const stored = await chrome.storage.local.get('planBeforeAct');
   if (stored.planBeforeAct != null) agent.planBeforeAct = !!stored.planBeforeAct;
 }
-loadPlanBeforeAct();
+// Hydrate once at SW boot. handleMessage awaits this promise so the first chat
+// can't race ahead of hydration, but it does NOT re-read storage per message —
+// the storage.onChanged listener below keeps agent.planBeforeAct in sync. (#5)
+const planBeforeActReady = loadPlanBeforeAct();
 
 // Initialize on install
 chrome.runtime.onInstalled.addListener(async () => {
@@ -589,9 +592,10 @@ async function handleMessage(msg, sender) {
   if (providerManager.providers.size === 0) {
     await providerManager.load();
   }
-  // Agent toggles (planBeforeAct, etc.) load async at SW boot — await so the
-  // first chat after install/enable cannot race ahead of storage hydration.
-  await loadPlanBeforeAct();
+  // Agent toggles (planBeforeAct, etc.) hydrate once at SW boot — await that
+  // single promise so the first chat can't race ahead of hydration, without a
+  // storage round-trip on every message.
+  await planBeforeActReady;
 
   switch (msg.action) {
     // --- Chat / Agent ---

@@ -140,7 +140,10 @@ async function loadPlanBeforeAct() {
   const stored = await browser.storage.local.get('planBeforeAct');
   if (stored.planBeforeAct != null) agent.planBeforeAct = !!stored.planBeforeAct;
 }
-loadPlanBeforeAct();
+// Hydrate once at SW boot. handleMessage awaits this promise so the first chat
+// can't race ahead of hydration, but it does NOT re-read storage per message —
+// the storage.onChanged listener below keeps agent.planBeforeAct in sync. (#5)
+const planBeforeActReady = loadPlanBeforeAct();
 
 // Initialize on install
 browser.runtime.onInstalled.addListener(async () => {
@@ -443,7 +446,9 @@ async function handleMessage(msg, sender) {
   if (providerManager.providers.size === 0) {
     await providerManager.load();
   }
-  await loadPlanBeforeAct();
+  // Hydrate planBeforeAct once at boot (not per message); onChanged keeps it
+  // in sync afterward.
+  await planBeforeActReady;
 
   switch (msg.action) {
     case 'chat': {
