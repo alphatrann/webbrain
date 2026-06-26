@@ -3317,6 +3317,11 @@ test('sidepanel allows only safe slash commands while busy', () => {
     );
     assert.match(
       panel,
+      /function applySlashCommandCompletion\(index = slashCommandSelectedIndex\) \{[\s\S]*?inputEl\.value = `\$\{command\.value\} `;[\s\S]*?autoResizeInput\(\);\s*syncSendButtonState\(\);[\s\S]*?return true;[\s\S]*?\}/,
+      `${label}: slash autocomplete completion should resync send button state`,
+    );
+    assert.match(
+      panel,
       /if \(isProcessing\) \{[\s\S]*?if \(!isOutOfBandSlashDraft\(text\)\) \{[\s\S]*?showBusySlashCommandNotice\(\);[\s\S]*?return false;[\s\S]*?\}[\s\S]*?await parseSlashCommands\(text, tabId\);[\s\S]*?return true;[\s\S]*?\}/,
       `${label}: busy send preflight should run safe slash commands without starting chat`,
     );

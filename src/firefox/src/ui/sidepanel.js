@@ -1715,6 +1715,7 @@ function applySlashCommandCompletion(index = slashCommandSelectedIndex) {
   inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
   hideSlashCommandAutocomplete();
   autoResizeInput();
+  syncSendButtonState();
   inputEl.focus();
   return true;
 }
