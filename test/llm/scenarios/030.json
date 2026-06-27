@@ -45,7 +45,7 @@
         "reason": "Same CSP block — execute_js can't drive history here."
       },
       {
-        "match": "done(...)",
+        "match": "done({summary:\"...\"})",
         "reason": "Don't give up and tell the user to press Back manually; the go_back tool exists for exactly this."
       }
     ],
