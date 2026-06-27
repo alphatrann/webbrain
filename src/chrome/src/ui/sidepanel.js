@@ -1474,6 +1474,10 @@ async function switchToTab(newTabId) {
   // currentTabId may already point at the target while the DOM is still older.
   if (renderedTabId != null) {
     await flushRenderedTabChat();
+    if (isProcessing) {
+      pendingTabSwitch = newTabId;
+      return;
+    }
     captureInputDraftForTab(renderedTabId);
   }
 
