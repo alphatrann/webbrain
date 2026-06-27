@@ -121,6 +121,8 @@ export class Agent {
     this.recentCoordClicks = new Map();
     this.apiAllowedTabs = new Set();
     this.apiAllowedInjected = new Set();
+    this.bulkApiMutationClicks = new Map();
+    this.bulkApiMutationHints = new Map();
     // Cache for `_isPdfTab` HEAD probes — see Chrome agent.js for
     // design notes. Same (tabId,url) → isPdf shape.
     this._isPdfTabCache = new Map();
@@ -495,6 +497,8 @@ export class Agent {
     this.loopNudges.delete(tabId);
     this.healthyCallsSinceLoop.delete(tabId);
     this.recentCoordClicks.delete(tabId);
+    this.bulkApiMutationClicks.delete(tabId);
+    this.bulkApiMutationHints.delete(tabId);
   }
 
   /**
@@ -536,6 +540,168 @@ export class Agent {
     }
     if (!candidate || matches < 2) return null;
     return { url: candidate.url, method: candidate.method, occurrences: matches };
+  }
+
+  _bulkClickLabel(toolName, args, result) {
+    if (!['click', 'click_ax'].includes(toolName)) return '';
+    const candidates = [
+      result?.name,
+      result?.text,
+      result?.matched,
+      result?.label,
+      args?.text,
+      args?.selector,
+    ];
+    for (const value of candidates) {
+      const label = String(value || '').replace(/\s+/g, ' ').trim();
+      if (label) return label.slice(0, 160);
+    }
+    return '';
+  }
+
+  _bulkClickActionKey(label) {
+    const words = String(label || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9_\-\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ')
+      .filter(Boolean);
+    if (!words.length) return '';
+    const verbs = new Set([
+      'follow', 'unfollow', 'like', 'unlike', 'connect', 'add', 'remove',
+      'subscribe', 'unsubscribe', 'join', 'leave', 'star', 'unstar', 'watch',
+      'unwatch', 'accept', 'reject', 'approve', 'decline', 'invite', 'block',
+      'unblock', 'archive', 'unarchive', 'mark', 'save', 'unsave', 'delete',
+      'restore', 'close', 'reopen', 'resolve', 'submit', 'send', 'publish',
+      'repost', 'boost', 'favorite', 'unfavorite',
+    ]);
+    if (verbs.has(words[0])) {
+      if (words[0] === 'add' && words[1] === 'to') return 'add to';
+      return words[0];
+    }
+    return words.slice(0, Math.min(2, words.length)).join(' ');
+  }
+
+  _bulkApiRequestShape(rawUrl) {
+    try {
+      const u = new URL(rawUrl);
+      const path = u.pathname
+        .split('/')
+        .map((segment) => {
+          if (!segment) return '';
+          if (/^\d+$/.test(segment)) return ':id';
+          if (/^[a-f0-9]{8,}$/i.test(segment)) return ':id';
+          if (/^[a-z0-9_-]{24,}$/i.test(segment)) return ':id';
+          return segment;
+        })
+        .join('/')
+        .replace(/\/+$/, '') || '/';
+      const params = [...u.searchParams.keys()].sort();
+      const query = params.length ? `?${params.map(k => `${k}=*`).join('&')}` : '';
+      return `${u.origin.toLowerCase()}${path}${query}`;
+    } catch {
+      return String(rawUrl || '');
+    }
+  }
+
+  _scoreBulkApiRequest(request, actionKey, label, pageUrl = '') {
+    const method = String(request?.method || '').toUpperCase();
+    const mutationMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    if (!mutationMethods.has(method)) return -Infinity;
+    let score = 5;
+    let url;
+    try { url = new URL(request.url); } catch { return -Infinity; }
+    const haystack = `${url.hostname} ${url.pathname} ${url.search}`.toLowerCase();
+    const actionWord = String(actionKey || '').split(/\s+/)[0];
+    if (actionWord && haystack.includes(actionWord)) score += 6;
+    const labelWords = String(label || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 3);
+    for (const word of labelWords) {
+      if (word.length >= 4 && haystack.includes(word)) score += 1;
+    }
+    if (/analytics|beacon|collect|telemetry|metrics|stats|tracking|log|heartbeat/.test(haystack)) {
+      score -= 8;
+    }
+    try {
+      const pageHost = new URL(pageUrl).hostname.toLowerCase();
+      if (pageHost && url.hostname.toLowerCase() === pageHost) score += 2;
+    } catch { /* pageUrl may be blank */ }
+    return score;
+  }
+
+  _findBulkApiRequest(tabId, startedAt, endedAt, actionKey, label, pageUrl = '') {
+    const apiRequests = globalThis.__webbrainApiRequests?.get(tabId);
+    if (!apiRequests || apiRequests.length === 0) return null;
+    const candidates = apiRequests
+      .filter(r => r && r.ts >= startedAt - 100 && r.ts <= endedAt + 100)
+      .map(r => ({ request: r, score: this._scoreBulkApiRequest(r, actionKey, label, pageUrl) }))
+      .filter(item => item.score >= 1)
+      .sort((a, b) => (b.score - a.score) || ((b.request.ts || 0) - (a.request.ts || 0)));
+    return candidates[0]?.request || null;
+  }
+
+  _detectBulkApiMutationShortcut(tabId, toolName, args, result, timing = {}) {
+    if (!['click', 'click_ax'].includes(toolName)) return null;
+    if (!result || result.success !== true || result.noProgress || result.error) return null;
+    const label = this._bulkClickLabel(toolName, args, result);
+    const actionKey = this._bulkClickActionKey(label);
+    if (!actionKey) return null;
+    const startedAt = Number(timing.startedAt) || Date.now();
+    const endedAt = Number(timing.endedAt) || Date.now();
+    const request = this._findBulkApiRequest(tabId, startedAt, endedAt, actionKey, label, timing.pageUrl || '');
+    if (!request) return null;
+
+    const now = Date.now();
+    const entry = {
+      ts: now,
+      toolName,
+      actionKey,
+      label,
+      method: String(request.method || '').toUpperCase(),
+      url: request.url,
+      requestShape: this._bulkApiRequestShape(request.url),
+      requestTs: request.ts,
+    };
+    const recent = (this.bulkApiMutationClicks.get(tabId) || [])
+      .filter(item => now - item.ts <= 60000);
+    recent.push(entry);
+    while (recent.length > 24) recent.shift();
+    this.bulkApiMutationClicks.set(tabId, recent);
+
+    const group = recent.filter(item =>
+      item.actionKey === entry.actionKey &&
+      item.method === entry.method &&
+      item.requestShape === entry.requestShape
+    );
+    if (group.length < 2) return null;
+
+    const hintKey = `${entry.actionKey}|${entry.method}|${entry.requestShape}`;
+    const hinted = this.bulkApiMutationHints.get(tabId) || new Map();
+    const lastHintedCount = hinted.get(hintKey) || 0;
+    if (lastHintedCount && group.length < lastHintedCount + 2) return null;
+    hinted.set(hintKey, group.length);
+    this.bulkApiMutationHints.set(tabId, hinted);
+
+    const examples = [...new Set(group.slice(-4).map(item => item.url))];
+    return {
+      action: entry.actionKey,
+      label,
+      method: entry.method,
+      requestShape: entry.requestShape,
+      count: group.length,
+      examples,
+      apiAllowed: this.apiAllowedTabs.has(tabId),
+    };
+  }
+
+  _formatBulkApiMutationWarning(shortcut) {
+    const examples = (shortcut.examples || [])
+      .map(url => `${shortcut.method} ${url}`)
+      .join('; ');
+    const permission = shortcut.apiAllowed
+      ? 'API mutations are enabled for this conversation, so switch to fetch_url for the remaining matching items when the sampled endpoint works.'
+      : 'API mutations are NOT enabled for this conversation; ask the user to type /allow-api before using mutating fetch_url, or continue through the visible UI.';
+    return `[BULK API MUTATION PATTERN: You have successfully clicked ${shortcut.count} similar "${shortcut.action}" controls, and each click triggered ${shortcut.method} requests with the same URL shape: ${shortcut.requestShape}. Recent examples: ${examples}. This is repeated bulk mutation work, not a stuck loop. ${permission} Do not spend one LLM turn per remaining button. If one direct API call fails because the endpoint needs hidden form body/headers, fall back to the UI and do not loop on fetch_url. Verify the page after any API batch.]`;
   }
 
   /**
@@ -877,6 +1043,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // both types AND submits, so it needs a TYPE grant and a CLICK grant.
       const capabilities = capabilitiesFor(fnName, fnArgs);
       await this._ensureGateSetting();
+      if (isNetworkMutation(fnName, fnArgs) && !this.apiAllowedTabs.has(tabId)) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            success: false,
+            denied: true,
+            requiresApiAllow: true,
+            error: `API mutations via ${fnName} require the user to enable /allow-api for this conversation. Do not retry this mutating API call unless the user enables /allow-api; continue through the visible UI or ask the user to type /allow-api.`,
+          }),
+        });
+        onUpdate('warning', { message: 'API mutation blocked until /allow-api is enabled.' });
+        continue;
+      }
       const scheduledPolicy = this.scheduledRunPolicies.get(tabId);
       const scheduledBypassesGate = scheduledPolicy?.requireConsequentialConfirmation === false;
       if (capabilities.length && !this._skipPermissionGate && !scheduledBypassesGate) {
@@ -948,18 +1128,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       onUpdate('tool_call', { name: fnName, args: fnArgs });
       const _toolStart = Date.now();
       const toolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
-      try {
-        const runId = this.currentRunId.get(tabId);
-        if (runId) {
-          await trace.recordToolCall(runId, step, {
-            name: fnName, args: fnArgs, result: toolResult,
-            latencyMs: Date.now() - _toolStart,
-          });
-        }
-      } catch {}
-      if (!toolResult?.done) {
-        onUpdate('tool_result', { name: fnName, result: toolResult });
-      }
+      const _toolLatency = Date.now() - _toolStart;
 
       // Pin any durable download handle this tool produced, so a later
       // read survives context compaction even if the model never calls
@@ -969,6 +1138,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       let progressObserved = null;
       let progressAuto = null;
       let progressWarning = '';
+      let bulkApiShortcut = null;
       if (toolResult && typeof toolResult === 'object' && !toolResult.done) {
         progressObserved = await this._recordProgressObservation(tabId, fnName, toolResult);
         progressAuto = this._autoRecordProgressAction(tabId, fnName, fnArgs, toolResult);
@@ -991,6 +1161,35 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           navNotices.push({ before: beforeUrl, after: afterUrl, viaTool: fnName });
         }
       }
+      if (toolResult && typeof toolResult === 'object' && !toolResult.done) {
+        bulkApiShortcut = this._detectBulkApiMutationShortcut(tabId, fnName, fnArgs, toolResult, {
+          startedAt: _toolStart,
+          endedAt: Date.now(),
+          pageUrl: beforeUrl,
+        });
+        if (bulkApiShortcut) {
+          toolResult.bulkApiMutationPattern = {
+            action: bulkApiShortcut.action,
+            method: bulkApiShortcut.method,
+            requestShape: bulkApiShortcut.requestShape,
+            count: bulkApiShortcut.count,
+            apiAllowed: bulkApiShortcut.apiAllowed,
+          };
+        }
+      }
+
+      if (!toolResult?.done) {
+        onUpdate('tool_result', { name: fnName, result: toolResult });
+      }
+      try {
+        const runId = this.currentRunId.get(tabId);
+        if (runId) {
+          await trace.recordToolCall(runId, step, {
+            name: fnName, args: fnArgs, result: toolResult,
+            latencyMs: _toolLatency,
+          });
+        }
+      } catch {}
 
       if (toolResult && toolResult.done) {
         const progressBlock = this._shouldBlockDoneForProgress(tabId)
@@ -1082,6 +1281,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
       if (progressWarning) {
         resultContent += '\n' + progressWarning;
+      }
+      if (bulkApiShortcut) {
+        resultContent += '\n' + this._formatBulkApiMutationWarning(bulkApiShortcut);
+        onUpdate('warning', { message: 'Bulk API mutation pattern detected.' });
       }
       if (effectiveKind === 'nudge') {
         resultContent = resultContent + '\n' + nudgeWarning;
@@ -2076,7 +2279,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       : '';
 
     if (this.apiAllowedTabs.has(tabId) && !this.apiAllowedInjected.has(tabId)) {
-      contextLine += `[USER OVERRIDE — /allow-api: For this conversation the user has explicitly authorized you to use API mutations (POST/PUT/PATCH/DELETE via fetch_url, or fetch() with mutation methods via execute_js) when you judge API to be more reliable than UI for a specific step. The default UI-first rule still applies — only reach for the API when UI has actually failed or is genuinely unworkable. Before any destructive API call, state the URL, method, and payload in plain text in your response so the user can see what you're about to do.]\n\n`;
+      contextLine += `[USER OVERRIDE — /allow-api: For this conversation the user has explicitly authorized you to use API mutations (POST/PUT/PATCH/DELETE via fetch_url, or fetch() with mutation methods via execute_js) when you judge API to be more reliable than UI for a specific step. The default UI-first rule still applies — reach for the API when UI has failed/is genuinely unworkable, or when WebBrain reports a [BULK API MUTATION PATTERN] for repeated successful same-kind UI actions. Before any destructive API call, state the URL, method, and payload in plain text in your response so the user can see what you're about to do.]\n\n`;
       this.apiAllowedInjected.add(tabId);
     }
 

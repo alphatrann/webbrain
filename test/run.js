@@ -906,6 +906,86 @@ test('_detectApiShortcut: both chrome and firefox builds define the method', () 
   assert.equal(typeof AgentCh.prototype._detectApiShortcut, 'function', 'chrome Agent missing _detectApiShortcut');
   assert.equal(typeof AgentFx.prototype._detectApiShortcut, 'function', 'firefox Agent missing _detectApiShortcut');
 });
+
+test('_detectBulkApiMutationShortcut: detects repeated same-action clicks with different refs', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 2060;
+    const base = Date.now();
+    const apiMap = new Map();
+    apiMap.set(tabId, [
+      { url: 'https://github.com/users/follow?target=alice', method: 'POST', ts: base + 20 },
+      { url: 'https://github.com/users/follow?target=bob', method: 'POST', ts: base + 1020 },
+    ]);
+    globalThis.__webbrainApiRequests = apiMap;
+
+    try {
+      assert.equal(
+        agent._detectBulkApiMutationShortcut(
+          tabId,
+          'click_ax',
+          { ref_id: 'ref_2' },
+          { success: true, name: 'Follow alice' },
+          { startedAt: base, endedAt: base + 100, pageUrl: 'https://github.com/acme/repo/stargazers' },
+        ),
+        null,
+        `${AgentClass.name}: first click should not produce a bulk hint`
+      );
+      const shortcut = agent._detectBulkApiMutationShortcut(
+        tabId,
+        'click_ax',
+        { ref_id: 'ref_3' },
+        { success: true, name: 'Follow bob' },
+        { startedAt: base + 1000, endedAt: base + 1100, pageUrl: 'https://github.com/acme/repo/stargazers' },
+      );
+      assert.ok(shortcut, `${AgentClass.name}: expected repeated follow API pattern`);
+      assert.equal(shortcut.action, 'follow');
+      assert.equal(shortcut.method, 'POST');
+      assert.equal(shortcut.requestShape, 'https://github.com/users/follow?target=*');
+      assert.equal(shortcut.apiAllowed, false);
+      assert.match(agent._formatBulkApiMutationWarning(shortcut), /API mutations are NOT enabled/, `${AgentClass.name}: warning must preserve /allow-api gate`);
+    } finally {
+      delete globalThis.__webbrainApiRequests;
+    }
+  }
+});
+
+test('_detectBulkApiMutationShortcut: /allow-api is reflected in the bulk hint', () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({});
+    const tabId = 2061;
+    agent.setApiMutationsAllowed(tabId, true);
+    const base = Date.now();
+    const apiMap = new Map();
+    apiMap.set(tabId, [
+      { url: 'https://github.com/users/follow?target=carol', method: 'POST', ts: base + 20 },
+      { url: 'https://github.com/users/follow?target=dave', method: 'POST', ts: base + 1020 },
+    ]);
+    globalThis.__webbrainApiRequests = apiMap;
+
+    try {
+      agent._detectBulkApiMutationShortcut(
+        tabId,
+        'click_ax',
+        { ref_id: 'ref_4' },
+        { success: true, name: 'Follow carol' },
+        { startedAt: base, endedAt: base + 100, pageUrl: 'https://github.com/acme/repo/stargazers' },
+      );
+      const shortcut = agent._detectBulkApiMutationShortcut(
+        tabId,
+        'click_ax',
+        { ref_id: 'ref_5' },
+        { success: true, name: 'Follow dave' },
+        { startedAt: base + 1000, endedAt: base + 1100, pageUrl: 'https://github.com/acme/repo/stargazers' },
+      );
+      assert.ok(shortcut, `${AgentClass.name}: expected repeated follow API pattern`);
+      assert.equal(shortcut.apiAllowed, true);
+      assert.match(agent._formatBulkApiMutationWarning(shortcut), /API mutations are enabled/, `${AgentClass.name}: warning should permit API path after /allow-api`);
+    } finally {
+      delete globalThis.__webbrainApiRequests;
+    }
+  }
+});
 //
 // These mirror the static helpers on Agent exactly — keep them in sync
 // with src/chrome/src/agent/agent.js `_estimateImageTokens` and
@@ -7034,6 +7114,74 @@ test('agent refuses tool calls outside the advertised tool set in both builds', 
     assert.equal(messages.length, 1, `${AgentClass.name}: missing denied tool result`);
     const denied = JSON.parse(messages[0].content);
     assert.equal(denied.denied, true, `${AgentClass.name}: unadvertised tool result was not marked denied`);
+  }
+});
+
+test('agent blocks mutating fetch_url until /allow-api even when permission prompts are disabled', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    let executed = false;
+    agent.executeTool = async () => {
+      executed = true;
+      return { success: true };
+    };
+    agent._ensureGateSetting = async () => {};
+    agent._skipPermissionGate = true;
+    const updates = [];
+    const messages = [];
+
+    await agent._executeToolBatch(
+      4895,
+      [{
+        id: 'tool_1',
+        function: { name: 'fetch_url', arguments: '{"url":"https://github.com/users/follow?target=alice","method":"POST"}' },
+      }],
+      messages,
+      (type, data) => updates.push({ type, data }),
+      { supportsVision: false },
+      '',
+      new Set(['fetch_url']),
+      1,
+    );
+
+    assert.equal(executed, false, `${AgentClass.name}: mutating fetch_url ran without /allow-api`);
+    assert.equal(messages.length, 1, `${AgentClass.name}: expected blocked tool result`);
+    const denied = JSON.parse(messages[0].content);
+    assert.equal(denied.requiresApiAllow, true, `${AgentClass.name}: block did not identify /allow-api requirement`);
+    assert.ok(updates.some(update => /allow-api/.test(update.data?.message || '')), `${AgentClass.name}: missing /allow-api warning`);
+  }
+});
+
+test('agent allows mutating fetch_url after /allow-api', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getVisionProvider: async () => null });
+    let executed = false;
+    agent.executeTool = async () => {
+      executed = true;
+      return { success: true };
+    };
+    agent._ensureGateSetting = async () => {};
+    agent._skipPermissionGate = true;
+    agent.setApiMutationsAllowed(4896, true);
+    const messages = [];
+
+    await agent._executeToolBatch(
+      4896,
+      [{
+        id: 'tool_1',
+        function: { name: 'fetch_url', arguments: '{"url":"https://github.com/users/follow?target=alice","method":"POST"}' },
+      }],
+      messages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set(['fetch_url']),
+      1,
+    );
+
+    assert.equal(executed, true, `${AgentClass.name}: mutating fetch_url did not run after /allow-api`);
+    assert.equal(messages.length, 1, `${AgentClass.name}: expected executed tool result message`);
+    assert.doesNotMatch(messages[0].content, /requiresApiAllow/, `${AgentClass.name}: allowed mutation was still blocked`);
   }
 });
 
