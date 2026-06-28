@@ -6625,6 +6625,172 @@ test('listProviderModels sends saved API keys for auth-enabled OpenAI-compatible
   }
 });
 
+test('ProviderManager testProvider repairs simple base URL variants', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+
+  function makeRuntime(writes) {
+    return {
+      storage: {
+        local: {
+          async get() { return {}; },
+          async set(patch) { writes.push(patch); },
+        },
+      },
+      runtime: { id: 'test-runtime' },
+    };
+  }
+
+  function chatOk() {
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    for (const [label, PM, runtimeKey] of [
+      ['chrome', ProviderManagerCh, 'chrome'],
+      ['firefox', ProviderManagerFx, 'browser'],
+    ]) {
+      const scenarios = [
+        {
+          name: 'trailing slash',
+          inputBaseUrl: 'http://172.27.183.122:8000/v1/',
+          workingUrl: 'http://172.27.183.122:8000/v1/chat/completions',
+          expectedBaseUrl: 'http://172.27.183.122:8000/v1',
+        },
+        {
+          name: 'missing v1',
+          inputBaseUrl: 'http://172.27.183.122:8000',
+          workingUrl: 'http://172.27.183.122:8000/v1/chat/completions',
+          expectedBaseUrl: 'http://172.27.183.122:8000/v1',
+        },
+      ];
+
+      for (const scenario of scenarios) {
+        const writes = [];
+        const calls = [];
+        globalThis[runtimeKey] = makeRuntime(writes);
+        globalThis.fetch = async (url) => {
+          calls.push(String(url));
+          if (String(url) === scenario.workingUrl) return chatOk();
+          return new Response('bad path', { status: 404 });
+        };
+
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs().vllm,
+          baseUrl: scenario.inputBaseUrl,
+          model: 'served-model',
+        };
+        mgr.activeProviderId = 'vllm';
+        mgr.providers.set('vllm', mgr._createProvider('vllm', config));
+
+        const result = await mgr.testProvider('vllm');
+        assert.equal(result.ok, true, `${label}: ${scenario.name} should connect`);
+        assert.equal(result.baseUrl, scenario.expectedBaseUrl, `${label}: ${scenario.name} should return repaired URL`);
+        assert.equal(mgr.providers.get('vllm').config.baseUrl, scenario.expectedBaseUrl, `${label}: ${scenario.name} should update provider config`);
+        assert.equal(writes[writes.length - 1].providers.vllm.baseUrl, scenario.expectedBaseUrl, `${label}: ${scenario.name} should persist repaired URL`);
+        assert.ok(calls.includes(scenario.workingUrl), `${label}: ${scenario.name} should try the working URL`);
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+  }
+});
+
+test('listProviderModels persists canonical local provider base URLs', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalChrome = globalThis.chrome;
+  const originalBrowser = globalThis.browser;
+
+  function makeRuntime(writes) {
+    return {
+      storage: {
+        local: {
+          async get() { return {}; },
+          async set(patch) { writes.push(patch); },
+        },
+      },
+      runtime: { id: 'test-runtime' },
+    };
+  }
+
+  try {
+    for (const [label, PM, runtimeKey] of [
+      ['chrome', ProviderManagerCh, 'chrome'],
+      ['firefox', ProviderManagerFx, 'browser'],
+    ]) {
+      const scenarios = [
+        {
+          id: 'vllm',
+          inputBaseUrl: 'http://172.27.183.122:8000',
+          expectedRequestUrl: 'http://172.27.183.122:8000/v1/models',
+          expectedBaseUrl: 'http://172.27.183.122:8000/v1',
+          responseBody: { data: [{ id: 'served-model' }] },
+        },
+        {
+          id: 'llamacpp',
+          inputBaseUrl: 'http://127.0.0.1:8080/v1/',
+          expectedRequestUrl: 'http://127.0.0.1:8080/v1/models',
+          expectedBaseUrl: 'http://127.0.0.1:8080',
+          responseBody: { data: [{ id: 'llama-model' }] },
+        },
+        {
+          id: 'ollama',
+          inputBaseUrl: 'http://127.0.0.1:11434',
+          expectedRequestUrl: 'http://127.0.0.1:11434/api/tags',
+          expectedBaseUrl: 'http://127.0.0.1:11434/v1',
+          responseBody: { models: [{ name: 'ollama-model' }] },
+        },
+      ];
+
+      for (const scenario of scenarios) {
+        const writes = [];
+        const calls = [];
+        globalThis[runtimeKey] = makeRuntime(writes);
+        globalThis.fetch = async (url) => {
+          calls.push(String(url));
+          if (String(url) === scenario.expectedRequestUrl) {
+            return new Response(JSON.stringify(scenario.responseBody), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response('bad path', { status: 404 });
+        };
+
+        const mgr = new PM();
+        const config = {
+          ...mgr._defaultConfigs()[scenario.id],
+          baseUrl: scenario.inputBaseUrl,
+        };
+        mgr.activeProviderId = scenario.id;
+        mgr.providers.set(scenario.id, mgr._createProvider(scenario.id, config));
+
+        const result = await mgr.listProviderModels(scenario.id);
+        assert.equal(result.ok, true, `${label}: ${scenario.id} model loading should succeed`);
+        assert.equal(result.baseUrl, scenario.expectedBaseUrl, `${label}: ${scenario.id} should return canonical URL`);
+        assert.equal(mgr.providers.get(scenario.id).config.baseUrl, scenario.expectedBaseUrl, `${label}: ${scenario.id} config should be updated`);
+        assert.equal(writes[writes.length - 1].providers[scenario.id].baseUrl, scenario.expectedBaseUrl, `${label}: ${scenario.id} URL should be persisted`);
+        assert.ok(calls.includes(scenario.expectedRequestUrl), `${label}: ${scenario.id} should try the expected model URL`);
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalChrome === undefined) delete globalThis.chrome;
+    else globalThis.chrome = originalChrome;
+    if (originalBrowser === undefined) delete globalThis.browser;
+    else globalThis.browser = originalBrowser;
+  }
+});
+
 test('ProviderManager load ignores unsupported stored provider configs', async () => {
   const originalChrome = globalThis.chrome;
   const originalBrowser = globalThis.browser;
