@@ -955,9 +955,9 @@ export class Agent {
       const shortcut = this._detectApiShortcut(tabId, loop, buf);
       warning = shortcut
         ? `[LOOP DETECTED + API SHORTCUT FOUND: You've called ${loop.name} ${loop.count} times. Each click triggered the same background request pattern: ${shortcut.method} ${shortcut.url}. Instead of clicking again, consider fetch_url({url: "${shortcut.url}", method: "${shortcut.method}"${shortcut.replayRequestId ? `, replayRequestId: "${shortcut.replayRequestId}"` : ''}}) with the same method; follow the UI/API mutation policy for mutating methods.]`
-        : `[LOOP DETECTED: You've just called ${loop.name} ${loop.count} times with the same arguments and the same outcome. The current approach is NOT working. Try something fundamentally different: a different selector, a different tool, scroll to find a different element, or take a screenshot to see what's actually on screen. DO NOT repeat this exact call again — try a creative alternative.]`;
+        : `[LOOP DETECTED: You've just called ${loop.name} ${loop.count} times with the same arguments and the same outcome. The current approach is NOT working. Try something fundamentally different: a different selector, a different tool, scroll to find a different element, or re-read the page/tree to see what's actually on screen. DO NOT repeat this exact call again — try a creative alternative.]`;
     } else {
-      warning = `[LOOP DETECTED: You're oscillating between ${loop.a} and ${loop.b} without making progress. Stop. Take a screenshot to see what's actually happening, then try a completely different approach.]`;
+      warning = `[LOOP DETECTED: You're oscillating between ${loop.a} and ${loop.b} without making progress. Stop. Re-read the page/tree to see what's actually happening, then try a completely different approach.]`;
     }
     return { kind: 'nudge', warning };
   }
@@ -1080,7 +1080,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       `\n` +
       `The previous page is GONE. Any plan you had for that page no longer applies. ` +
       `DO NOT continue executing steps from the previous page's plan — those elements no longer exist. ` +
-      `STOP, take a fresh screenshot, call get_interactive_elements, decide whether this new page is what you wanted, ` +
+      `STOP, re-read the page/tree, call get_interactive_elements if needed, decide whether this new page is what you wanted, ` +
       `and re-plan from scratch. If this navigation was unintended, navigate back with \`navigate({url: "${last.before}"})\` and try a more specific click.]`;
     messages.push({ role: 'user', content: noticeText });
     onUpdate('warning', { message: 'Page navigated unexpectedly — agent notified.' });
@@ -1462,7 +1462,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       } else if (loopCheck.kind === 'nudge' || coordCheck.kind === 'nudge') {
         effectiveKind = 'nudge';
         nudgeWarning = coordCheck.kind === 'nudge'
-          ? `[COORDINATE CLICK WARNING: You've clicked at or near (${fnArgs.x}, ${fnArgs.y}) several times with no visible page change. The click may be missing its target. Try: (a) call get_interactive_elements to find a real selector, (b) click({text: "..."}) to target by visible text, or (c) take a fresh screenshot and look more carefully at element positions. Try a different approach before clicking these coordinates again.]`
+          ? `[COORDINATE CLICK WARNING: You've clicked at or near (${fnArgs.x}, ${fnArgs.y}) several times with no visible page change. The click may be missing its target. Try: (a) call get_interactive_elements to find a real selector, (b) click({text: "..."}) to target by visible text, or (c) inspect layout with get_accessibility_tree or inspect_element_styles. Try a different approach before clicking these coordinates again.]`
           : loopCheck.warning;
       }
 
@@ -4998,7 +4998,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (!tab?.active) {
           return {
             success: false,
-            error: 'Cannot capture screenshot: this tab is not the active tab in its window. Switch to the tab to take a screenshot, or use a different tool.',
+            error: 'Cannot capture screenshot: this tab is not the active tab in its window. Switch to the tab before using /screenshot, or use a page-reading tool.',
           };
         }
         const probe = await this._captureViewportProbe(tabId);
@@ -5546,7 +5546,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         if (!result.hasExtractableText) {
-          result.note = 'This PDF appears to have no extractable text layer (likely scanned images). Consider enabling a vision model and using full_page_screenshot, or asking the user for a text-based version.';
+          result.note = 'This PDF appears to have no extractable text layer (likely scanned images). Consider enabling a vision model or asking the user for a text-based version.';
         }
 
         return { ...result, method: 'pdf_text' };
@@ -5793,7 +5793,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (Number.isFinite(xn) && Number.isFinite(yn) && xn >= 0 && xn <= 1 && yn >= 0 && yn <= 1) {
         return {
           success: false,
-          error: `Coordinates (${args.x}, ${args.y}) look like normalized values (0–1 fractions of the viewport), not CSS pixels. The click tool expects CSS pixels (e.g. {x: 437, y: 156}). Prefer click_ax({ref_id}) after get_accessibility_tree or click({text: "..."}) over pixel clicks — they don't depend on screenshot resolution. If you must use pixels, take a fresh screenshot and pass integer pixel coordinates from the image.`,
+          error: `Coordinates (${args.x}, ${args.y}) look like normalized values (0–1 fractions of the viewport), not CSS pixels. The click tool expects CSS pixels (e.g. {x: 437, y: 156}). Prefer click_ax({ref_id}) after get_accessibility_tree or click({text: "..."}) over pixel clicks. If you must use pixels, get CSS-pixel positions from measured layout or inspect_element_styles.`,
         };
       }
     }

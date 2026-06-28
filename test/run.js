@@ -193,6 +193,7 @@ const { Agent: AgentFx } = await import(
 // tools.js — pure ESM. We import both browser builds so prompt/tool routing
 // stays in parity.
 const {
+  AGENT_TOOL_NAMES: AGENT_TOOL_NAMES_CH,
   COMPACT_TOOL_NAMES: COMPACT_TOOL_NAMES_CH,
   SYSTEM_PROMPT_ACT: SYSTEM_PROMPT_ACT_CH,
   SYSTEM_PROMPT_ASK: SYSTEM_PROMPT_ASK_CH,
@@ -203,6 +204,7 @@ const {
   'file://' + path.join(ROOT, 'src/chrome/src/agent/tools.js').replace(/\\/g, '/')
 );
 const {
+  AGENT_TOOL_NAMES: AGENT_TOOL_NAMES_FX,
   COMPACT_TOOL_NAMES: COMPACT_TOOL_NAMES_FX,
   SYSTEM_PROMPT_ACT: SYSTEM_PROMPT_ACT_FX,
   SYSTEM_PROMPT_ASK: SYSTEM_PROMPT_ASK_FX,
@@ -2545,6 +2547,46 @@ test('getToolsForMode: compact mode restricts act tools in both browsers', () =>
   }
 });
 
+test('getToolsForMode: screenshot tools are not model-callable', () => {
+  for (const [label, getTools, agentToolNames, compactNames, prompts] of [
+    ['chrome', getToolsForModeCh, AGENT_TOOL_NAMES_CH, COMPACT_TOOL_NAMES_CH, [
+      ['ask', SYSTEM_PROMPT_ASK_CH],
+      ['act:full', SYSTEM_PROMPT_ACT_CH],
+      ['act:mid', SYSTEM_PROMPT_ACT_MID_CH],
+      ['act:compact', SYSTEM_PROMPT_ACT_COMPACT_CH],
+    ]],
+    ['firefox', getToolsForModeFx, AGENT_TOOL_NAMES_FX, COMPACT_TOOL_NAMES_FX, [
+      ['ask', SYSTEM_PROMPT_ASK_FX],
+      ['act:full', SYSTEM_PROMPT_ACT_FX],
+      ['act:mid', SYSTEM_PROMPT_ACT_MID_FX],
+      ['act:compact', SYSTEM_PROMPT_ACT_COMPACT_FX],
+    ]],
+  ]) {
+    for (const removed of ['screenshot', 'full_page_screenshot']) {
+      assert.equal(agentToolNames.has(removed), false, `[${label}] AGENT_TOOL_NAMES must not include ${removed}`);
+      assert.equal(compactNames.has(removed), false, `[${label}] compact set must not include ${removed}`);
+    }
+
+    for (const [modeLabel, tools] of [
+      ['ask', getTools('ask')],
+      ['act:full', getTools('act')],
+      ['act:mid', getTools('act', { tier: 'mid' })],
+      ['act:compact', getTools('act', { tier: 'compact' })],
+    ]) {
+      const names = tools.map(t => t.function?.name).filter(Boolean);
+      assert.equal(names.includes('screenshot'), false, `[${label}] ${modeLabel} tools must not expose screenshot`);
+      assert.equal(names.includes('full_page_screenshot'), false, `[${label}] ${modeLabel} tools must not expose full_page_screenshot`);
+    }
+
+    for (const [promptLabel, prompt] of prompts) {
+      assert.doesNotMatch(prompt, /^- screenshot:/m, `[${label}] ${promptLabel} prompt must not list screenshot as a tool`);
+      assert.doesNotMatch(prompt, /\bscreenshot\s*\(\s*\{/i, `[${label}] ${promptLabel} prompt must not recommend screenshot(...)`);
+      assert.doesNotMatch(prompt, /\bfull_page_screenshot\b/i, `[${label}] ${promptLabel} prompt must not mention full_page_screenshot`);
+      assert.doesNotMatch(prompt, /\b(?:take|taking) (?:a |fresh )?screenshot\b/i, `[${label}] ${promptLabel} prompt must not tell the model to take a screenshot`);
+    }
+  }
+});
+
 test('Chrome model-facing tools and prompts do not advertise execute_js', () => {
   const chromePromptTexts = [
     ['ask', SYSTEM_PROMPT_ASK_CH],
@@ -4108,6 +4150,12 @@ test('sidepanel scopes async tab commands to the original tab', () => {
     const screenshotEnd = panel.indexOf('// /record', screenshotIdx);
     const screenshotBody = panel.slice(screenshotIdx, screenshotEnd);
     assert.match(screenshotBody, /if \(currentTabId !== tabId \|\| !tab\?\.active\) return '';[\s\S]*?captureVisibleTab[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system', imgHtml\);/, `${label}: /screenshot should not render a captured image into a different tab`);
+    assert.match(panel, /function normalizeScreenshotRequestText\(text\) \{[\s\S]*?\.normalize\('NFKD'\)[\s\S]*?\.replace\(\/\[\\u0300-\\u036f\]\/g, ''\)[\s\S]*?\.replace\(\/\\u0131\/g, 'i'\)/, `${label}: plain screenshot request normalization should handle accented Turkish text`);
+    assert.match(panel, /function isPlainScreenshotRequest\(text\) \{[\s\S]*?const s = normalizeScreenshotRequestText\(text\);[\s\S]*?s\.startsWith\('\/'\)[\s\S]*?ekran goruntusu[\s\S]*?ekran goruntusunu/, `${label}: plain screenshot request routing should cover English and Turkish screenshot-only requests`);
+    const sendIdx = panel.indexOf('async function sendMessage(extraChatParams)');
+    assert.notEqual(sendIdx, -1, `${label}: sendMessage missing`);
+    const sendBody = panel.slice(sendIdx, panel.indexOf('let assistantEl = null;', sendIdx));
+    assert.match(sendBody, /const tabId = currentTabId;[\s\S]*?if \(isPlainScreenshotRequest\(text\)\) text = '\/screenshot';[\s\S]*?if \(isProcessing\)/, `${label}: plain screenshot requests should route to /screenshot before busy gating`);
 
     if (label === 'chrome') {
       const recordIdx = panel.indexOf('// /record');
@@ -7429,7 +7477,7 @@ test('parity: detectSheetSite identical', () => {
 console.log('\npermission-gate');
 
 test('capabilityFor: read-only tools are not gated', () => {
-  for (const t of ['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'screenshot', 'scroll', 'get_selection']) {
+  for (const t of ['read_page', 'get_accessibility_tree', 'get_interactive_elements', 'extract_data', 'scroll', 'get_selection']) {
     assert.equal(capabilityFor(t, {}), null, `${t} should be ungated`);
   }
 });
@@ -7722,7 +7770,7 @@ test('agent counts failed API mutation batch as one loop strategy', async () => 
   }
 });
 
-test('capabilityFor: screenshot is read-only, but save:true is a download', () => {
+test('capabilityFor: legacy screenshot handlers are read-only, but save:true is a download', () => {
   assert.equal(capabilityFor('screenshot', {}), null);
   assert.equal(capabilityFor('full_page_screenshot', {}), null);
   assert.equal(capabilityFor('screenshot', { save: true }), Capability.DOWNLOAD);

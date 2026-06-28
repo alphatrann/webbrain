@@ -356,6 +356,27 @@ const OUT_OF_BAND_SLASH_COMMANDS = new Set([
   '/export',
   '/verbose',
 ]);
+
+function normalizeScreenshotRequestText(text) {
+  return String(text || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\u0131/g, 'i')
+    .replace(/[.!?]+$/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function isPlainScreenshotRequest(text) {
+  const s = normalizeScreenshotRequestText(text);
+  if (!s || s.startsWith('/')) return false;
+  return /^(?:please |pls )?(?:screenshot|screen ?shot)(?: (?:please|pls))?$/.test(s)
+    || /^(?:please |pls |can you |could you |would you )?(?:take|capture|grab|show|get) (?:a |the |this |current )?(?:screen ?shot|screenshot)(?: (?:of|for) (?:the |this |current )?(?:page|tab|screen|window))?$/.test(s)
+    || /^(?:lutfen )?(?:screenshot|screen ?shot|ekran goruntusu)(?: (?:al|cek|goster|at))?$/.test(s)
+    || /^(?:lutfen )?(?:bu |mevcut |aktif )?(?:sekmenin|sayfanin|ekranin) ekran goruntusunu (?:al|cek|goster|at)$/.test(s);
+}
+
 const SLASH_COMMAND_OPTION_ID_PREFIX = 'slash-command-option-';
 const BUSY_SLASH_NOTICE_COOLDOWN_MS = 3000;
 let placeholderRotationIndex = 0;
@@ -674,7 +695,6 @@ const TOOL_KEYS = {
   wait_for_element: 'tool.wait_for_element',
   get_selection: 'tool.get_selection',
   new_tab: 'tool.new_tab',
-  screenshot: 'tool.screenshot',
   schedule_resume: 'tool.schedule_resume',
   schedule_task: 'tool.schedule_task',
   done: 'tool.done',
@@ -2419,6 +2439,7 @@ async function sendMessage(extraChatParams) {
   let text = inputEl.value.trim();
   if (!text) return;
   const tabId = currentTabId;
+  if (isPlainScreenshotRequest(text)) text = '/screenshot';
   if (isProcessing) {
     if (!isOutOfBandSlashDraft(text)) {
       showBusySlashCommandNotice();
@@ -3573,7 +3594,7 @@ chrome.storage.onChanged.addListener((changes) => {
 });
 
 // Page inspection banner — shown when agent starts interacting with the page
-const PAGE_TOOLS = new Set(['read_page', 'read_page_source', 'get_interactive_elements', 'click', 'type_text', 'scroll', 'extract_data', 'inspect_element_styles', 'wait_for_element', 'get_selection', 'screenshot']);
+const PAGE_TOOLS = new Set(['read_page', 'read_page_source', 'get_interactive_elements', 'click', 'type_text', 'scroll', 'extract_data', 'inspect_element_styles', 'wait_for_element', 'get_selection']);
 let inspectionBannerShown = false;
 
 function showInspectionBanner(toolName) {
