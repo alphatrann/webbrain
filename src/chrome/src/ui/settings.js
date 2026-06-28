@@ -1460,6 +1460,13 @@ function setProviderLoadModelsStatus(id, message, color = 'var(--text2)') {
   return statusEl;
 }
 
+function applyProviderBaseUrl(id, baseUrl) {
+  if (!baseUrl) return;
+  if (providersData[id]) providersData[id].baseUrl = baseUrl;
+  const input = document.querySelector(`input[data-provider="${id}"][data-key="baseUrl"]`);
+  if (input && input.value !== baseUrl) input.value = baseUrl;
+}
+
 async function loadProviderModels(id) {
   let datalistEl = document.getElementById(`models-${id}`);
   if (!datalistEl) return;
@@ -1484,6 +1491,7 @@ async function loadProviderModels(id) {
   datalistEl = document.getElementById(`models-${id}`);
   if (!datalistEl) return;
   if (res?.ok) {
+    applyProviderBaseUrl(id, res.baseUrl);
     datalistEl.innerHTML = res.models
       .map((m) => `<option value="${escapeHtml(m)}"></option>`)
       .join('');
@@ -1538,6 +1546,7 @@ async function testProvider(id) {
   try {
     const res = await sendToBackground('test_provider', { providerId: id });
     if (res.ok) {
+      applyProviderBaseUrl(id, res.baseUrl);
       setProviderTestResult(id, 'ok', t('st.providers.connected', { model: res.model || t('st.providers.unknown_model') }));
     } else {
       setProviderTestResult(id, 'fail', t('st.providers.failed', { error: res.error }));
