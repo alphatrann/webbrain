@@ -4245,25 +4245,39 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // would leave too little `oldMessages` history to summarize and we'd send
       // the same over-budget prompt again. Move just enough of the earliest
       // recent turns back into the summary set to make compaction possible.
+      const latestUserRecentIndex = () => {
+        for (let i = recentMessages.length - 1; i >= 0; i--) {
+          if (recentMessages[i]?.role === 'user') return i;
+        }
+        return -1;
+      };
+      const canMoveOldestRecentToSummary = () => {
+        if (!recentMessages.length) return false;
+        const latestUserIdx = latestUserRecentIndex();
+        if (latestUserIdx === 0) return false;
+        if (latestUserIdx < 0 && recentMessages[0]?.role === 'tool') return true;
+        return latestUserIdx > 0 || recentMessages.length > 1;
+      };
       const moveOldestRecentToSummary = () => {
+        if (!canMoveOldestRecentToSummary()) return false;
         oldMessages.push(recentMessages.shift());
-        while (recentMessages.length && recentMessages[0].role === 'tool') {
+        while (recentMessages.length && recentMessages[0].role === 'tool' && canMoveOldestRecentToSummary()) {
           oldMessages.push(recentMessages.shift());
         }
+        return true;
       };
-      while (oldMessages.length < 4 && recentMessages.length) {
-        moveOldestRecentToSummary();
-      }
+      while (oldMessages.length < 4 && moveOldestRecentToSummary()) {}
       const pinnedChars = this._estimateContextChars([systemMsg, originalTask, scratchpadMsg, progressMsg].filter(Boolean));
       const compactOverheadChars = 3000; // summary wrapper + ack + manual summary fallback
       const fixedPromptOverheadChars = fixedPromptOverheadTokens * 4;
       const maxRecentChars = Math.max(0, (tokenBudget * 4) - fixedPromptOverheadChars - pinnedChars - compactOverheadChars);
-      while (oldMessages.length >= 4 && recentMessages.length > 1 && this._estimateContextChars(recentMessages) > maxRecentChars) {
+      while (oldMessages.length >= 4 && canMoveOldestRecentToSummary() && this._estimateContextChars(recentMessages) > maxRecentChars) {
         moveOldestRecentToSummary();
       }
     }
 
-    if (oldMessages.length < 4) {
+    const minSummarizableMessages = tooManyTokens && oldMessages.some(m => m?.role === 'user') ? 1 : 4;
+    if (oldMessages.length < minSummarizableMessages) {
       // Not enough history to summarize. But if the TOKEN budget is what
       // tripped us (e.g. a single huge page/tool result early in a run on a
       // small local model), returning unchanged would re-send the same

@@ -9754,6 +9754,41 @@ test('context compaction shrinks recent window when small-window runs exceed tok
   }
 });
 
+test('context compaction preserves the latest user turn while seeding a small summary', async () => {
+  const latestUserTurn = 'CURRENT USER REQUEST: keep this latest turn verbatim';
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 4000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 196 : 197;
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'keep working on the task' },
+      { role: 'assistant', content: `first exchange ${'x'.repeat(3900)}` },
+      { role: 'user', content: `previous clarification ${'y'.repeat(3900)}` },
+      { role: 'assistant', content: `second exchange ${'z'.repeat(3900)}` },
+      { role: 'user', content: latestUserTurn },
+    ];
+
+    const origLog = console.log;
+    console.log = () => {};
+    let result;
+    try {
+      result = await agent._manageContext(tabId, messages, () => {});
+    } finally {
+      console.log = origLog;
+    }
+
+    assert.equal(result.compacted, true, `${AgentClass.name}: short over-budget history should compact`);
+    assert.equal(result.summarized, 3, `${AgentClass.name}: should summarize only turns before the latest user request`);
+    assert.ok(messages.some(m => m.role === 'user' && m.content === latestUserTurn), `${AgentClass.name}: latest user turn should remain verbatim`);
+    const summary = messages.find(m => /Context window was trimmed/i.test(String(m.content || '')));
+    assert.ok(summary, `${AgentClass.name}: summary message missing`);
+    assert.ok(!String(summary.content || '').includes(latestUserTurn), `${AgentClass.name}: latest user turn should not be folded into the summary`);
+
+    const h = agent.persistTimers?.get?.(tabId);
+    if (h) clearTimeout(h);
+  }
+});
+
 test('context compaction shrinks bulky retained recent history to fit small-window budget', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({ getActive: () => ({ contextWindow: 16384, supportsVision: false }) });
