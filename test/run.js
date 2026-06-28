@@ -9673,9 +9673,13 @@ test('context token budget uses adaptive compaction ratios', async () => {
   const cases = [
     [16000, 10400],
     [32000, 20800],
+    [32768, 21299],
     [64000, 44800],
+    [65536, 45875],
     [128000, 96000],
+    [131072, 98304],
     [256000, 204800],
+    [262144, 209715],
   ];
 
   for (const AgentClass of [AgentCh, AgentFx]) {

@@ -4842,9 +4842,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * than the jarring _emergencyTrim fallback.
    */
   _contextCompactRatioForWindow(contextWindow) {
-    if (contextWindow <= 32000) return 0.65;
-    if (contextWindow <= 64000) return 0.70;
-    if (contextWindow <= 128000) return this.contextCompactRatio;
+    if (contextWindow <= 32768) return 0.65;
+    if (contextWindow <= 65536) return 0.70;
+    if (contextWindow <= 131072) return this.contextCompactRatio;
     return 0.80;
   }
 
