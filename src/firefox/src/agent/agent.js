@@ -4242,11 +4242,20 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // would leave too little `oldMessages` history to summarize and we'd send
       // the same over-budget prompt again. Move just enough of the earliest
       // recent turns back into the summary set to make compaction possible.
-      while (oldMessages.length < 4 && recentMessages.length) {
+      const moveOldestRecentToSummary = () => {
         oldMessages.push(recentMessages.shift());
         while (recentMessages.length && recentMessages[0].role === 'tool') {
           oldMessages.push(recentMessages.shift());
         }
+      };
+      while (oldMessages.length < 4 && recentMessages.length) {
+        moveOldestRecentToSummary();
+      }
+      const pinnedChars = this._estimateContextChars([systemMsg, originalTask, scratchpadMsg, progressMsg].filter(Boolean));
+      const compactOverheadChars = 3000; // summary wrapper + ack + manual summary fallback
+      const maxRecentChars = Math.max(0, (tokenBudget * 4) - pinnedChars - compactOverheadChars);
+      while (oldMessages.length >= 4 && recentMessages.length > 1 && this._estimateContextChars(recentMessages) > maxRecentChars) {
+        moveOldestRecentToSummary();
       }
     }
 

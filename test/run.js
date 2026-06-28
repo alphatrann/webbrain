@@ -9754,6 +9754,39 @@ test('context compaction shrinks recent window when small-window runs exceed tok
   }
 });
 
+test('context compaction shrinks bulky retained recent history to fit small-window budget', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 16384, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 192 : 193;
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'keep working on the task' },
+    ];
+    for (let i = 0; i < 20; i++) {
+      messages.push({ role: 'assistant', content: `step ${i} ${'x'.repeat(2490)}` });
+      messages.push({ role: 'user', content: `ok ${i} ${'y'.repeat(2490)}` });
+    }
+
+    const origLog = console.log;
+    console.log = () => {};
+    let result;
+    try {
+      result = await agent._manageContext(tabId, messages, () => {});
+    } finally {
+      console.log = origLog;
+    }
+
+    assert.equal(result.compacted, true, `${AgentClass.name}: bulky retained history should compact`);
+    assert.ok(result.summarized > 10, `${AgentClass.name}: should summarize some retained recent messages`);
+    assert.ok(agent._estimateContextChars(messages) <= result.budget * 4, `${AgentClass.name}: compacted messages still exceed budget estimate`);
+    assert.ok(messages.some(m => String(m.content || '').includes('ok 19')), `${AgentClass.name}: newest user turn should remain recent`);
+    assert.ok(!messages.some(m => m.role === 'assistant' && String(m.content || '').startsWith('step 5 ')), `${AgentClass.name}: bulky older recent turn should be summarized`);
+
+    const h = agent.persistTimers?.get?.(tabId);
+    if (h) clearTimeout(h);
+  }
+});
+
 test('manual compactConversation reports emergency truncation as compacted', async () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
     const agent = new AgentClass({ getActive: () => ({ contextWindow: 4000, supportsVision: false }) });
