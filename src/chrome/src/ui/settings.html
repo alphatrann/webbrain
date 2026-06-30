@@ -500,8 +500,8 @@
   <nav class="tabs" role="tablist">
     <button class="tab-btn" type="button" role="tab" data-tab="display" data-i18n="st.tab.display"></button>
     <button class="tab-btn active" type="button" role="tab" data-tab="providers" data-i18n="st.tab.providers"></button>
-    <button class="tab-btn" type="button" role="tab" data-tab="skills" data-i18n="st.tab.skills"></button>
     <button class="tab-btn" type="button" role="tab" data-tab="multimodal" data-i18n="st.tab.multimodal"></button>
+    <button class="tab-btn" type="button" role="tab" data-tab="skills" data-i18n="st.tab.skills"></button>
     <button class="tab-btn" type="button" role="tab" data-tab="permissions" data-i18n="st.tab.permissions"></button>
   </nav>
 
@@ -788,39 +788,6 @@
     <div class="info-box" data-i18n-html="st.providers.info.html"></div>
   </section>
 
-  <section class="tab-panel" data-panel="skills" role="tabpanel">
-    <div class="provider-card" id="skills-card">
-      <div style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.55;" data-i18n-html="st.skills.desc_html"></div>
-      <div class="field">
-        <label data-i18n="st.skills.name.label"></label>
-        <input type="text" id="skill-name" data-i18n-placeholder="st.skills.name.placeholder">
-      </div>
-      <div class="field">
-        <label data-i18n="st.skills.url.label"></label>
-        <input type="url" id="skill-url" placeholder="https://example.com/skill.md">
-      </div>
-      <div class="btn-row">
-        <button class="btn-primary" id="btn-add-skill-url" data-i18n="st.skills.add_url"></button>
-      </div>
-      <div class="field" style="margin-top:16px;">
-        <label data-i18n="st.skills.text.label"></label>
-        <textarea id="skill-text" rows="10" data-i18n-placeholder="st.skills.text.placeholder"></textarea>
-      </div>
-      <div class="btn-row">
-        <button class="btn-primary" id="btn-add-skill-text" data-i18n="st.skills.add_text"></button>
-        <button class="btn-secondary" id="btn-clear-skill-form" data-i18n="st.skills.clear_form"></button>
-      </div>
-      <div class="test-result" id="skills-result"></div>
-    </div>
-
-    <div class="provider-card" id="skills-list-card">
-      <div class="setting-label" style="margin-bottom:10px;" data-i18n="st.skills.list.heading"></div>
-      <div id="skills-list"></div>
-    </div>
-
-    <div class="info-box" data-i18n-html="st.skills.security_html"></div>
-  </section>
-
   <section class="tab-panel" data-panel="multimodal" role="tabpanel">
     <h3 data-i18n="st.vision.heading" style="margin:0 0 12px;font-size:14px;font-weight:600;"></h3>
     <div class="provider-card" id="vision-card">
@@ -867,6 +834,39 @@
       </div>
       <div class="test-result" id="test-transcription"></div>
     </div>
+  </section>
+
+  <section class="tab-panel" data-panel="skills" role="tabpanel">
+    <div class="provider-card" id="skills-card">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.55;" data-i18n-html="st.skills.desc_html"></div>
+      <div class="field">
+        <label data-i18n="st.skills.name.label"></label>
+        <input type="text" id="skill-name" data-i18n-placeholder="st.skills.name.placeholder">
+      </div>
+      <div class="field">
+        <label data-i18n="st.skills.url.label"></label>
+        <input type="url" id="skill-url" placeholder="https://example.com/skill.md">
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-add-skill-url" data-i18n="st.skills.add_url"></button>
+      </div>
+      <div class="field" style="margin-top:16px;">
+        <label data-i18n="st.skills.text.label"></label>
+        <textarea id="skill-text" rows="10" data-i18n-placeholder="st.skills.text.placeholder"></textarea>
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" id="btn-add-skill-text" data-i18n="st.skills.add_text"></button>
+        <button class="btn-secondary" id="btn-clear-skill-form" data-i18n="st.skills.clear_form"></button>
+      </div>
+      <div class="test-result" id="skills-result"></div>
+    </div>
+
+    <div class="provider-card" id="skills-list-card">
+      <div class="setting-label" style="margin-bottom:10px;" data-i18n="st.skills.list.heading"></div>
+      <div id="skills-list"></div>
+    </div>
+
+    <div class="info-box" data-i18n-html="st.skills.security_html"></div>
   </section>
 
   <section class="tab-panel" data-panel="permissions" role="tabpanel">

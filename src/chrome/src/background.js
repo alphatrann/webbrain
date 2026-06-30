@@ -1,6 +1,14 @@
 import { ProviderManager } from './providers/manager.js';
 import { Agent } from './agent/agent.js';
-import { CUSTOM_SKILLS_STORAGE_KEY, normalizeCustomSkills } from './agent/skills.js';
+import {
+  CUSTOM_SKILLS_STORAGE_KEY,
+  DEFAULT_SKILL_SOURCES,
+  DEFAULT_SKILLS_REMOVED_STORAGE_KEY,
+  DEFAULT_SKILLS_SEEDED_STORAGE_KEY,
+  MAX_CUSTOM_SKILLS,
+  normalizeCustomSkills,
+  normalizeDefaultSkillRemovalIds,
+} from './agent/skills.js';
 import { ScheduledJobManager } from './agent/scheduler.js';
 import {
   startClaudeOAuth,
@@ -127,9 +135,81 @@ async function loadProfile() {
 }
 loadProfile();
 
+async function loadDefaultSkillRecords() {
+  const records = [];
+  for (const source of DEFAULT_SKILL_SOURCES) {
+    const response = await fetch(chrome.runtime.getURL(source.path));
+    if (!response.ok) {
+      throw new Error(`Default skill ${source.id} failed to load: HTTP ${response.status}`);
+    }
+    records.push({
+      id: source.id,
+      name: source.name,
+      sourceType: 'built-in',
+      sourceUrl: source.path,
+      content: await response.text(),
+      createdAt: 0,
+    });
+  }
+  return records;
+}
+
+async function refreshDefaultSkillRecords(skills) {
+  const existingBuiltIns = skills.filter((skill) => skill.sourceType === 'built-in');
+  if (existingBuiltIns.length === 0) return { skills, changed: false };
+
+  const defaults = new Map((await loadDefaultSkillRecords()).map((skill) => [skill.id, skill]));
+  let changed = false;
+  const refreshed = skills.map((skill) => {
+    const current = defaults.get(skill.id);
+    if (!current || skill.sourceType !== 'built-in') return skill;
+    if (skill.sourceUrl && skill.sourceUrl !== current.sourceUrl) return skill;
+    if (skill.name === current.name && skill.content === current.content && skill.sourceUrl === current.sourceUrl) return skill;
+    changed = true;
+    return { ...skill, name: current.name, sourceUrl: current.sourceUrl, content: current.content };
+  });
+  return { skills: changed ? normalizeCustomSkills(refreshed) : skills, changed };
+}
+
 async function loadCustomSkills() {
-  const stored = await chrome.storage.local.get(CUSTOM_SKILLS_STORAGE_KEY);
-  agent.customSkills = normalizeCustomSkills(stored[CUSTOM_SKILLS_STORAGE_KEY]);
+  const stored = await chrome.storage.local.get([
+    CUSTOM_SKILLS_STORAGE_KEY,
+    DEFAULT_SKILLS_REMOVED_STORAGE_KEY,
+    DEFAULT_SKILLS_SEEDED_STORAGE_KEY,
+  ]);
+  let skills = normalizeCustomSkills(stored[CUSTOM_SKILLS_STORAGE_KEY]);
+  const removedDefaultIds = new Set(normalizeDefaultSkillRemovalIds(stored[DEFAULT_SKILLS_REMOVED_STORAGE_KEY]));
+  try {
+    const existingIds = new Set(skills.map((skill) => skill.id));
+    const room = Math.max(0, MAX_CUSTOM_SKILLS - skills.length);
+    const defaultSkills = (await loadDefaultSkillRecords())
+      .filter((skill) => !existingIds.has(skill.id) && !removedDefaultIds.has(skill.id))
+      .slice(0, room);
+    if (defaultSkills.length || !stored[DEFAULT_SKILLS_SEEDED_STORAGE_KEY]) {
+      skills = normalizeCustomSkills([...defaultSkills, ...skills]);
+      const update = {
+        [CUSTOM_SKILLS_STORAGE_KEY]: skills,
+        [DEFAULT_SKILLS_SEEDED_STORAGE_KEY]: true,
+      };
+      const normalizedRemoved = normalizeDefaultSkillRemovalIds(stored[DEFAULT_SKILLS_REMOVED_STORAGE_KEY]);
+      if (JSON.stringify(normalizedRemoved) !== JSON.stringify(stored[DEFAULT_SKILLS_REMOVED_STORAGE_KEY] || [])) {
+        update[DEFAULT_SKILLS_REMOVED_STORAGE_KEY] = normalizedRemoved;
+      }
+      await chrome.storage.local.set(update);
+    }
+  } catch (e) {
+    console.warn('[WebBrain] Default skills could not be loaded', e);
+  }
+  try {
+    const refreshed = await refreshDefaultSkillRecords(skills);
+    if (refreshed.changed) {
+      skills = refreshed.skills;
+      await chrome.storage.local.set({ [CUSTOM_SKILLS_STORAGE_KEY]: skills });
+    }
+  } catch (e) {
+    console.warn('[WebBrain] Default skills could not be refreshed', e);
+  }
+  agent.customSkills = skills;
 }
 const customSkillsReady = loadCustomSkills();
 

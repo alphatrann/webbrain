@@ -5,11 +5,18 @@
 import { t, getLocale, setLocale, LANGUAGES } from './i18n.js';
 import { THEME_MODES, applyMode, loadMode, watch } from './theme.js';
 import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
-import { CUSTOM_SKILLS_STORAGE_KEY, MAX_CUSTOM_SKILLS, normalizeCustomSkills } from '../agent/skills.js';
+import {
+  CUSTOM_SKILLS_STORAGE_KEY,
+  DEFAULT_SKILL_SOURCES,
+  DEFAULT_SKILLS_REMOVED_STORAGE_KEY,
+  MAX_CUSTOM_SKILLS,
+  normalizeCustomSkills,
+  normalizeDefaultSkillRemovalIds,
+} from '../agent/skills.js';
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
-const EXT_VERSION = '18.3.5';
+const EXT_VERSION = '18.3.10';
 
 const providersContainer = document.getElementById('providers');
 const displaySettings = document.getElementById('display-settings');
@@ -265,6 +272,7 @@ function boundedMaxAgentSteps(value) {
 let providerFilter = 'all';     // 'all' | 'local' | 'cloud' | 'router'
 const expandedProviders = new Set(); // ids the user explicitly expanded this session
 let customSkills = [];
+const DEFAULT_SKILL_IDS = new Set(DEFAULT_SKILL_SOURCES.map((source) => source.id));
 
 // --- Init ---
 
@@ -512,9 +520,17 @@ async function loadCustomSkills() {
   renderSkills();
 }
 
-async function saveCustomSkills(nextSkills) {
+async function saveCustomSkills(nextSkills, opts = {}) {
   customSkills = normalizeCustomSkills(nextSkills);
-  await chrome.storage.local.set({ [CUSTOM_SKILLS_STORAGE_KEY]: customSkills });
+  const update = { [CUSTOM_SKILLS_STORAGE_KEY]: customSkills };
+  const removedSkill = opts.removedSkill;
+  if (removedSkill?.sourceType === 'built-in' && DEFAULT_SKILL_IDS.has(removedSkill.id)) {
+    const stored = await chrome.storage.local.get(DEFAULT_SKILLS_REMOVED_STORAGE_KEY);
+    const removedIds = normalizeDefaultSkillRemovalIds(stored[DEFAULT_SKILLS_REMOVED_STORAGE_KEY]);
+    if (!removedIds.includes(removedSkill.id)) removedIds.push(removedSkill.id);
+    update[DEFAULT_SKILLS_REMOVED_STORAGE_KEY] = removedIds;
+  }
+  await chrome.storage.local.set(update);
   renderSkills();
 }
 
@@ -526,12 +542,18 @@ function renderSkills() {
   }
 
   skillsList.innerHTML = customSkills.map((skill) => {
-    const source = skill.sourceType === 'url' && skill.sourceUrl ? skill.sourceUrl : t('st.skills.source.raw');
+    const source = skill.sourceType === 'built-in'
+      ? t('st.skills.source.built_in')
+      : skill.sourceType === 'url' && skill.sourceUrl ? skill.sourceUrl : t('st.skills.source.raw');
+    const toolNames = (skill.tools || []).map((tool) => tool.name).filter(Boolean);
+    const toolSummary = toolNames.length
+      ? ` · ${t('st.skills.item.tools', { tools: toolNames.join(', ') })}`
+      : '';
     return `
       <div class="setting-row" style="align-items:center;">
         <div class="setting-info">
           <div class="setting-label">${escapeHtml(skill.name)}</div>
-          <div class="setting-desc skill-source">${escapeHtml(source)} · ${escapeHtml(t('st.skills.item.chars', { count: skill.content.length }))}</div>
+          <div class="setting-desc skill-source">${escapeHtml(source)} · ${escapeHtml(t('st.skills.item.chars', { count: skill.content.length }))}${escapeHtml(toolSummary)}</div>
         </div>
         <button class="btn-secondary" data-skill-id="${escapeHtml(skill.id)}">${escapeHtml(t('st.skills.remove'))}</button>
       </div>`;
@@ -539,7 +561,11 @@ function renderSkills() {
 
   skillsList.querySelectorAll('button[data-skill-id]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      await saveCustomSkills(customSkills.filter((skill) => skill.id !== btn.dataset.skillId));
+      const removedSkill = customSkills.find((skill) => skill.id === btn.dataset.skillId);
+      await saveCustomSkills(
+        customSkills.filter((skill) => skill.id !== btn.dataset.skillId),
+        { removedSkill },
+      );
       flashSkillsResult('ok', t('st.skills.removed'));
     });
   });

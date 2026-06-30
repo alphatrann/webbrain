@@ -7,6 +7,7 @@ import { isProgressActionAllowed, isProgressIntentActive, normalizeProgressActio
 import { getActiveAdapter, UNIVERSAL_PREAMBLE } from './adapters.js';
 import {
   fetchUrl,
+  executeHttpSkillTool,
   readPageSource,
   researchUrl,
   listDownloads,
@@ -35,7 +36,7 @@ import {
 } from './planner.js';
 import { extractFirstJsonObject } from './json-extract.js';
 import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
-import { buildCustomSkillsPrompt, normalizeCustomSkills } from './skills.js';
+import { buildCustomSkillsPrompt, buildSkillToolDefinitions, buildSkillToolRegistry, normalizeCustomSkills } from './skills.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 const COST_ALLOWANCE_SESSION_KEY = 'costAllowanceSessionUsd';
@@ -1245,6 +1246,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // both types AND submits, so it needs a TYPE grant and a CLICK grant.
       const capabilities = capabilitiesFor(fnName, fnArgs);
       await this._ensureGateSetting();
+      const skillEndpointRedirect = this._skillEndpointToolRedirect(fnName, fnArgs);
+      if (skillEndpointRedirect) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify(skillEndpointRedirect),
+        });
+        onUpdate('warning', { message: `Use ${skillEndpointRedirect.useTool} instead of ${fnName} for this skill endpoint.` });
+        continue;
+      }
       if (isNetworkMutation(fnName, fnArgs) && !this.apiAllowedTabs.has(tabId)) {
         messages.push({
           role: 'tool',
@@ -3041,7 +3052,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   /**
    * Compose the full system prompt: base (ASK or ACT) + optional universal
-   * cookie/paywall guidance + optional user-added skills + optional user
+   * cookie/paywall guidance + optional enabled skills + optional user
    * profile block. Base goes first so prompt-cache prefixes stay stable when
    * user toggles settings.
    */
@@ -3068,6 +3079,74 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   setCustomSkills(skills) {
     this.customSkills = normalizeCustomSkills(skills);
     this._refreshSystemPrompts();
+  }
+
+  _skillToolDefinitions(mode, tier) {
+    return buildSkillToolDefinitions(this.customSkills, {
+      mode,
+      tier: tier || 'full',
+      excludeNames: AGENT_TOOL_NAMES,
+    });
+  }
+
+  _skillToolRegistry() {
+    return buildSkillToolRegistry(this.customSkills, {
+      excludeNames: AGENT_TOOL_NAMES,
+    });
+  }
+
+  _skillToolForName(name) {
+    if (!name) return null;
+    return this._skillToolRegistry().get(name) || null;
+  }
+
+  _skillToolForEndpoint(url) {
+    if (!url) return null;
+    let target;
+    try {
+      target = new URL(String(url));
+      target.hash = '';
+    } catch (_) {
+      return null;
+    }
+    const normalizePath = (value) => String(value || '/').replace(/\/+$/, '') || '/';
+    for (const tool of this._skillToolRegistry().values()) {
+      if (!tool || tool.kind !== 'http' || !tool.endpoint) continue;
+      try {
+        const endpoint = new URL(tool.endpoint);
+        endpoint.hash = '';
+        if (
+          endpoint.protocol === target.protocol &&
+          endpoint.hostname === target.hostname &&
+          endpoint.port === target.port &&
+          normalizePath(endpoint.pathname) === normalizePath(target.pathname) &&
+          endpoint.search === target.search
+        ) {
+          return tool;
+        }
+      } catch (_) {
+        // Ignore malformed skill endpoint records.
+      }
+    }
+    return null;
+  }
+
+  _skillEndpointToolRedirect(name, args) {
+    if (name !== 'fetch_url' && name !== 'research_url') return null;
+    const skillTool = this._skillToolForEndpoint(args?.url);
+    if (!skillTool) return null;
+    return {
+      success: false,
+      denied: true,
+      wrongTool: true,
+      useTool: skillTool.name,
+      requiresApiAllow: false,
+      error: `This URL is the HTTPS endpoint for the enabled ${skillTool.name} skill tool. Do not call ${name} against enabled skill endpoints; call ${skillTool.name} directly with the user-visible arguments instead. Ask mode can call read-only skill tools, and ${skillTool.name} does not require /allow-api. /allow-api only applies to mutating fetch_url/research_url API calls.`,
+    };
+  }
+
+  _isUntrustedTool(name) {
+    return UNTRUSTED_CONTENT_TOOLS.has(name) || this._skillToolForName(name)?.resultPolicy === 'untrusted';
   }
 
   _refreshSystemPrompts() {
@@ -4480,7 +4559,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    * page, so it cannot be guessed and spoofed.
    */
   _wrapUntrusted(name, content) {
-    if (!UNTRUSTED_CONTENT_TOOLS.has(name)) return content;
+    if (!this._isUntrustedTool(name)) return content;
     const nonce = Math.random().toString(36).slice(2, 10);
     const safe = String(content).replace(/<\/?untrusted_page_content\b[^>]*>/gi, '[markup stripped]');
     return `<untrusted_page_content id="${nonce}">\n${safe}\n</untrusted_page_content id="${nonce}">`;
@@ -4517,7 +4596,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     try { parsed = JSON.parse(raw); } catch { /* not JSON / truncated */ }
     if (!parsed || typeof parsed !== 'object') {
       // Never echo raw bytes from a page-derived tool into the trusted summary.
-      if (UNTRUSTED_CONTENT_TOOLS.has(name)) {
+      if (this._isUntrustedTool(name)) {
         return `${name}: untrusted page content (${String(raw).length} chars)`;
       }
       return this._truncate(String(raw).replace(/\s+/g, ' '), 140);
@@ -4527,10 +4606,16 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       // text (a fetched URL, a filename, a page-error snippet). Echoing it
       // into the trusted trim summary / summarizer prompt would smuggle that
       // text out of the untrusted wrapper, so emit a content-free note instead.
-      if (UNTRUSTED_CONTENT_TOOLS.has(name)) {
+      if (this._isUntrustedTool(name)) {
         return `${name}: error (untrusted page content)`;
       }
       return `error: ${this._truncate(String(parsed.error), 120)}`;
+    }
+
+    const skillTool = this._skillToolForName(name);
+    if (skillTool) {
+      const len = parsed.originalLength ?? (typeof parsed.text === 'string' ? parsed.text.length : JSON.stringify(parsed).length);
+      return `${name}: ${parsed.status ?? 200} (${len} chars)`;
     }
 
     switch (name) {
@@ -4631,12 +4716,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return `scratchpad ${parsed.mode || 'write'} (${parsed.bytes ?? '?'} chars)`;
       }
       case 'progress_update': {
-        if (UNTRUSTED_CONTENT_TOOLS.has(name)) return `${name} ok (untrusted page content)`;
+        if (this._isUntrustedTool(name)) return `${name} ok (untrusted page content)`;
         const c = parsed.counts || {};
         return `progress ledger updated (${c.total ?? '?'} rows, ${c.unresolved ?? 0} unresolved)`;
       }
       case 'progress_read': {
-        if (UNTRUSTED_CONTENT_TOOLS.has(name)) return `${name} ok (untrusted page content)`;
+        if (this._isUntrustedTool(name)) return `${name} ok (untrusted page content)`;
         const c = parsed.counts || {};
         return `progress ledger read (${c.total ?? '?'} rows, ${c.unresolved ?? 0} unresolved)`;
       }
@@ -4646,7 +4731,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // object — it holds page content (element labels, selection, frame text,
     // PDF text, execute_js output, …) that would land in the trusted trim
     // summary. Emit a content-free digest instead.
-    if (UNTRUSTED_CONTENT_TOOLS.has(name)) {
+    if (this._isUntrustedTool(name)) {
       return `${name} ok (untrusted page content)`;
     }
     try {
@@ -5274,6 +5359,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // attach the user's cookies only for fetches that share the registrable
     // domain (eTLD+1) of the active tab — see network-tools.js for cookie &
     // redirect policy.
+    const skillTool = this._skillToolForName(name);
+    if (skillTool) {
+      return await executeHttpSkillTool(skillTool, args, { tabId });
+    }
+    const skillEndpointRedirect = this._skillEndpointToolRedirect(name, args);
+    if (skillEndpointRedirect) {
+      return skillEndpointRedirect;
+    }
     if (name === 'fetch_url') {
       return await fetchUrl(args.url, args, { tabId });
     }
@@ -6195,7 +6288,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
     const visionAvailable = !!(provider?.supportsVision) || !!(await this.providerManager.getVisionProvider());
-    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, tier: provider.promptTier, visionAvailable });
+    const tier = provider.promptTier;
+    const skillTools = this._skillToolDefinitions(mode, tier);
+    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, tier, visionAvailable, skillTools });
     const allowedToolNames = new Set(tools.map(t => t.function.name));
     const plannerTemperature = mode === 'act' ? 0.15 : 0.3;
     let steps = 0;
@@ -6495,7 +6590,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       await this._ensureProgressSessionForCurrentTask(tabId, { provider, costState });
     }
     const visionAvailable = !!(provider?.supportsVision) || !!(await this.providerManager.getVisionProvider());
-    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, tier: provider.promptTier, visionAvailable });
+    const tier = provider.promptTier;
+    const skillTools = this._skillToolDefinitions(mode, tier);
+    const tools = getToolsForMode(mode, { strictSecretMode: this.strictSecretMode, tier, visionAvailable, skillTools });
     const allowedToolNames = new Set(tools.map(t => t.function.name));
     const plannerTemperature = mode === 'act' ? 0.15 : 0.3;
     let steps = 0;
