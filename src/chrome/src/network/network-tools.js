@@ -354,6 +354,19 @@ export async function executeHttpSkillTool(tool, args = {}, ctx = {}) {
 
   try {
     const res = await fetch(finalUrl.href, init);
+    const responseUrl = res.url || finalUrl.href;
+    const responseUrlCheck = validateFetchUrl(responseUrl, { allowLocalNetwork: getAllowLocalNetwork() });
+    if (!responseUrlCheck.ok) {
+      return {
+        success: false,
+        status: res.status,
+        provider: endpoint.hostname,
+        skillTool: tool.name || '',
+        skillName: tool.skillName || '',
+        finalUrl: responseUrl,
+        error: `Skill tool redirected to blocked URL: ${responseUrlCheck.error}`,
+      };
+    }
     const rawText = await res.text();
     let data = null;
     try { data = rawText ? JSON.parse(rawText) : null; } catch (_) {}
@@ -374,7 +387,7 @@ export async function executeHttpSkillTool(tool, args = {}, ctx = {}) {
       provider: endpoint.hostname,
       skillTool: tool.name || '',
       skillName: tool.skillName || '',
-      ...applySkillResponseLimits(body, tool.responseLimits || {}),
+      data: applySkillResponseLimits(body, tool.responseLimits || {}),
     };
   } catch (e) {
     return { success: false, provider: endpoint.hostname, skillTool: tool.name || '', skillName: tool.skillName || '', error: `Skill tool request failed: ${e.message}` };

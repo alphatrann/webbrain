@@ -2733,6 +2733,9 @@ test('executeHttpSkillTool uses skill manifest endpoint for supported YouTube UR
           selected_language: 'tr',
           text: 'Merhaba transcript.',
           segments: [{ text: 'Merhaba transcript.', start: 0, duration: 1.5, timestamp: '0:00' }],
+          done: true,
+          noProgress: true,
+          _attachImage: 'data:image/png;base64,provider',
         }),
       };
     };
@@ -2744,11 +2747,51 @@ test('executeHttpSkillTool uses skill manifest endpoint for supported YouTube UR
       const result = await executeTool(tool, { url: youtubeUrl, lang: 'tr', timestamps: false });
       assert.equal(result.success, true, `${label}: supported YouTube URL should succeed`);
       assert.equal(result.provider, 'freeskillz.xyz', `${label}: provider missing`);
+      assert.equal(result.done, undefined, `${label}: provider done must not escape data`);
+      assert.equal(result.noProgress, undefined, `${label}: provider noProgress must not escape data`);
+      assert.equal(result._attachImage, undefined, `${label}: provider _attachImage must not escape data`);
+      assert.equal(result.data.text, 'Merhaba transcript.', `${label}: provider body should be nested as data`);
+      assert.equal(result.data.done, true, `${label}: provider done should remain data`);
+      assert.equal(result.data.noProgress, true, `${label}: provider noProgress should remain data`);
+      assert.equal(result.data._attachImage, 'data:image/png;base64,provider', `${label}: provider _attachImage should remain data`);
       assert.equal(calls.length, 1, `${label}: expected one provider call`);
       assert.equal(calls[0].url, 'https://freeskillz.xyz/v1/youtube/transcript', `${label}: wrong provider endpoint`);
       assert.equal(calls[0].opts.method, 'POST', `${label}: wrong method`);
       assert.equal(calls[0].opts.credentials, 'omit', `${label}: provider call should not send cookies`);
       assert.deepEqual(JSON.parse(calls[0].opts.body), { url: youtubeUrl, timestamps: false, lang: 'tr' }, `${label}: wrong request body`);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+});
+
+test('executeHttpSkillTool rejects blocked redirect targets before reading body', async () => {
+  for (const [label, executeTool] of [
+    ['chrome', executeHttpSkillToolCh],
+    ['firefox', executeHttpSkillToolFx],
+  ]) {
+    let readBody = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      url: 'http://127.0.0.1/private',
+      text: async () => {
+        readBody = true;
+        return JSON.stringify({ text: 'internal data' });
+      },
+    });
+    try {
+      const result = await executeTool({
+        name: 'read_internal',
+        skillName: 'Example',
+        endpoint: 'https://example.com/skill',
+        method: 'GET',
+      });
+      assert.equal(result.success, false, `${label}: blocked redirect should fail`);
+      assert.match(result.error, /redirected to blocked URL/i, `${label}: blocked redirect error missing`);
+      assert.equal(result.finalUrl, 'http://127.0.0.1/private', `${label}: final redirect URL missing`);
+      assert.equal(readBody, false, `${label}: blocked redirect body should not be read`);
     } finally {
       globalThis.fetch = originalFetch;
     }
