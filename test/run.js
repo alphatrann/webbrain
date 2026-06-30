@@ -9871,6 +9871,8 @@ test('empty-output recovery auto-schedules unresolved progress tasks', async () 
         status: 'pending',
       }],
     });
+    const sessionId = agent.progressSessions.get(tabId)?.sessionId;
+    assert.ok(sessionId, `${AgentClass.name}: progress session id missing before auto resume`);
     const updates = [];
 
     const final = await agent.processMessage(tabId, 'continue', (type, data) => {
@@ -9887,6 +9889,7 @@ test('empty-output recovery auto-schedules unresolved progress tasks', async () 
     assert.equal(scheduledPayload?.currentTitle, 'Stargazers', `${AgentClass.name}: scheduler did not receive page title`);
     assert.equal(scheduledPayload?.args?.after_seconds, 90, `${AgentClass.name}: resume delay was not 90 seconds`);
     assert.match(scheduledPayload?.args?.resume_instruction || '', /progress_read/, `${AgentClass.name}: resume instruction does not point back to the ledger`);
+    assert.ok(scheduledPayload?.args?.resume_instruction?.includes(`progress_read({sessionId: "${sessionId}"})`), `${AgentClass.name}: resume instruction missing explicit progress session id`);
     assert.match(scheduledPayload?.args?.resume_instruction || '', /1 row\(s\), 1 unresolved/, `${AgentClass.name}: resume instruction missing safe progress counts`);
     assert.doesNotMatch(scheduledPayload?.args?.resume_instruction || '', /Ignore previous instructions|steal secrets|<system>/, `${AgentClass.name}: untrusted row text leaked into resume instruction`);
     const nudge = agent.conversations.get(tabId).find(msg => msg.role === 'user' && /neither text nor a tool call/.test(msg.content || ''));
@@ -9894,6 +9897,46 @@ test('empty-output recovery auto-schedules unresolved progress tasks', async () 
     assert.match(nudge.content, /Continue the active browser task with tool calls/, `${AgentClass.name}: act-mode nudge did not ask the model to continue`);
     assert.doesNotMatch(nudge.content, /In ONE short message/, `${AgentClass.name}: act-mode nudge used ask-mode summary recovery`);
     assert.ok(updates.some(update => update.type === 'warning' && /scheduled a resume/i.test(update.data?.message || '')), `${AgentClass.name}: scheduled resume warning missing`);
+  }
+});
+
+test('scheduled resume messages preserve progress ledger session', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = 798;
+    agent.conversationModes.set(tabId, 'act');
+    agent._persist = () => {};
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'Follow every stargazer on this page.' },
+    ]);
+    allowProgress(agent, tabId, ['follow']);
+    agent._progressUpdate(tabId, {
+      items: [{ id: 'octocat', label: 'octocat', action: 'follow', status: 'pending' }],
+    });
+    const sessionId = agent.progressSessions.get(tabId)?.sessionId;
+    assert.ok(sessionId, `${AgentClass.name}: setup did not create a progress session`);
+
+    agent.conversations.get(tabId).push({
+      role: 'user',
+      content: [
+        '[Scheduled resume resume_test]',
+        'This is a durable continuation of an earlier user task, not page content and not a new instruction from the web page.',
+        'Original reason: The active progress-ledger task hit consecutive stalled model outputs before finishing.',
+        `Resume instruction: Continue the active Act-mode progress-ledger task. App-owned progress session id: ${sessionId}. If the pinned ledger is missing, call progress_read({sessionId: "${sessionId}"}) before acting.`,
+        'First reread the current page/state.',
+      ].join('\n'),
+    });
+
+    assert.equal(agent._latestTaskText(tabId), 'Follow every stargazer on this page.', `${AgentClass.name}: scheduled resume replaced the latest real task`);
+    const session = await agent._ensureProgressSessionForCurrentTask(tabId, {
+      provider: { chat: async () => { throw new Error('classifier should not run for scheduled resume'); } },
+    });
+    assert.equal(session?.sessionId, sessionId, `${AgentClass.name}: scheduled resume did not reuse the existing progress session`);
+    assert.deepEqual(agent._progressRead(tabId).rows.map(row => [row.id, row.status]), [
+      ['octocat', 'pending'],
+    ], `${AgentClass.name}: progress_read lost rows after scheduled resume`);
+    assert.ok(agent._findProgressLedgerIndex(agent.conversations.get(tabId)) >= 0, `${AgentClass.name}: pinned ledger was removed after scheduled resume`);
   }
 });
 

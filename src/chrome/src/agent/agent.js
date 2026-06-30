@@ -4445,7 +4445,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
   _isAgentInjectedUserContent(content) {
     const c = this._messageText(content).trimStart();
-    return c.startsWith('[Site guidance')
+    return c.startsWith('[Scheduled resume')
+      || c.startsWith('[Site guidance')
       || c.startsWith('[Site context changed')
       || c.startsWith('[Context window was trimmed')
       || c.startsWith('[Context was too large')
@@ -4815,13 +4816,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   _buildAutoProgressResumeInstruction(tabId) {
-    const rows = this._currentTaskLedgerRows(tabId);
-    const unresolved = this._currentTaskProgressRows(tabId);
+    const session = this._currentProgressSession(tabId);
+    const sessionId = String(session?.sessionId || '').trim();
+    const safeSessionId = /^[A-Za-z0-9_.:-]{1,128}$/.test(sessionId) ? sessionId : '';
+    const rows = safeSessionId ? this._rowsForProgressSession(tabId, safeSessionId) : this._currentTaskLedgerRows(tabId);
+    const unresolved = unresolvedLedgerRows(rows);
     const counts = progressCounts(rows);
     return [
       'Continue the active Act-mode progress-ledger task after the previous run hit consecutive stalled model outputs.',
       'Reread the current page/state before acting.',
       'Use the pinned progress ledger or progress_read to decide what remains.',
+      ...(safeSessionId ? [`App-owned progress session id: ${safeSessionId}. If the pinned ledger is missing, call progress_read({sessionId: "${safeSessionId}"}) before acting.`] : []),
       'Do not redo processed, skipped, or failed rows.',
       'Continue only unresolved pending/acted rows for the current task.',
       'Prefer a small batch of tool calls, then update progress.',
