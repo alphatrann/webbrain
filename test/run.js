@@ -3252,10 +3252,21 @@ test('sidepanel escapes dynamic system-message interpolation before raw HTML ins
       /function tSystemHtml\(key, params\) \{[\s\S]*?Object\.entries\(params \|\| \{\}\)[\s\S]*?safeParams\[name\] = escapeHtml\(value\);[\s\S]*?return t\(key, safeParams\);[\s\S]*?\}/,
       `${label}: dynamic system HTML helper missing`,
     );
+    assert.match(panel, /function systemHtml\(html\) \{[\s\S]*?__systemHtml: String\(html == null \? '' : html\)/, `${label}: trusted system HTML wrapper missing`);
+    assert.match(
+      panel,
+      /role === 'system'\) \{[\s\S]*?if \(isSystemHtml\(content\)\) textEl\.innerHTML = content\.__systemHtml;[\s\S]*?else textEl\.textContent = content \|\| '';[\s\S]*?\}/,
+      `${label}: system messages should default to textContent`,
+    );
     assert.doesNotMatch(
       panel,
       /addMessage\('system',\s*t\('[^']+',\s*\{/,
       `${label}: system messages inserted as raw HTML must not interpolate unescaped params directly`,
+    );
+    assert.doesNotMatch(
+      panel,
+      /addMessage\('system',\s*(?:tSystemHtml|t\('[^']*_html'|imgHtml)/,
+      `${label}: trusted system HTML should be wrapped explicitly`,
     );
     for (const key of [
       'sp.scheduled.created',
@@ -4348,7 +4359,7 @@ test('sidepanel scopes async tab commands to the original tab', () => {
     const screenshotIdx = panel.indexOf('// /screenshot');
     const screenshotEnd = panel.indexOf('// /record', screenshotIdx);
     const screenshotBody = panel.slice(screenshotIdx, screenshotEnd);
-    assert.match(screenshotBody, /if \(currentTabId !== tabId \|\| !tab\?\.active\) return '';[\s\S]*?captureVisibleTab[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system', imgHtml\);/, `${label}: /screenshot should not render a captured image into a different tab`);
+    assert.match(screenshotBody, /if \(currentTabId !== tabId \|\| !tab\?\.active\) return '';[\s\S]*?captureVisibleTab[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?addMessage\('system', systemHtml\(imgHtml\)\);/, `${label}: /screenshot should not render a captured image into a different tab`);
 
     if (label === 'chrome') {
       const recordIdx = panel.indexOf('// /record');

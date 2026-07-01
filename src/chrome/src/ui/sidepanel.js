@@ -1021,7 +1021,7 @@ async function handleScheduledJobEvent(data, tabId) {
 
   const title = scheduledJobTitle(job);
   if (event === 'created') {
-    addMessage('system', tSystemHtml('sp.scheduled.created', { title, time: formatScheduledTime(job.nextRunAt || job.scheduledAt) }));
+    addMessage('system', systemHtml(tSystemHtml('sp.scheduled.created', { title, time: formatScheduledTime(job.nextRunAt || job.scheduledAt) })));
   } else if (event === 'running') {
     isProcessing = true;
     abortRequested = false;
@@ -1045,7 +1045,7 @@ async function handleScheduledJobEvent(data, tabId) {
     } else {
       isProcessing = false;
       syncSendButtonState();
-      addMessage('system', tSystemHtml('sp.scheduled.needs_user_input', { title }));
+      addMessage('system', systemHtml(tSystemHtml('sp.scheduled.needs_user_input', { title })));
       drainQueuedContextMenuPromptsAfterPendingTabSwitch();
     }
   }
@@ -1390,11 +1390,11 @@ async function showScratchpad(tabId = currentTabId) {
       addMessage('system', t('sp.scratchpad.empty'));
       return;
     }
-    const msgEl = addMessage('system', `${t('sp.scratchpad.title_html')}<pre class="scratchpad-dump">${escapeHtml(body)}</pre>`);
+    const msgEl = addMessage('system', systemHtml(`${t('sp.scratchpad.title_html')}<pre class="scratchpad-dump">${escapeHtml(body)}</pre>`));
     addScratchpadCopyButton(msgEl);
   } catch (e) {
     if (currentTabId !== tabId) return;
-    addMessage('system', tSystemHtml('sp.scratchpad.error', { msg: e.message }));
+    addMessage('system', systemHtml(tSystemHtml('sp.scratchpad.error', { msg: e.message })));
   }
 }
 
@@ -1409,13 +1409,13 @@ async function editScratchpad(note, tabId = currentTabId) {
     const res = await sendToBackground('write_scratchpad', { tabId, text });
     if (currentTabId !== tabId) return;
     if (!res?.ok && !res?.success) {
-      addMessage('system', tSystemHtml('sp.scratchpad.error', { msg: res?.error || 'unknown error' }));
+      addMessage('system', systemHtml(tSystemHtml('sp.scratchpad.error', { msg: res?.error || 'unknown error' })));
       return;
     }
     addMessage('system', t('sp.scratchpad.updated'));
   } catch (e) {
     if (currentTabId !== tabId) return;
-    addMessage('system', tSystemHtml('sp.scratchpad.error', { msg: e.message }));
+    addMessage('system', systemHtml(tSystemHtml('sp.scratchpad.error', { msg: e.message })));
   }
 }
 
@@ -1424,14 +1424,14 @@ function clearScratchpad(tabId = currentTabId) {
     .then((res) => {
       if (currentTabId !== tabId) return;
       if (!res?.ok && !res?.success) {
-        addMessage('system', tSystemHtml('sp.scratchpad.error', { msg: res?.error || 'unknown error' }));
+        addMessage('system', systemHtml(tSystemHtml('sp.scratchpad.error', { msg: res?.error || 'unknown error' })));
         return;
       }
       addMessage('system', t('sp.scratchpad.cleared'));
     })
     .catch((e) => {
       if (currentTabId !== tabId) return;
-      addMessage('system', tSystemHtml('sp.scratchpad.error', { msg: e.message }));
+      addMessage('system', systemHtml(tSystemHtml('sp.scratchpad.error', { msg: e.message })));
     });
 }
 
@@ -2193,7 +2193,7 @@ function showBusySlashCommandNotice() {
 async function parseSlashCommands(text, tabId = currentTabId) {
   // /help — list all available slash commands
   if (/^\/help\b\s*/i.test(text)) {
-    addMessage('system', t('sp.help_html'));
+    addMessage('system', systemHtml(t('sp.help_html')));
     return '';
   }
 
@@ -2239,7 +2239,7 @@ async function parseSlashCommands(text, tabId = currentTabId) {
     const wasAlreadyAllowed = isApiMutationsAllowedForTab(tabId);
     setApiMutationsAllowedForTab(tabId, true);
     if (!wasAlreadyAllowed) {
-      addMessage('system', t('sp.api.enabled_html'));
+      addMessage('system', systemHtml(t('sp.api.enabled_html')));
     }
     return text.slice(mApi[0].length).trim();
   }
@@ -2257,7 +2257,7 @@ async function parseSlashCommands(text, tabId = currentTabId) {
     } else if (res?.ok) {
       addMessage('system', t('sp.compact.nothing_to_compact'));
     } else {
-      addMessage('system', tSystemHtml('sp.compact.failed', { error: res?.error || 'unknown error' }));
+      addMessage('system', systemHtml(tSystemHtml('sp.compact.failed', { error: res?.error || 'unknown error' })));
     }
     return remainder;
   }
@@ -2291,11 +2291,11 @@ async function parseSlashCommands(text, tabId = currentTabId) {
         const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
         if (currentTabId !== tabId) return '';
         const imgHtml = `<img src="${dataUrl}" style="max-width:100%;border-radius:6px;margin:4px 0;" alt="Screenshot"/>`;
-        addMessage('system', imgHtml);
+        addMessage('system', systemHtml(imgHtml));
       }
     } catch (e) {
       if (currentTabId !== tabId) return '';
-      addMessage('system', tSystemHtml('sp.screenshot.error', { msg: e.message }));
+      addMessage('system', systemHtml(tSystemHtml('sp.screenshot.error', { msg: e.message })));
     }
     return '';
   }
@@ -2309,13 +2309,13 @@ async function parseSlashCommands(text, tabId = currentTabId) {
       });
       if (currentTabId !== tabId) return '';
       if (!res?.ok) {
-        addMessage('system', tSystemHtml('sp.record.error', { error: res?.error || 'unknown' }));
+        addMessage('system', systemHtml(tSystemHtml('sp.record.error', { error: res?.error || 'unknown' })));
       } else if (res.state && res.state.hasMic === false && res.state.micError) {
-        addMessage('system', tSystemHtml('sp.record.mic_unavailable', { error: res.state.micError }));
+        addMessage('system', systemHtml(tSystemHtml('sp.record.mic_unavailable', { error: res.state.micError })));
       }
     } catch (e) {
       if (currentTabId !== tabId) return '';
-      addMessage('system', tSystemHtml('sp.record.error', { error: e.message }));
+      addMessage('system', systemHtml(tSystemHtml('sp.record.error', { error: e.message })));
     }
     return '';
   }
@@ -2398,7 +2398,7 @@ async function parseSlashCommands(text, tabId = currentTabId) {
       }
     } catch (e) {
       if (currentTabId !== tabId) return '';
-      addMessage('system', tSystemHtml('sp.vision.error', { msg: e.message }));
+      addMessage('system', systemHtml(tSystemHtml('sp.vision.error', { msg: e.message })));
     }
     return '';
   }
@@ -3486,7 +3486,8 @@ function addMessage(role, content) {
   if (role === 'user') {
     textEl.textContent = content;
   } else if (role === 'system') {
-    textEl.innerHTML = content || '';
+    if (isSystemHtml(content)) textEl.innerHTML = content.__systemHtml;
+    else textEl.textContent = content || '';
   } else if (!renderSubscribeError(textEl, content)) {
     textEl.innerHTML = content ? formatMarkdown(content) : '';
   }
@@ -3834,6 +3835,14 @@ function escapeHtml(str) {
     '"': '&quot;',
     "'": '&#39;',
   }[c]));
+}
+
+function systemHtml(html) {
+  return { __systemHtml: String(html == null ? '' : html) };
+}
+
+function isSystemHtml(content) {
+  return !!content && typeof content === 'object' && Object.prototype.hasOwnProperty.call(content, '__systemHtml');
 }
 
 function tSystemHtml(key, params) {
@@ -4370,7 +4379,7 @@ async function handleAttachedFiles(fileList, tabId = renderedTabId ?? currentTab
     for (const file of files) {
       if (file.size > MAX_ATTACHMENT_BYTES) {
         if (normalizeAttachmentTabId() === numericTabId) {
-          addMessage('system', tSystemHtml('sp.attach.too_large', { name: file.name }));
+          addMessage('system', systemHtml(tSystemHtml('sp.attach.too_large', { name: file.name })));
         }
         continue;
       }
@@ -4378,7 +4387,7 @@ async function handleAttachedFiles(fileList, tabId = renderedTabId ?? currentTab
       const isPdf = file.type === 'application/pdf';
       if (!isImage && !isPdf) {
         if (normalizeAttachmentTabId() === numericTabId) {
-          addMessage('system', tSystemHtml('sp.attach.unsupported_type', { name: file.name }));
+          addMessage('system', systemHtml(tSystemHtml('sp.attach.unsupported_type', { name: file.name })));
         }
         continue;
       }
@@ -4388,7 +4397,7 @@ async function handleAttachedFiles(fileList, tabId = renderedTabId ?? currentTab
         getPendingAttachmentsForTab(numericTabId).push({ kind: isImage ? 'image' : 'document', name: file.name, dataUrl });
       } catch {
         if (generation === getAttachmentGeneration(numericTabId) && normalizeAttachmentTabId() === numericTabId) {
-          addMessage('system', tSystemHtml('sp.attach.read_failed', { name: file.name }));
+          addMessage('system', systemHtml(tSystemHtml('sp.attach.read_failed', { name: file.name })));
         }
       }
     }
