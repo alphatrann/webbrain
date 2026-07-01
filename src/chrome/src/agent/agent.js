@@ -955,8 +955,15 @@ export class Agent {
     }
   }
 
-  _downloadPublicMediaAttemptTargetChanged(toolName) {
-    return this.constructor.NAV_TOOLS?.has?.(toolName) === true;
+  _downloadPublicMediaAttemptTargetChanged(toolName, toolResultMessage = null) {
+    if (this.constructor.NAV_TOOLS?.has?.(toolName) === true) return true;
+    if (this.constructor.NAV_PRONE_TOOLS?.has?.(toolName) !== true) return false;
+    try {
+      const parsed = JSON.parse(this._unwrapUntrusted(toolResultMessage?.content || ''));
+      return !!(parsed && typeof parsed === 'object' && parsed.pageUrlChanged === true);
+    } catch {
+      return false;
+    }
   }
 
   _downloadPublicMediaAttempt(messages, currentUrl = '') {
@@ -985,7 +992,7 @@ export class Agent {
       }
       if (msg?.role !== 'tool') continue;
       const toolCall = toolCallById.get(msg.tool_call_id);
-      if (toolCall && toolCall.name !== 'download_public_media' && this._downloadPublicMediaAttemptTargetChanged(toolCall.name)) {
+      if (toolCall && toolCall.name !== 'download_public_media' && this._downloadPublicMediaAttemptTargetChanged(toolCall.name, msg)) {
         attempted = false;
         succeeded = false;
         explicitAttempted = false;
@@ -1897,6 +1904,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         const beforeNorm = this._normalizeUrlPath(beforeUrl);
         const afterNorm = this._normalizeUrlPath(afterUrl);
         if (beforeNorm && afterNorm && beforeNorm !== afterNorm) {
+          if (toolResult && typeof toolResult === 'object') {
+            toolResult.pageUrlChanged = true;
+            toolResult.previousUrl = beforeUrl;
+            toolResult.currentUrl = afterUrl;
+          }
           // Explicit navigation tools (navigate / go_back / go_forward)
           // intentionally go somewhere — don't warn. For everything else
           // (click, execute_js, iframe_click) the nav is a side effect the

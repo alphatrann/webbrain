@@ -10246,6 +10246,76 @@ test('agent prefers download_public_media before download_social_media when avai
     assert.equal(interveningRedirect.wrongTool, true, `${label}: current media after navigation should be redirected to public downloader first`);
     assert.notEqual(interveningRedirect.skipped, true, `${label}: current media after navigation must not be silently skipped`);
 
+    const clickNavigationAgent = new AgentClass({ getVisionProvider: async () => null });
+    clickNavigationAgent.setCustomSkills([packagedFreeSkillzRecord(prefix)]);
+    clickNavigationAgent._ensureGateSetting = async () => {};
+    clickNavigationAgent._skipPermissionGate = true;
+    let clickNavigationExecutedSocial = false;
+    let clickNavigationUrlReads = 0;
+    clickNavigationAgent._currentUrl = async () => {
+      clickNavigationUrlReads += 1;
+      return clickNavigationUrlReads === 1
+        ? 'https://www.instagram.com/reel/before/'
+        : 'https://www.instagram.com/reel/after/';
+    };
+    clickNavigationAgent.executeTool = async (_tabId, name) => {
+      if (name === 'download_social_media') {
+        clickNavigationExecutedSocial = true;
+        return { success: true, completedCount: 1 };
+      }
+      return { success: true };
+    };
+    const clickNavigationToolCalls = [
+      {
+        id: 'click_to_next_media',
+        function: { name: 'click', arguments: '{"text":"Next"}' },
+      },
+      {
+        id: 'social_after_click_navigation',
+        function: { name: 'download_social_media', arguments: '{"target":"video"}' },
+      },
+    ];
+    const successThenClickNavigationMessages = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'implicit_public_before_click_navigation',
+          function: { name: 'download_public_media', arguments: '{"kind":"video"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'implicit_public_before_click_navigation',
+        content: clickNavigationAgent._wrapUntrusted('download_public_media', JSON.stringify({ success: true, downloadId: 52 })),
+      },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: clickNavigationToolCalls,
+      },
+    ];
+
+    await clickNavigationAgent._executeToolBatch(
+      label === 'chrome' ? 4925 : 4926,
+      clickNavigationToolCalls,
+      successThenClickNavigationMessages,
+      () => {},
+      { supportsVision: false },
+      '',
+      new Set([...allowedTools, 'click']),
+      10,
+    );
+
+    assert.equal(clickNavigationExecutedSocial, false, `${label}: click navigation should clear duplicate-success skip before current-tab media`);
+    const clickNavigationRedirectMessage = successThenClickNavigationMessages.find(
+      msg => msg.role === 'tool' && msg.tool_call_id === 'social_after_click_navigation',
+    );
+    assert.ok(clickNavigationRedirectMessage, `${label}: missing social media result after click navigation`);
+    const clickNavigationRedirect = JSON.parse(clickNavigationRedirectMessage.content);
+    assert.equal(clickNavigationRedirect.wrongTool, true, `${label}: current media after click navigation should be redirected to public downloader first`);
+    assert.notEqual(clickNavigationRedirect.skipped, true, `${label}: current media after click navigation must not be silently skipped`);
+
     const nextTurnAgent = new AgentClass({ getVisionProvider: async () => null });
     nextTurnAgent.setCustomSkills([packagedFreeSkillzRecord(prefix)]);
     nextTurnAgent._ensureGateSetting = async () => {};
