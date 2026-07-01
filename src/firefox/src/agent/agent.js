@@ -64,6 +64,8 @@ export class Agent {
     this._progressSessionCounter = 0;
     this.conversationIds = new Map(); // tabId -> stable conversationId (regenerated on clearConversation)
     this.conversationModes = new Map(); // tabId -> 'ask' | 'act'
+    this.hydratedTabs = new Set(); // tabIds we've already pulled from storage
+    this.persistTimers = new Map(); // tabId -> debounce handle
     this.abortFlags = new Map(); // tabId -> boolean
     this.currentRunId = new Map(); // tabId -> active trace runId
     this.currentCostState = new Map(); // tabId -> active cloud/router cost state
@@ -189,10 +191,62 @@ export class Agent {
     return this._runningTabs.has(tabId);
   }
 
-  async _hydrate(_tabId) {
-    // Firefox conversations are memory-only in this port; Chrome hydrates from
-    // storage.session. Keep the method so shared scheduler/scratchpad code can
-    // call it without browser-specific branching.
+  _convKey(tabId) { return `agentConv:${tabId}`; }
+
+  /**
+   * Pull a tab's conversation from storage.session into memory if we haven't
+   * already this background lifetime. Safe to call repeatedly.
+   */
+  async _hydrate(tabId) {
+    if (this.hydratedTabs.has(tabId)) return;
+    this.hydratedTabs.add(tabId);
+    if (this.conversations.has(tabId)) return;
+    try {
+      const key = this._convKey(tabId);
+      const stored = await browser.storage.session.get(key);
+      const entry = stored?.[key];
+      if (entry && Array.isArray(entry.messages) && entry.messages.length > 0) {
+        this.conversations.set(tabId, entry.messages);
+        if (entry.mode) {
+          this.conversationModes.set(tabId, entry.mode);
+          this._conversationMode = entry.mode;
+        }
+        if (entry.conversationId) {
+          this.conversationIds.set(tabId, entry.conversationId);
+        }
+        if (Array.isArray(entry.progressLedger)) {
+          this.progressLedgers.set(tabId, entry.progressLedger);
+        }
+        if (entry.progressSession && typeof entry.progressSession === 'object') {
+          this.progressSessions.set(tabId, entry.progressSession);
+        }
+      }
+    } catch (e) { /* session storage may be unavailable */ }
+  }
+
+  /**
+   * Debounced write of a tab's conversation to storage.session. Multiple
+   * rapid mutations within 300ms collapse into one write.
+   */
+  _persist(tabId) {
+    if (tabId == null) return;
+    const existing = this.persistTimers.get(tabId);
+    if (existing) clearTimeout(existing);
+    const handle = setTimeout(() => {
+      this.persistTimers.delete(tabId);
+      const messages = this.conversations.get(tabId);
+      if (!messages) return;
+      const mode = this.conversationModes.get(tabId) || 'ask';
+      const conversationId = this.conversationIds.get(tabId) || null;
+      const progressLedger = this.progressLedgers.get(tabId) || [];
+      const progressSession = this.progressSessions.get(tabId) || null;
+      try {
+        browser.storage.session.set({
+          [this._convKey(tabId)]: { mode, messages, conversationId, progressLedger, progressSession },
+        }).catch(() => {});
+      } catch (e) { /* ignore */ }
+    }, 300);
+    this.persistTimers.set(tabId, handle);
   }
 
   async getConversationId(tabId) {
@@ -1420,6 +1474,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             content: this._wrapUntrusted(fnName, this._limitToolResult(blockedResult)),
           });
           onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
+          this._persist(tabId);
           continue;
         }
         onUpdate('tool_result', { name: fnName, result: toolResult });
@@ -1431,6 +1486,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           // are page-derived and get persisted as history for the next turn.
           content: this._wrapUntrusted(fnName, this._limitToolResult(toolResult)),
         });
+        this._persist(tabId);
         return { action: 'return', value: finalResponse };
       }
 
@@ -1548,6 +1604,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         onUpdate('text', { content: stopMessage });
         onUpdate('error', { message: 'Stuck in a loop. Stopped.' });
         this._clearLoopState(tabId);
+        this._persist(tabId);
         return { action: 'return', value: stopMessage };
       }
       if (bulkApiShortcut?.apiAllowed && bulkApiShortcut.replayRequestId && toolIndex < toolCalls.length - 1) {
@@ -1589,6 +1646,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // early return skips the post-loop flush, so emit any nav notices here
         // or the model would replay against stale URLs from the prior page.
         this._injectNavNotices(messages, navNotices, onUpdate);
+        this._persist(tabId);
         return { action: 'continue' };
       }
       if (this._shouldAutoScreenshot(fnName) && !toolResult?.error) {
@@ -1674,6 +1732,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
+    this._persist(tabId);
     return { action: 'continue' };
   }
 
@@ -2784,12 +2843,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // transcript.
     const priorMessages = runPlanner ? messages.slice() : null;
     messages.push(enriched);
+    this._persist(tabId);
     if (!runPlanner) return { proceed: true };
 
     const historyDigest = this._buildPlannerHistoryDigest(priorMessages);
     const gate = await this._runPlannerGate(tabId, enriched, onUpdate, costState, runId, historyDigest, tabInfo, plannerMode);
     if (!gate.proceed) {
       messages.push({ role: 'assistant', content: gate.message || 'Task cancelled.' });
+      this._persist(tabId);
       return { proceed: false, message: gate.message || 'Task cancelled.', reason: gate.reason };
     }
 
@@ -2808,6 +2869,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // by submitPlanReview in the sidepanel, so there's no plan_approved
         // agent_update to emit here (no handler consumed it).
       }
+      this._persist(tabId);
     }
     return { proceed: true };
   }
@@ -3112,9 +3174,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     this._lastInputTokens.delete(tabId);
     this._lastEstCharsAtReport.delete(tabId);
     this._compactCooldown.delete(tabId);
+    this.hydratedTabs.delete(tabId);
     this.apiAllowedTabs.delete(tabId);
     this.apiAllowedInjected.delete(tabId);
     this._cleanupTab(tabId, { preserveRunGuard: true });
+    const t = this.persistTimers.get(tabId);
+    if (t) { clearTimeout(t); this.persistTimers.delete(tabId); }
+    try {
+      browser.storage.session.remove(this._convKey(tabId)).catch(() => {});
+    } catch (e) { /* ignore */ }
   }
 
   _cleanupTab(tabId, { preserveRunGuard = false } = {}) {
@@ -3143,10 +3211,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   // record facts (download IDs, file paths, progress counters) that it
   // would otherwise lose when older tool results get compressed away.
   //
-  // Firefox port note: ported from chrome/agent.js. Firefox conversations
-  // are in-memory only (no chrome.storage.session persistence), so this
-  // implementation skips the post-write _persist call.
-
   _scratchpadHeader() {
     // Reframed to break "trust laundering": the scratchpad is a role:'user'
     // message (so it survives summarization and stays pinned), but it must NOT
@@ -3245,6 +3309,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       messages.splice(insertAt, 0, msg);
     }
 
+    this._persist(tabId);
     return {
       success: true,
       mode: replace ? 'replace' : 'append',
@@ -3324,6 +3389,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     } catch { /* best-effort */ }
   }
+  _isCompressionPlaceholderResponse(text) {
+    const normalized = String(text || '').trim().toLowerCase();
+    return normalized === '[compressed]' || normalized === '[context compressed]';
+  }
+
   // ─────────────────────────────────────────────────────────────────────
 
   // App-owned progress ledger projected into the prompt.
@@ -3651,6 +3721,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       || c.startsWith('[UNTRUSTED DOCUMENT');
   }
 
+  _isScheduledResumeTurn(content) {
+    const c = this._messageText(content).trimStart();
+    const stripped = this._stripInjectedTaskContext(c).trimStart();
+    return c.startsWith('[Scheduled resume') || stripped.startsWith('[Scheduled resume');
+  }
+
   _stripInjectedTaskContext(text) {
     let out = String(text || '');
     let prev = null;
@@ -3672,6 +3748,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     for (let i = messages.length - 1; i >= 1; i--) {
       const m = messages[i];
       if (m.role !== 'user') continue;
+      if (this._isScheduledResumeTurn(m.content)) continue;
       if (this._isAgentInjectedUserContent(m.content)) continue;
       const text = this._stripInjectedTaskContext(this._messageText(m.content));
       if (!text) continue;
@@ -3999,6 +4076,70 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return this._currentTaskProgressRows(tabId).length > 0;
   }
 
+  _emptyOutputRecoveryNudge(mode) {
+    if (mode === 'act') {
+      return '[System nudge: your previous response had neither text nor a tool call. Continue the active browser task with tool calls. If the task is truly complete, call the done tool with a real summary. Do not output a plain summary and do not stop without a tool call.]';
+    }
+    return '[System nudge: your previous response had neither text nor a tool call. You may have run out of output budget on internal reasoning. In ONE short message, summarize what you accomplished, what you tried, and what blocked you - then stop. Do not start any new tool calls.]';
+  }
+
+  _buildAutoProgressResumeInstruction(tabId) {
+    const session = this._currentProgressSession(tabId);
+    const sessionId = String(session?.sessionId || '').trim();
+    const safeSessionId = /^[A-Za-z0-9_.:-]{1,128}$/.test(sessionId) ? sessionId : '';
+    const rows = safeSessionId ? this._rowsForProgressSession(tabId, safeSessionId) : this._currentTaskLedgerRows(tabId);
+    const unresolved = unresolvedLedgerRows(rows);
+    const counts = progressCounts(rows);
+    return [
+      'Continue the active Act-mode progress-ledger task after the previous run hit consecutive stalled model outputs.',
+      'Reread the current page/state before acting.',
+      'Use the pinned progress ledger or progress_read to decide what remains.',
+      ...(safeSessionId ? [`App-owned progress session id: ${safeSessionId}. If the pinned ledger is missing, call progress_read({sessionId: "${safeSessionId}"}) before acting.`] : []),
+      'Do not redo processed, skipped, or failed rows.',
+      'Continue only unresolved pending/acted rows for the current task.',
+      'Prefer a small batch of tool calls, then update progress.',
+      'When all rows are processed, skipped, or failed, call done with a real summary.',
+      `Current progress snapshot: ${counts.total} row(s), ${unresolved.length} unresolved.`,
+    ].join(' ');
+  }
+
+  async _scheduleAutoProgressResume(tabId, onUpdate = () => {}) {
+    if (!this.scheduler) return null;
+    if ((this.conversationModes.get(tabId) || 'ask') !== 'act') return null;
+    if (!this._shouldBlockDoneForProgress(tabId)) return null;
+
+    const { tabUrl, tabTitle } = await this._getTabUrlTitle(tabId);
+    let result;
+    try {
+      result = await this.scheduler.createResumeJob({
+        tabId,
+        conversationId: this.conversationIds.get(tabId) || null,
+        mode: 'act',
+        args: {
+          after_seconds: 90,
+          reason: 'The active progress-ledger task hit consecutive stalled model outputs before finishing.',
+          resume_instruction: this._buildAutoProgressResumeInstruction(tabId),
+        },
+        currentUrl: tabUrl,
+        currentTitle: tabTitle,
+      });
+    } catch (e) {
+      onUpdate('warning', { message: `Could not schedule automatic resume: ${e?.message || e}` });
+      return null;
+    }
+    if (!result?.success) {
+      const error = result?.error || 'unknown error';
+      onUpdate('warning', { message: `Could not schedule automatic resume: ${error}` });
+      return null;
+    }
+
+    const message = result.deduped
+      ? `Agent hit consecutive stalled outputs; an existing resume is already scheduled for ${result.scheduledAt}.`
+      : `Agent hit consecutive stalled outputs; scheduled a resume for ${result.scheduledAt}.`;
+    onUpdate('warning', { message });
+    return { ...result, message };
+  }
+
   _plainFinalProgressBlock(tabId) {
     const progressBlock = this._shouldBlockDoneForProgress(tabId)
       ? this._progressDoneBlock(tabId)
@@ -4118,6 +4259,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return -1;
   }
 
+  _findLatestScheduledResumeIndex(messages) {
+    for (let i = messages.length - 1; i >= 1; i--) {
+      const m = messages[i];
+      if (m.role !== 'user') continue;
+      if (this._isScheduledResumeTurn(m.content)) return i;
+      if (this._isAgentInjectedUserContent(m.content)) continue;
+      if (this._stripInjectedTaskContext(this._messageText(m.content))) return -1;
+    }
+    return -1;
+  }
+
   /**
    * Shrink oversized tool results / message bodies in place, capping the bloat
    * without dropping any turns. Used as the fallback when we're over the token
@@ -4131,9 +4283,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   _truncateOversizedMessages(tabId, messages) {
     const taskIdx = this._findOriginalTaskIndex(messages);
+    const scheduledResumeIdx = this._findLatestScheduledResumeIndex(messages);
     let trimmed = false;
     for (let i = 1; i < messages.length; i++) {
       if (i === taskIdx) continue; // never truncate the pinned original task
+      if (i === scheduledResumeIdx) continue; // preserve scheduled resume instructions
       const m = messages[i];
       if (this._isPinnedAgentStateMessage(m)) continue;
       if (typeof m.content !== 'string') continue; // image/array content handled by _pruneOldImages
@@ -4207,6 +4361,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // Shared with _truncateOversizedMessages.
     const originalTaskIdx = this._findOriginalTaskIndex(messages);
     const originalTask = originalTaskIdx >= 0 ? messages[originalTaskIdx] : null;
+    const scheduledResumeIdx = this._findLatestScheduledResumeIndex(messages);
+    const scheduledResumeMsg = scheduledResumeIdx >= 0 && scheduledResumeIdx !== originalTaskIdx
+      ? messages[scheduledResumeIdx]
+      : null;
     // Pin the scratchpad alongside system so the model's self-written notes
     // survive summarization. Stripped from old/recent slices below to avoid
     // duplicating it during rebuild.
@@ -4225,8 +4383,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const recentStart = Math.max(afterPin, messages.length - keepRecent);
     const oldMessagesRaw = messages.slice(afterPin, recentStart);
     const recentMessagesRaw = messages.slice(recentStart);
-    const oldMessages = oldMessagesRaw.filter(m => !this._isPinnedAgentStateMessage(m));
-    const recentMessages = recentMessagesRaw.filter(m => !this._isPinnedAgentStateMessage(m));
+    const oldMessages = oldMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isScheduledResumeTurn(m.content) && !this._isPinnedAgentStateMessage(m));
+    const recentMessages = recentMessagesRaw.filter(m => m !== scheduledResumeMsg && !this._isScheduledResumeTurn(m.content) && !this._isPinnedAgentStateMessage(m));
 
     // Boundary fix: the recent slice must not begin in the middle of a
     // tool-call group. If the cutoff lands right after an assistant
@@ -4269,7 +4427,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         return true;
       };
       while (oldMessages.length < 4 && moveOldestRecentToSummary()) {}
-      const pinnedChars = this._estimateContextChars([systemMsg, originalTask, scratchpadMsg, progressMsg].filter(Boolean));
+      const pinnedChars = this._estimateContextChars([systemMsg, originalTask, scheduledResumeMsg, scratchpadMsg, progressMsg].filter(Boolean));
       const compactOverheadChars = 3000; // summary wrapper + ack + manual summary fallback
       const fixedPromptOverheadChars = fixedPromptOverheadTokens * 4;
       const maxRecentChars = Math.max(0, (tokenBudget * 4) - fixedPromptOverheadChars - pinnedChars - compactOverheadChars);
@@ -4369,13 +4527,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
-    // Rebuild: system + pinned original task + scratchpad (if any) + summary + recent
+    // Rebuild: system + pinned original task + scheduled resume + scratchpad (if any) + summary + recent
     const summaryMsg = { role: 'user', content: `[Context window was trimmed to stay within budget. Your ORIGINAL TASK is the user message above — keep working on it. ${summaryText}]` };
     const summaryAck = { role: 'assistant', content: 'Understood, I have the conversation context. Continuing.' };
 
     messages.length = 0;
     messages.push(systemMsg);
     if (originalTask) messages.push(originalTask);
+    if (scheduledResumeMsg) messages.push(scheduledResumeMsg);
     if (scratchpadMsg) messages.push(scratchpadMsg);
     if (progressMsg) messages.push(progressMsg);
     messages.push(summaryMsg, summaryAck, ...recentMessages);
@@ -4415,6 +4574,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (this._runningTabs.has(tabId)) {
       return { compacted: false, reason: 'busy', remaining: 0 };
     }
+    await this._hydrate(tabId);
     const messages = this.conversations.get(tabId);
     if (!messages || messages.length <= 1) {
       return { compacted: false, reason: 'empty', remaining: messages?.length || 0 };
@@ -4427,6 +4587,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       this.currentCostState.get(tabId) || null,
       { force: true }
     );
+    if (result?.compacted) this._persist(tabId);
     return result || { compacted: false, reason: 'not_needed', remaining: messages.length };
   }
 
@@ -4751,6 +4912,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       originalTask = m;
       break;
     }
+    const scheduledResumeIdx = this._findLatestScheduledResumeIndex(messages);
+    const scheduledResumeMsg = scheduledResumeIdx >= 0 && messages[scheduledResumeIdx] !== originalTask
+      ? messages[scheduledResumeIdx]
+      : null;
     // Pin the scratchpad too — even under emergency trim, the model's own
     // notes should survive.
     const scratchpadIdx = this._findScratchpadIndex(messages);
@@ -4758,7 +4923,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const progressIdx = this._findProgressLedgerIndex(messages);
     const progressMsg = progressIdx >= 0 ? messages[progressIdx] : null;
     const keepLast = 6; // keep only 6 most recent messages
-    const recent = messages.slice(-keepLast).filter(m => !this._isPinnedAgentStateMessage(m));
+    const recent = messages.slice(-keepLast).filter(m => m !== scheduledResumeMsg && !this._isScheduledResumeTurn(m.content) && !this._isPinnedAgentStateMessage(m));
 
     // Drop any leading `tool` messages whose requesting assistant turn fell
     // outside the kept window. Both OpenAI-compatible and Anthropic APIs reject
@@ -4790,6 +4955,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     messages.length = 0;
     messages.push(systemMsg);
     if (originalTask) messages.push(originalTask);
+    if (scheduledResumeMsg) messages.push(scheduledResumeMsg);
     if (scratchpadMsg) messages.push(scratchpadMsg);
     if (progressMsg) messages.push(progressMsg);
     messages.push(notice, ack, ...recent);
@@ -6210,6 +6376,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   async _processMessageInner(tabId, userMessage, onUpdate, mode, attachments = []) {
+    await this._hydrate(tabId);
     const messages = this.getConversation(tabId, mode);
     const costState = this._newCostRunState();
     this.currentCostState.set(tabId, costState);
@@ -6278,6 +6445,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     // (no-content + no-tool-call) response. Prevents an infinite
     // empty→nudge→empty→nudge cycle.
     let emptyOutputRecoveryAttempted = false;
+    let compressionPlaceholderRecoveryAttempted = false;
 
     if (!runId) {
       runId = await this._startTraceRun(tabId, userMessage, mode, provider);
@@ -6393,12 +6561,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         break;
       }
 
-      // Reset the empty-output recovery flag whenever the model produces
-      // any signal of life (text or a tool call).
-      if ((result.content && result.content.trim()) || (result.toolCalls && result.toolCalls.length > 0)) {
-        emptyOutputRecoveryAttempted = false;
-      }
-
       // Fallback: if the LLM emitted tool calls as raw text instead of
       // using the structured tool_calls field, try to parse them out.
       if ((!result.toolCalls || result.toolCalls.length === 0) && result.content) {
@@ -6407,6 +6569,19 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           this._logDebug({ type: 'llm_text_fallback_parse', step: steps, parsed: fallback.map(tc => tc.function.name) });
           result.toolCalls = fallback;
           result.content = null;
+        }
+      }
+
+      // Reset recovery flags whenever the model produces real progress. A
+      // placeholder is not progress, but a later tool call or genuine response
+      // should make the next placeholder eligible for its own recovery nudge.
+      const hasToolCallsAfterFallback = !!(result.toolCalls && result.toolCalls.length > 0);
+      const hasContentAfterFallback = !!(result.content && result.content.trim());
+      const isCompressionPlaceholderAfterFallback = mode === 'act' && this._isCompressionPlaceholderResponse(result.content);
+      if (hasToolCallsAfterFallback || hasContentAfterFallback) {
+        emptyOutputRecoveryAttempted = false;
+        if (hasToolCallsAfterFallback || !isCompressionPlaceholderAfterFallback) {
+          compressionPlaceholderRecoveryAttempted = false;
         }
       }
 
@@ -6446,11 +6621,37 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
       // No tool calls. Detect the "empty output" failure mode (no text +
       // no tool call after non-trivial reasoning) and recover ONCE via a
-      // summary-nudge before giving up.
+      // mode-aware nudge before giving up.
       const isEmpty = !result.content || !result.content.trim();
       if (isEmpty && result.costAllowanceMessage) {
         finalResponse = result.costAllowanceMessage;
         _traceStatus = 'cost_limit';
+        messages.push({ role: 'assistant', content: finalResponse });
+        onUpdate('warning', { message: finalResponse });
+        break;
+      }
+      if (mode === 'act' && this._isCompressionPlaceholderResponse(result.content)) {
+        if (!compressionPlaceholderRecoveryAttempted) {
+          compressionPlaceholderRecoveryAttempted = true;
+          messages.push({ role: 'assistant', content: result.content });
+          messages.push({
+            role: 'user',
+            content: '[System nudge: your previous response was a context-compression placeholder, not a real final answer or tool call. Continue the active browser task with tool calls. Do not output "[compressed]".]',
+          });
+          onUpdate('warning', { message: 'Model returned a compression placeholder; continuing.' });
+          this._persist(tabId);
+          continue;
+        }
+        const scheduledResume = await this._scheduleAutoProgressResume(tabId, onUpdate);
+        if (scheduledResume) {
+          finalResponse = scheduledResume.message;
+          _traceStatus = 'scheduled_resume';
+          messages.push({ role: 'assistant', content: finalResponse });
+          this._persist(tabId);
+          break;
+        }
+        finalResponse = '[Agent stopped because the model returned a context-compression placeholder instead of a tool call or real final answer, even after a recovery nudge.]';
+        _traceStatus = 'placeholder_output';
         messages.push({ role: 'assistant', content: finalResponse });
         onUpdate('warning', { message: finalResponse });
         break;
@@ -6460,9 +6661,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           emptyOutputRecoveryAttempted = true;
           messages.push({
             role: 'user',
-            content: '[System nudge: your previous response had neither text nor a tool call. You may have run out of output budget on internal reasoning. In ONE short message, summarize what you accomplished, what you tried, and what blocked you — then stop. Do not start any new tool calls.]',
+            content: this._emptyOutputRecoveryNudge(mode),
           });
+          this._persist(tabId);
           continue;
+        }
+        const scheduledResume = await this._scheduleAutoProgressResume(tabId, onUpdate);
+        if (scheduledResume) {
+          finalResponse = scheduledResume.message;
+          _traceStatus = 'scheduled_resume';
+          messages.push({ role: 'assistant', content: finalResponse });
+          this._persist(tabId);
+          break;
         }
         finalResponse = '[Agent emitted no output and no tool call, even after a recovery nudge. This usually means the task exceeded the current model\'s capability or context budget. Try a stronger model, raise the step limit in settings, or break the task into smaller parts.]';
         _traceStatus = 'empty_output';
@@ -6475,6 +6685,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         messages.push({ role: 'assistant', content: result.content });
         messages.push({ role: 'user', content: progressFinalBlock });
         onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
+        this._persist(tabId);
         continue;
       }
       finalResponse = result.costAllowanceMessage
@@ -6497,6 +6708,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
+    this._persist(tabId);
     return finalResponse;
     } finally {
       this._endTraceRun(tabId, runId, _traceStatus, finalResponse);
@@ -6520,6 +6732,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   }
 
   async _processMessageStreamInner(tabId, userMessage, onUpdate, mode) {
+    await this._hydrate(tabId);
     const messages = this.getConversation(tabId, mode);
     const costState = this._newCostRunState();
     this.currentCostState.set(tabId, costState);
@@ -6576,6 +6789,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     let steps = 0;
     // See processMessage — used to break the empty-response→nudge cycle.
     let emptyOutputRecoveryAttempted = false;
+    let compressionPlaceholderRecoveryAttempted = false;
 
     while (steps < this.maxSteps) {
       if (this._checkAbort(tabId)) {
@@ -6607,6 +6821,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (beforeCost) {
           messages.push({ role: 'assistant', content: beforeCost });
           onUpdate('warning', { message: beforeCost });
+          this._persist(tabId);
           return finish(beforeCost, 'cost_limit');
         }
         let costStopMessage = '';
@@ -6660,9 +6875,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         if (hasToolCalls) {
+          emptyOutputRecoveryAttempted = false;
+          compressionPlaceholderRecoveryAttempted = false;
           if (costStopMessage) {
             messages.push({ role: 'assistant', content: costStopMessage });
             onUpdate('warning', { message: costStopMessage });
+            this._persist(tabId);
             return finish(costStopMessage, 'cost_limit');
           }
           const toolCalls = Object.values(toolCallsAccumulator);
@@ -6685,12 +6903,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         }
 
         // No tool calls. Detect the "empty output" failure and recover
-        // once via a summary-nudge; on second empty in a row, give up
+        // once via a mode-aware nudge; on second empty in a row, give up
         // with a transparent message instead of returning empty content.
         this._logDebug({ type: 'llm_stream_response', step: steps, content: fullText, toolCalls: null });
         if ((!fullText || !fullText.trim()) && costStopMessage) {
           messages.push({ role: 'assistant', content: costStopMessage });
           onUpdate('warning', { message: costStopMessage });
+          this._persist(tabId);
           return finish(costStopMessage, 'cost_limit');
         }
         if (!fullText || !fullText.trim()) {
@@ -6698,21 +6917,54 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             emptyOutputRecoveryAttempted = true;
             messages.push({
               role: 'user',
-              content: '[System nudge: your previous response had neither text nor a tool call. You may have run out of output budget on internal reasoning. In ONE short message, summarize what you accomplished, what you tried, and what blocked you — then stop. Do not start any new tool calls.]',
+              content: this._emptyOutputRecoveryNudge(mode),
             });
+            this._persist(tabId);
             continue;
+          }
+          const scheduledResume = await this._scheduleAutoProgressResume(tabId, onUpdate);
+          if (scheduledResume) {
+            messages.push({ role: 'assistant', content: scheduledResume.message });
+            this._persist(tabId);
+            return finish(scheduledResume.message, 'scheduled_resume');
           }
           const failMsg = '[Agent emitted no output and no tool call, even after a recovery nudge. This usually means the task exceeded the current model\'s capability or context budget. Try a stronger model, raise the step limit in settings, or break the task into smaller parts.]';
           messages.push({ role: 'assistant', content: failMsg });
           onUpdate('warning', { message: failMsg });
+          this._persist(tabId);
           return finish(failMsg, 'empty_output');
         }
+        if (mode === 'act' && this._isCompressionPlaceholderResponse(fullText)) {
+          if (!compressionPlaceholderRecoveryAttempted) {
+            compressionPlaceholderRecoveryAttempted = true;
+            messages.push({ role: 'assistant', content: fullText });
+            messages.push({
+              role: 'user',
+              content: '[System nudge: your previous response was a context-compression placeholder, not a real final answer or tool call. Continue the active browser task with tool calls. Do not output "[compressed]".]',
+            });
+            onUpdate('warning', { message: 'Model returned a compression placeholder; continuing.' });
+            this._persist(tabId);
+            continue;
+          }
+          const scheduledResume = await this._scheduleAutoProgressResume(tabId, onUpdate);
+          if (scheduledResume) {
+            messages.push({ role: 'assistant', content: scheduledResume.message });
+            this._persist(tabId);
+            return finish(scheduledResume.message, 'scheduled_resume');
+          }
+          const failMsg = '[Agent stopped because the model returned a context-compression placeholder instead of a tool call or real final answer, even after a recovery nudge.]';
+          messages.push({ role: 'assistant', content: failMsg });
+          onUpdate('warning', { message: failMsg });
+          return finish(failMsg, 'placeholder_output');
+        }
         emptyOutputRecoveryAttempted = false;
+        compressionPlaceholderRecoveryAttempted = false;
         const progressFinalBlock = this._plainFinalProgressBlock(tabId);
         if (progressFinalBlock) {
           messages.push({ role: 'assistant', content: fullText });
           messages.push({ role: 'user', content: progressFinalBlock });
           onUpdate('warning', { message: 'Progress ledger has unresolved rows; continuing.' });
+          this._persist(tabId);
           continue;
         }
         if (costStopMessage) {
@@ -6720,6 +6972,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           fullText = `${fullText}\n\n${costStopMessage}`;
         }
         messages.push({ role: 'assistant', content: fullText });
+        this._persist(tabId);
         return finish(fullText);
 
       } catch (e) {
@@ -6728,11 +6981,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         if (this._isContextOverflow(e.message)) {
           onUpdate('thinking', { step: steps, note: 'Context too large, trimming...' });
           this._emergencyTrim(messages);
+          this._persist(tabId);
           continue; // retry the loop with trimmed context
         }
         onUpdate('error', { message: e.message });
         const errMsg = `Error: ${e.message}`;
         messages.push({ role: 'assistant', content: errMsg });
+        this._persist(tabId);
         return finish(errMsg, 'error');
       }
     }
@@ -6743,6 +6998,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const summary = this._buildStepLimitSummary(messages, steps);
     messages.push({ role: 'assistant', content: summary });
     onUpdate('text', { content: summary });
+    this._persist(tabId);
     return finish(summary, 'max_steps');
     } finally {
       this._endTraceRun(tabId, runId, _traceStatus, finalResponse);
