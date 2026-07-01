@@ -2467,6 +2467,10 @@ async function sendMessage(extraChatParams) {
         && /does not support (?:image|document) attachments/.test(res.content)) {
       const pending = getPendingAttachmentsForTab(tabId);
       pending.unshift(...attachmentsForSend.filter(att => !pending.includes(att)));
+      inputEl.value = text;
+      saveInputDraftForTab(tabId, text);
+      autoResizeInput();
+      updateSlashCommandAutocomplete();
       renderAttachmentPreviews();
       syncSendButtonState();
     }

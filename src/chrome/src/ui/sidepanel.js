@@ -2520,6 +2520,10 @@ async function sendMessage(extraChatParams) {
         && /does not support (?:image|document) attachments/.test(res.content)) {
       const pending = getPendingAttachmentsForTab(tabId);
       pending.unshift(...attachmentsForSend.filter(att => !pending.includes(att)));
+      inputEl.value = text;
+      saveInputDraftForTab(tabId, text);
+      autoResizeInput();
+      updateSlashCommandAutocomplete();
       renderAttachmentPreviews();
       syncSendButtonState();
     }
@@ -4034,6 +4038,11 @@ let micDisabledReason = null; // null | 'unsupported' | 'settings' | 'permission
 let micPermissionDenied = false; // latched when Chrome denies mic; cleared by permissionchange
 let micRequestInFlight = false; // prevents concurrent requestMicAndStart() calls
 
+function setMicIdleIcon() {
+  if (!micBtn) return;
+  micBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+}
+
 function updateMicButtonState() {
   if (!micBtn) return;
   micDisabledReason = !SpeechRecognitionImpl ? 'unsupported'
@@ -4052,7 +4061,7 @@ function stopListening() {
   isListening = false;
   if (micBtn) {
     micBtn.classList.remove('listening');
-    micBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a7 7 0 0 1-14 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+    setMicIdleIcon();
   }
   updateMicButtonState();
   // Detach handlers before stop(): the engine can fire a trailing
@@ -4125,7 +4134,10 @@ function startListening() {
     isListening = false;
     speechRecognition = null;
     micInterimText = '';
-    micBtn?.classList.remove('listening');
+    if (micBtn) {
+      micBtn.classList.remove('listening');
+      setMicIdleIcon();
+    }
     updateMicButtonState();
   };
 

@@ -4808,8 +4808,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
   /**
    * Build a copy of `messages` for sending to the LLM that retains only the
    * `keep` most-recent screenshots. Older image_url blocks are replaced with
-   * a small text placeholder, and base64 image data embedded in old tool
-   * results is stripped. The persisted history is left untouched.
+   * a small text placeholder, unsupported document blocks are replaced with a
+   * text placeholder, and base64 image data embedded in old tool results is
+   * stripped. The persisted history is left untouched.
    *
    * `provider` (optional): if `provider.supportsVision` is false, force
    * keep=0 so ALL images are stripped. Protects against "user had vision
@@ -4818,6 +4819,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   _pruneOldImages(messages, provider = null, keep = 1) {
     const stripAllImages = provider && !provider.supportsVision;
+    const stripAllDocuments = provider && !provider.supportsDocuments;
     if (stripAllImages) keep = 0;
     let imgsKept = 0;
     const out = new Array(messages.length);
@@ -4841,6 +4843,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               text: inUserAttachmentSection
                 ? '[uploaded image omitted because active provider does not support images]'
                 : '[older screenshot omitted to save tokens]',
+              };
+          }
+          if (block?.type === 'document' && stripAllDocuments) {
+            return {
+              type: 'text',
+              text: inUserAttachmentSection
+                ? '[uploaded document omitted because active provider does not support documents]'
+                : '[document omitted because active provider does not support documents]',
             };
           }
           return block;

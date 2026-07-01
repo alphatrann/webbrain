@@ -12184,6 +12184,35 @@ test('attachments: uploaded documents carry an untrusted content boundary', () =
   }
 });
 
+test('attachments: uploaded documents are pruned for non-document providers', () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
+    const provider = { name: 'document-test', supportsVision: true, supportsDocuments: true };
+    const enriched = { role: 'user', content: 'summarize the invoice' };
+
+    const result = agent._applyAttachments(enriched, [
+      {
+        kind: 'document',
+        name: 'invoice.pdf',
+        dataUrl: 'data:application/pdf;base64,JVBERi0=',
+      },
+    ], provider);
+
+    assert.equal(result.ok, true, `${label} should accept the original document attachment`);
+    const prunedContent = agent._pruneOldImages(
+      [enriched],
+      { name: 'text-only', supportsVision: true, supportsDocuments: false },
+      1,
+    )[0].content;
+    assert.equal(enriched.content.some(block => block?.type === 'document'), true, `${label} should leave persisted history untouched`);
+    assert.equal(prunedContent.some(block => block?.type === 'document'), false, `${label} should not send document blocks to non-document providers`);
+    assert.ok(
+      prunedContent.some(block => block?.text === '[uploaded document omitted because active provider does not support documents]'),
+      `${label} should replace uploaded documents with a provider-compatible placeholder`,
+    );
+  }
+});
+
 test('sidepanel: pending attachments are tab-scoped and send-gated while loading', () => {
   for (const [label, file] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js'],
@@ -12195,6 +12224,11 @@ test('sidepanel: pending attachments are tab-scoped and send-gated while loading
     assert.ok(source.includes('function isAttachmentReadPendingForTab'), `${label} should expose a read-pending helper`);
     assert.ok(source.includes('if (!isProcessing && isAttachmentReadPendingForTab(tabId))'), `${label} should block keyboard sends while files load`);
     assert.ok(source.includes('clearPendingAttachmentsForTab(tabId);'), `${label} should clear pending files with the conversation`);
+    assert.match(
+      source,
+      /does not support \(\?:image\|document\) attachments[\s\S]*?pending\.unshift\(\.\.\.attachmentsForSend[\s\S]*?inputEl\.value = text;[\s\S]*?saveInputDraftForTab\(tabId, text\);[\s\S]*?autoResizeInput\(\);[\s\S]*?updateSlashCommandAutocomplete\(\);[\s\S]*?renderAttachmentPreviews\(\);[\s\S]*?syncSendButtonState\(\);/,
+      `${label} should restore both rejected attachments and the prompt text`,
+    );
     assert.ok(!source.includes('let pendingAttachments = []'), `${label} should not keep one global pending attachment list`);
     if (label === 'chrome') {
       assert.ok(source.includes('handleAttachedFiles(fileAttachInput.files, renderedTabId ?? currentTabId)'), `${label} should bind file reads to the rendered tab`);
@@ -12202,6 +12236,21 @@ test('sidepanel: pending attachments are tab-scoped and send-gated while loading
       assert.ok(source.includes('handleAttachedFiles(fileAttachInput.files, currentTabId)'), `${label} should bind file reads to the current tab`);
     }
   }
+});
+
+test('chrome sidepanel resets mic icon after speech recognition ends', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
+  assert.match(source, /function setMicIdleIcon\(\) \{[\s\S]*?micBtn\.innerHTML = `<svg width="18"/, 'chrome: idle mic icon helper missing');
+
+  const stopStart = source.indexOf('function stopListening() {');
+  assert.notEqual(stopStart, -1, 'chrome: stopListening missing');
+  const stopBody = source.slice(stopStart, source.indexOf('\n}\n\nfunction startListening', stopStart) + 2);
+  assert.match(stopBody, /micBtn\.classList\.remove\('listening'\);[\s\S]*?setMicIdleIcon\(\);/, 'chrome: explicit stop should reset the icon');
+
+  const onendStart = source.indexOf('recognition.onend = () => {');
+  assert.notEqual(onendStart, -1, 'chrome: speech recognition onend handler missing');
+  const onendBody = source.slice(onendStart, source.indexOf('\n  };\n\n  isListening = true;', onendStart) + 5);
+  assert.match(onendBody, /micBtn\.classList\.remove\('listening'\);[\s\S]*?setMicIdleIcon\(\);/, 'chrome: natural speech end should reset the icon');
 });
 
 test('planner input: text is extracted from chat messages without leaking image data', () => {
