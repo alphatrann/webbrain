@@ -876,23 +876,30 @@ export class Agent {
         break;
       }
     }
-    const toolNameById = new Map();
+    const toolCallById = new Map();
     let attempted = false;
     let succeeded = false;
+    let explicitAttempted = false;
     for (const msg of list.slice(scanStart)) {
       if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
         for (const tc of msg.tool_calls) {
-          if (tc?.id) toolNameById.set(tc.id, tc.function?.name || tc.name || '');
+          if (!tc?.id) continue;
+          let args = null;
+          try { args = JSON.parse(tc.function?.arguments || tc.arguments || '{}'); } catch { args = null; }
+          toolCallById.set(tc.id, { name: tc.function?.name || tc.name || '', args });
         }
         continue;
       }
-      if (msg?.role !== 'tool' || toolNameById.get(msg.tool_call_id) !== 'download_public_media') continue;
-      attempted = true;
+      const toolCall = toolCallById.get(msg.tool_call_id);
+      if (msg?.role !== 'tool' || toolCall?.name !== 'download_public_media') continue;
+      const hasExplicitUrl = typeof toolCall.args?.url === 'string' && toolCall.args.url.trim();
+      if (hasExplicitUrl) explicitAttempted = true;
+      else attempted = true;
       let parsed = null;
       try { parsed = JSON.parse(this._unwrapUntrusted(msg.content)); } catch { /* malformed result still counts as an attempt */ }
-      succeeded = !!(parsed && typeof parsed === 'object' && parsed.success === true);
+      if (!hasExplicitUrl) succeeded = !!(parsed && typeof parsed === 'object' && parsed.success === true);
     }
-    return { attempted, succeeded };
+    return { attempted, succeeded, explicitAttempted };
   }
 
   _downloadPublicMediaArgsFromSocialArgs(args) {
@@ -917,7 +924,7 @@ export class Agent {
         error: 'Skipped download_social_media because download_public_media already succeeded. Do not run the browser-side fallback unless the user asks for an additional download.',
       };
     }
-    if (publicAttempt.attempted) return null;
+    if (publicAttempt.attempted || publicAttempt.explicitAttempted) return null;
 
     return {
       success: false,

@@ -9934,6 +9934,49 @@ test('agent prefers download_public_media before download_social_media when avai
     assert.equal(skipped.skipped, true, `${label}: duplicate fallback should be marked skipped`);
     assert.equal(skipped.skippedBecause, 'download_public_media_already_succeeded', `${label}: duplicate skip reason mismatch`);
 
+    const explicitUrlAgent = new AgentClass({ getVisionProvider: async () => null });
+    explicitUrlAgent.setCustomSkills([packagedFreeSkillzRecord(prefix)]);
+    explicitUrlAgent._ensureGateSetting = async () => {};
+    explicitUrlAgent._skipPermissionGate = true;
+    let explicitUrlExecutedName = '';
+    explicitUrlAgent.executeTool = async (_tabId, name) => {
+      explicitUrlExecutedName = name;
+      return { success: true, completedCount: 1 };
+    };
+    const explicitUrlPublicMessages = [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'explicit_public_success',
+          function: { name: 'download_public_media', arguments: '{"url":"https://www.instagram.com/reel/abc/","kind":"video"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'explicit_public_success',
+        content: explicitUrlAgent._wrapUntrusted('download_public_media', JSON.stringify({ success: true, downloadId: 46 })),
+      },
+    ];
+
+    await explicitUrlAgent._executeToolBatch(
+      label === 'chrome' ? 4913 : 4914,
+      [{
+        id: 'social_after_explicit_success',
+        function: { name: 'download_social_media', arguments: '{"target":"video"}' },
+      }],
+      explicitUrlPublicMessages,
+      () => {},
+      { supportsVision: false },
+      '',
+      allowedTools,
+      4,
+    );
+
+    assert.equal(explicitUrlExecutedName, 'download_social_media', `${label}: explicit URL public download should not skip a later current-tab download`);
+    const explicitUrlFallbackResult = JSON.parse(explicitUrlAgent._unwrapUntrusted(explicitUrlPublicMessages.at(-1).content));
+    assert.equal(explicitUrlFallbackResult.completedCount, 1, `${label}: explicit URL follow-up fallback result missing`);
+
     const nextTurnAgent = new AgentClass({ getVisionProvider: async () => null });
     nextTurnAgent.setCustomSkills([packagedFreeSkillzRecord(prefix)]);
     nextTurnAgent._ensureGateSetting = async () => {};
