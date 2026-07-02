@@ -1390,9 +1390,9 @@ PATTERN:
  * or inventing parameters; the compact set (~20) is too thin for real tasks
  * (no iframe, no verify_form, no file up/download). Mid is the full set minus
  * the exotic/footgun tools: hover and drag_drop (loop traps on weak models),
- * the shadow-DOM and frame-introspection tools,
- * vision-gated), and download_resource_from_page (download_social_media +
- * download_files cover the common cases).
+ * the shadow-DOM and frame-introspection tools, and
+ * download_resource_from_page (download_social_media + download_files cover
+ * the common cases).
  */
 export const MID_TOOL_NAMES = new Set([
   'get_accessibility_tree', 'click_ax', 'type_ax', 'set_field',
