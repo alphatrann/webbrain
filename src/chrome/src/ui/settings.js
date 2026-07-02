@@ -19,7 +19,7 @@ import {
 
 // Version shown in the subtitle. Kept here so it only needs one update per
 // release; the subtitle string itself is translated.
-const EXT_VERSION = '19.2.2';
+const EXT_VERSION = '19.3.0';
 
 const providersContainer = document.getElementById('providers');
 const displaySettings = document.getElementById('display-settings');
@@ -1305,9 +1305,6 @@ function renderProviders() {
   const entries = Object.entries(providersData);
   let visibleCount = 0;
   for (const [id, config] of entries) {
-    // Claude Pro/Max subscription OAuth flow is broken — hide until fixed.
-    if (id === 'claude_subscription') continue;
-
     const isActive = id === activeProviderId;
     const fieldDefs = providerConfigs[id]?.fields || [];
 

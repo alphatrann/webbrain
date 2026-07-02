@@ -15618,6 +15618,24 @@ for (const [label, Provider] of [['chrome', AnthropicProviderCh], ['firefox', An
     assert.equal(toolMsg.content.length, 2, 'both tool_result blocks live in one user message');
     assert.deepEqual(toolMsg.content.map((b) => b.tool_use_id), ['t1', 't2'], 'both tool_use_ids preserved in order');
   });
+
+  test(`anthropic (${label}): Opus 4.8 omits unsupported temperature while Sonnet 4.6 keeps it`, () => {
+    const opus48Body = {};
+    new Provider({ model: 'claude-opus-4-8' })._addTemperature(opus48Body, { temperature: 0.3 });
+    assert.equal(opus48Body.temperature, undefined, 'Opus 4.8 should omit temperature');
+
+    const futureOpusBody = {};
+    new Provider({ model: 'claude-opus-4-10' })._addTemperature(futureOpusBody, { temperature: 0.3 });
+    assert.equal(futureOpusBody.temperature, undefined, 'Opus 4.10 should omit temperature');
+
+    const sonnetBody = {};
+    new Provider({ model: 'claude-sonnet-4-6' })._addTemperature(sonnetBody, { temperature: 0.3 });
+    assert.equal(sonnetBody.temperature, 0.3, 'Sonnet 4.6 should keep temperature');
+
+    const oldOpusBody = {};
+    new Provider({ model: 'claude-opus-4-20250514' })._addTemperature(oldOpusBody, { temperature: 0.3 });
+    assert.equal(oldOpusBody.temperature, 0.3, 'older date-versioned Opus 4 should keep temperature');
+  });
 }
 
 // ── Recommended actions: symbol-only price triggers compare-price (regression) ─
