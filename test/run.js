@@ -2785,6 +2785,9 @@ test('getToolsForMode: screenshot tools are not model-callable', () => {
       assert.doesNotMatch(prompt, /\bfull_page_screenshot\b/i, `[${label}] ${promptLabel} prompt must not mention full_page_screenshot`);
       assert.doesNotMatch(prompt, /\b(?:take|taking) (?:a |fresh )?screenshot\b/i, `[${label}] ${promptLabel} prompt must not tell the model to take a screenshot`);
       assert.match(prompt, /\/screenshot\b/, `[${label}] ${promptLabel} prompt should direct chat-image requests to the /screenshot slash command`);
+      if (promptLabel !== 'ask') {
+        assert.match(prompt, /(?:auto-screenshot|injected visual context|verification screenshot)/i, `[${label}] ${promptLabel} prompt should preserve automatic visual verification guidance`);
+      }
       if (label === 'chrome') {
         assert.match(prompt, /\/full-page-screenshot\b/, `[${label}] ${promptLabel} prompt should direct full-page chat-image requests to the /full-page-screenshot slash command`);
       } else {

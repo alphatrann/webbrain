@@ -160,7 +160,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'read_page_source',
-      description: 'Read raw server-delivered HTML source for the current tab or an explicit URL, like View Source. Use this for static/SSR HTML, inline styles/scripts, and discovering linked CSS/JS assets; do NOT use it as the source of truth for rendered layout, hydrated SPA DOM, or computed CSS — use inspect_element_styles plus page/tree reads for spacing/layout issues. Returns a paginated raw `text` chunk plus resolved `assetUrls.stylesheets` and `assetUrls.scripts`; fetch specific linked assets with fetch_url when needed.',
+      description: 'Read raw server-delivered HTML source for the current tab or an explicit URL, like View Source. Use this for static/SSR HTML, inline styles/scripts, and discovering linked CSS/JS assets; do NOT use it as the source of truth for rendered layout, hydrated SPA DOM, or computed CSS — use inspect_element_styles plus page/tree reads or injected visual context for spacing/layout issues. Returns a paginated raw `text` chunk plus resolved `assetUrls.stylesheets` and `assetUrls.scripts`; fetch specific linked assets with fetch_url when needed.',
       parameters: {
         type: 'object',
         properties: {
@@ -217,7 +217,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'click',
-      description: 'Click an element. FOUR ways to use it: (1) CSS selector, (2) visible text, (3) element index from get_interactive_elements, (4) x/y coordinates. For text clicks, default matching is EXACT and case-insensitive. You can opt into broader matching with `textMatch: "prefix"` or `textMatch: "contains"`. Note: jQuery/Playwright pseudo-classes like `:contains()` and `:has-text()` are NOT valid CSS and will fail; use the `text` parameter instead. COORDINATES are CSS pixels; prefer click_ax({ref_id}) whenever possible because it avoids coordinate drift.',
+      description: 'Click an element. FOUR ways to use it: (1) CSS selector, (2) visible text, (3) element index from get_interactive_elements, (4) x/y coordinates. For text clicks, default matching is EXACT and case-insensitive. You can opt into broader matching with `textMatch: "prefix"` or `textMatch: "contains"`. Note: jQuery/Playwright pseudo-classes like `:contains()` and `:has-text()` are NOT valid CSS and will fail; use the `text` parameter instead. COORDINATES are CSS pixels; if using visual context, only use CSS-pixel-aligned coordinates. Prefer click_ax({ref_id}) whenever possible because it avoids coordinate drift.',
       parameters: {
         type: 'object',
         properties: {
@@ -350,7 +350,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'inspect_element_styles',
-      description: 'Inspect the live rendered DOM and computed CSS for web editing/layout questions. Prefer this with page/tree reads when the user asks how to fix spacing, padding, margins, alignment, overflow, or positioning. Targets by ref_id from get_accessibility_tree, CSS selector, CSS-pixel x/y, or body fallback; returns box metrics, computed spacing/layout properties, ancestor spacing, inline style, and accessible matched CSS rules.',
+      description: 'Inspect the live rendered DOM and computed CSS for web editing/layout questions. Prefer this with page/tree reads or injected visual context when the user asks how to fix spacing, padding, margins, alignment, overflow, or positioning. Targets by ref_id from get_accessibility_tree, CSS selector, CSS-pixel x/y from visual context, or body fallback; returns box metrics, computed spacing/layout properties, ancestor spacing, inline style, and accessible matched CSS rules.',
       parameters: {
         type: 'object',
         properties: {
@@ -1158,7 +1158,7 @@ ACCESSIBILITY TREE — read this carefully:
     2. If the tree is truncated and you cannot find a visible target, call \`get_accessibility_tree({filter: "visible", page: nextPage})\` before scrolling.
     3. Identify the ref_ids you need for the next step.
     4. \`click_ax({ref_id: "ref_N"})\` or \`type_ax({ref_id: "ref_N", text: "..."})\`.
-    5. Re-read the tree to verify the page changed; automatic visual context may also be injected when configured.
+    5. Re-read the tree or inspect any injected auto-screenshot/visual context to verify the page changed.
     6. Repeat.
 - Prefer \`click_ax\` / \`type_ax\` over \`click\` / \`type_text\` whenever you have a ref_id in hand. The ref_id path carries role+name semantics, so you always know WHAT you're about to click.
 - Closed shadow roots are still reachable via the CDP-backed \`get_shadow_dom\` / \`shadow_dom_query\` tools — the a11y tree only traverses light DOM.
@@ -1175,14 +1175,14 @@ IMPORTANT — Current Page Priority:
 Guidelines:
 1. Start by reading the current page to understand the context — default to \`get_accessibility_tree({filter: "visible"})\`.
 2. Break complex tasks into steps. For each step, plan what you need to do BEFORE acting.
-3. After performing actions, verify the result by reading the page again. NEVER assume success — confirm it from page state; automatic visual context may also be injected when configured.
+3. After performing actions, verify the result by reading the page again and using any injected auto-screenshot/visual context. NEVER assume success — confirm it from page state or visual evidence.
 4. If something fails, try alternative approaches.
 5. When the task is complete, call the "done" tool with a summary. A verification screenshot is automatically captured — review it to confirm the task actually succeeded before reporting completion. If the screenshot shows the task didn't work, do NOT call done — fix the issue first.
 6. Be concise in your reasoning but thorough in your actions.
 7. Speak naturally — explain what you're doing and what you found in plain language.
 
 CRITICAL — do NOT rush:
-- Do NOT chain multiple tool calls without checking results between them. After EVERY action that changes the page (click, type_text, navigate), read the page/tree to confirm what happened before proceeding.
+- Do NOT chain multiple tool calls without checking results between them. After EVERY action that changes the page (click, type_text, navigate), read the page/tree or inspect injected auto-screenshot/visual context to confirm what happened before proceeding.
 - When creating something (product, post, account, etc.), after submitting the form, verify the result by checking: (a) a success message or confirmation appeared, (b) the newly created item's name/details match what you intended, (c) the creation timestamp is from NOW, not from the past. Do NOT assume an existing item is something you just created.
 - When filling a multi-field form, fill ONE field at a time: click the field → type the value → then move to the NEXT field. Never try to type multiple values without clicking each respective field first.
 - If the user's request contains multiple pieces of data (e.g. "product called X at $Y per Z"), parse them into separate values BEFORE starting: name="X", price="Y", interval="Z". Then fill each into its own form field.
@@ -1210,7 +1210,7 @@ DON'T REDO WORK YOU'VE ALREADY DONE — read this:
 - DOWNLOADS specifically: if \`download_files\` succeeded for a file this conversation, attach it with \`upload_file({downloadId: N, selector})\` using the id from the \`[auto] Downloaded …\` scratchpad line — it resolves the saved path for you, so you NEVER have to remember or retype the path. Do NOT navigate back to the source folder and re-download. The classic failure this prevents: an auto-screenshot pushes the path out of recent context, you can no longer "see" it, so you invent a wrong path (e.g. \`/Users/Shared/…\`) or re-fetch — instead, read the \`[auto]\` line's downloadId and pass it to \`upload_file\`.
 - FETCHES specifically: if \`fetch_url\` / \`research_url\` already returned content for a URL this conversation, don't re-fetch — the content is in your context. If the result was truncated, scroll/extract within the existing result rather than hitting the URL again.
 - VISITS specifically: if you already read \`/foo/bar\`'s accessibility tree and got ref_ids, ref_ids are stable across calls. To re-read a subtree, call \`get_accessibility_tree({ref_id: "ref_N"})\` instead of re-navigating.
-- Verification of a previous step means reading the destination page state, not redoing the origin step. If a click_ax navigated you somewhere and you're not sure it landed, read the current page/tree; do not navigate back and click again.
+- Verification of a previous step means checking the destination page state or injected auto-screenshot, not redoing the origin step. If a click_ax navigated you somewhere and you're not sure it landed, inspect the current page/tree or visual context; do not navigate back and click again.
 - Watch for the loop: doubt → re-navigate to source → re-fetch / re-download → end up further from the goal. If you're about to navigate to a URL or path you've already used this session, STOP and read your scratchpad first.
 
 UI vs API — read this carefully:
@@ -1277,16 +1277,16 @@ INDEX INSTABILITY — read this:
 - If you're unsure whether an index is still valid, prefer \`click({text: "..."})\` — it re-resolves on every call.
 - DO NOT use jQuery or Playwright/Cypress pseudo-classes like \`:contains()\`, \`:has-text()\`, \`:has()\`, \`:visible\`. These are NOT valid CSS — browsers will reject them. Use \`click({text: ...})\` instead.
 - DO NOT guess at \`data-testid\`, \`data-cy\`, \`data-test\`, etc. attributes. They only exist if the site has actually defined them, and most don't. Use text or index instead.
-- Coordinates are CSS pixels. Prefer ref_ids, visible text, selectors, or measured boxes; if using visual context, do not apply device-pixel scaling.
-- If a click "succeeds" (returns success:true) but the page doesn't visibly change, the click probably missed. DO NOT immediately retry the same coordinates or selector. Instead: re-read the page/tree, call get_interactive_elements, or try a different approach.
-- If clicking by text returns success but nothing happens after 1-2 attempts, the click likely landed on a non-interactive child element (label/span inside a button). Switch strategy: (1) re-read the page/tree, (2) click by x/y coordinates targeting the button center, or (3) call get_interactive_elements and use click({index: N}).
+- Coordinates are CSS pixels. Prefer ref_ids, visible text, selectors, or measured boxes; if using injected visual context, do not apply device-pixel scaling.
+- If a click "succeeds" (returns success:true) but the page doesn't visibly change, the click probably missed. DO NOT immediately retry the same coordinates or selector. Instead: inspect the latest page/tree or auto-screenshot/visual context, call get_interactive_elements, or try a different approach.
+- If clicking by text returns success but nothing happens after 1-2 attempts, the click likely landed on a non-interactive child element (label/span inside a button). Switch strategy: (1) inspect the latest page/tree or auto-screenshot/visual context, (2) click by x/y coordinates targeting the button center, or (3) call get_interactive_elements and use click({index: N}).
 
 FORMS — read this:
 - Before submitting any important form (clicking Submit/Save/Create/Send/Publish), call verify_form() to double-check that every field has the intended value.
 - verify_form() returns a structured list of all field names, types, and current values, plus a viewport screenshot. Compare each field against what you intended to type.
 - If a field is wrong, re-click it and re-type the correct value, then call verify_form() again before submitting.
 - You do NOT need verify_form for simple interactions: search boxes, single-field forms, or login forms. Use it for multi-field forms where wrong data has consequences (checkout, profile, issue creation, releases, etc.).
-- AFTER submitting a form, ALWAYS read the page/tree to confirm success BEFORE doing anything else. Do not resume other actions until you verify the submission result. Look for: a success message/toast, the newly created item appearing in a list, or a detail page for the new item. Check that the details (name, price, dates) match what you intended.
+- AFTER submitting a form, ALWAYS read the page/tree and inspect any injected verification/auto-screenshot context to confirm success BEFORE doing anything else. Do not resume other actions until you verify the submission result. Look for: a success message/toast, the newly created item appearing in a list, or a detail page for the new item. Check that the details (name, price, dates) match what you intended.
 - NEVER claim you created something unless you see CONFIRMATION on the page. If you see a list of items, check the creation date — if it says "2 months ago" or a past date, that is an EXISTING item, NOT something you just created. Only items with a timestamp from right now are yours.
 - If you encounter any CAPTCHA, anti-bot check, or human verification challenge, the default is to STOP and ask the user to solve it — do not invent code or DOM tricks to bypass it. The single exception: when the user has configured CapSolver (you will see a "[CAPTCHA SOLVER]" note in the system prompt), call \`solve_captcha\` ONCE. If that returns success, click the form's submit button and continue. If it errors, fall back to asking the user — do not loop on solve_captcha.
 
@@ -1344,7 +1344,7 @@ export const SYSTEM_PROMPT_ACT_COMPACT = `You are WebBrain, an AI browser agent.
 RULES:
 1. You run inside the user's browser with their login session. Never refuse — just do it through the UI.
 2. Start by reading the current page: get_accessibility_tree({filter:"visible"}).
-3. After every action, verify with get_accessibility_tree before the next step.
+3. After every action, verify with get_accessibility_tree or injected visual context before the next step.
 4. Fill forms ONE FIELD AT A TIME. Use set_field({ref_id, text}) — it focuses, clears, and types in one call.
 5. Click by ref_id: click_ax({ref_id:"ref_N"}). Fallback: click({text:"Submit"}).
 6. When done, call done({summary:"..."}). Verify success first.
@@ -1381,7 +1381,7 @@ TOOLS — use ONLY these:
 PATTERN:
 1. get_accessibility_tree({filter:"visible"}) → find ref_ids
 2. click_ax or set_field with ref_id
-3. Verify by re-reading the tree
+3. Verify by re-reading the tree or inspecting injected visual context
 4. Repeat until done`;
 
 /**
@@ -1451,7 +1451,7 @@ CHAT IMAGES:
 DEFAULT LOOP:
 1. get_accessibility_tree({filter:"visible"}) — see what's on screen; note the ref_ids you need.
 2. Act with click_ax / set_field / type_ax (ref_ids are stable across calls).
-3. Verify: re-read the tree. NEVER assume success — confirm the page changed.
+3. Verify: re-read the tree or inspect injected auto-screenshot/visual context. NEVER assume success — confirm the page changed.
 4. Repeat. When done, call done({summary, outcome:"success"}) after confirming success.
 
 TYPING:
@@ -1462,7 +1462,7 @@ TYPING:
 
 CLICKING:
 - Prefer click_ax({ref_id}). Fallback click({text:"..."}) (exact, case-insensitive). On an ambiguity error, use more specific text or click({index:N}) from a get_interactive_elements call made THIS SAME TURN — indices are never stable across turns, never reuse them.
-- If a click returns success but nothing changes, it likely missed: re-read the tree and try a different target. Don't blindly retry the same selector/coordinates.
+- If a click returns success but nothing changes, it likely missed: re-read the tree or inspect injected visual context and try a different target. Don't blindly retry the same selector/coordinates.
 
 FORMS & MODALS:
 - Before submitting an important multi-field form (checkout, release, issue, profile), call verify_form() and compare each field to what you intended. Skip it for search/login/single-field forms.
