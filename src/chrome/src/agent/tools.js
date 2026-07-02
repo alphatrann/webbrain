@@ -905,6 +905,8 @@ export const ASK_ONLY_TOOLS = [
  * tool calls extracted from raw LLM output.
  */
 export const AGENT_TOOL_NAMES = new Set(AGENT_TOOLS.map(t => t.function.name));
+export const RETIRED_AGENT_TOOL_NAMES = new Set(['screenshot', 'full_page_screenshot']);
+export const RESERVED_AGENT_TOOL_NAMES = new Set([...AGENT_TOOL_NAMES, ...RETIRED_AGENT_TOOL_NAMES]);
 
 const DONE_TOOL_WITH_OUTCOME = {
   type: 'function',
@@ -985,7 +987,7 @@ export function getToolsForMode(mode, opts = {}) {
     base = AGENT_TOOLS;
   }
   if (Array.isArray(opts.skillTools) && opts.skillTools.length) {
-    const seen = new Set(base.map(t => t.function?.name).filter(Boolean));
+    const seen = new Set([...RESERVED_AGENT_TOOL_NAMES, ...base.map(t => t.function?.name).filter(Boolean)]);
     const extras = opts.skillTools.filter(t => {
       const name = t?.function?.name;
       if (!name || seen.has(name)) return false;

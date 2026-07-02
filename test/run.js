@@ -260,6 +260,7 @@ const { Agent: AgentFx } = await import(
 // stays in parity.
 const {
   AGENT_TOOL_NAMES: AGENT_TOOL_NAMES_CH,
+  RESERVED_AGENT_TOOL_NAMES: RESERVED_AGENT_TOOL_NAMES_CH,
   COMPACT_TOOL_NAMES: COMPACT_TOOL_NAMES_CH,
   SYSTEM_PROMPT_ACT: SYSTEM_PROMPT_ACT_CH,
   SYSTEM_PROMPT_ASK: SYSTEM_PROMPT_ASK_CH,
@@ -271,6 +272,7 @@ const {
 );
 const {
   AGENT_TOOL_NAMES: AGENT_TOOL_NAMES_FX,
+  RESERVED_AGENT_TOOL_NAMES: RESERVED_AGENT_TOOL_NAMES_FX,
   COMPACT_TOOL_NAMES: COMPACT_TOOL_NAMES_FX,
   SYSTEM_PROMPT_ACT: SYSTEM_PROMPT_ACT_FX,
   SYSTEM_PROMPT_ASK: SYSTEM_PROMPT_ASK_FX,
@@ -2749,14 +2751,14 @@ test('getToolsForMode: compact mode restricts act tools in both browsers', () =>
 });
 
 test('getToolsForMode: screenshot tools are not model-callable', () => {
-  for (const [label, getTools, agentToolNames, compactNames, prompts] of [
-    ['chrome', getToolsForModeCh, AGENT_TOOL_NAMES_CH, COMPACT_TOOL_NAMES_CH, [
+  for (const [label, getTools, agentToolNames, reservedNames, compactNames, prompts] of [
+    ['chrome', getToolsForModeCh, AGENT_TOOL_NAMES_CH, RESERVED_AGENT_TOOL_NAMES_CH, COMPACT_TOOL_NAMES_CH, [
       ['ask', SYSTEM_PROMPT_ASK_CH],
       ['act:full', SYSTEM_PROMPT_ACT_CH],
       ['act:mid', SYSTEM_PROMPT_ACT_MID_CH],
       ['act:compact', SYSTEM_PROMPT_ACT_COMPACT_CH],
     ]],
-    ['firefox', getToolsForModeFx, AGENT_TOOL_NAMES_FX, COMPACT_TOOL_NAMES_FX, [
+    ['firefox', getToolsForModeFx, AGENT_TOOL_NAMES_FX, RESERVED_AGENT_TOOL_NAMES_FX, COMPACT_TOOL_NAMES_FX, [
       ['ask', SYSTEM_PROMPT_ASK_FX],
       ['act:full', SYSTEM_PROMPT_ACT_FX],
       ['act:mid', SYSTEM_PROMPT_ACT_MID_FX],
@@ -2765,8 +2767,19 @@ test('getToolsForMode: screenshot tools are not model-callable', () => {
   ]) {
     for (const removed of ['screenshot', 'full_page_screenshot']) {
       assert.equal(agentToolNames.has(removed), false, `[${label}] AGENT_TOOL_NAMES must not include ${removed}`);
+      assert.equal(reservedNames.has(removed), true, `[${label}] reserved names must still block retired ${removed}`);
       assert.equal(compactNames.has(removed), false, `[${label}] compact set must not include ${removed}`);
     }
+
+    const collidingSkillTools = [
+      { type: 'function', function: { name: 'screenshot', description: 'Skill collision.', parameters: { type: 'object', properties: {}, required: [] } } },
+      { type: 'function', function: { name: 'full_page_screenshot', description: 'Skill collision.', parameters: { type: 'object', properties: {}, required: [] } } },
+      { type: 'function', function: { name: 'custom_safe_read', description: 'Safe custom skill.', parameters: { type: 'object', properties: {}, required: [] } } },
+    ];
+    const mergedNames = getTools('act', { skillTools: collidingSkillTools }).map(t => t.function?.name).filter(Boolean);
+    assert.equal(mergedNames.includes('screenshot'), false, `[${label}] skill tools must not re-expose retired screenshot`);
+    assert.equal(mergedNames.includes('full_page_screenshot'), false, `[${label}] skill tools must not re-expose retired full_page_screenshot`);
+    assert.equal(mergedNames.includes('custom_safe_read'), true, `[${label}] non-conflicting skill tool should still be exposed`);
 
     for (const [modeLabel, tools] of [
       ['ask', getTools('ask')],
@@ -2813,14 +2826,52 @@ test('agent runtime warnings preserve injected auto-screenshot recovery guidance
 });
 
 test('getToolsForMode: skill tools are exposed only when enabled skills declare them', () => {
-  for (const [label, prefix, getTools, normalizeSkills, buildDefs, buildRegistry] of [
-    ['chrome', 'src/chrome', getToolsForModeCh, normalizeCustomSkillsCh, buildSkillToolDefinitionsCh, buildSkillToolRegistryCh],
-    ['firefox', 'src/firefox', getToolsForModeFx, normalizeCustomSkillsFx, buildSkillToolDefinitionsFx, buildSkillToolRegistryFx],
+  for (const [label, prefix, getTools, normalizeSkills, buildDefs, buildRegistry, reservedNames] of [
+    ['chrome', 'src/chrome', getToolsForModeCh, normalizeCustomSkillsCh, buildSkillToolDefinitionsCh, buildSkillToolRegistryCh, RESERVED_AGENT_TOOL_NAMES_CH],
+    ['firefox', 'src/firefox', getToolsForModeFx, normalizeCustomSkillsFx, buildSkillToolDefinitionsFx, buildSkillToolRegistryFx, RESERVED_AGENT_TOOL_NAMES_FX],
   ]) {
     for (const name of ['read_youtube_transcript', 'resolve_public_media', 'download_public_media']) {
       assert.equal(getTools('ask').some(t => t.function?.name === name), false, `${label}: ${name} should not be static`);
       assert.equal(getTools('act').some(t => t.function?.name === name), false, `${label}: ${name} should not be static in act`);
     }
+
+    const collidingSkills = normalizeSkills([{
+      id: 'screenshot-collision',
+      name: 'Screenshot Collision',
+      content: `# Screenshot Collision
+
+\`\`\`webbrain-tools
+[
+  {
+    "name": "screenshot",
+    "description": "Attempts to collide with a retired built-in.",
+    "endpoint": "https://example.com/screenshot",
+    "method": "GET",
+    "parameters": { "type": "object", "properties": {}, "required": [] }
+  },
+  {
+    "name": "full_page_screenshot",
+    "description": "Attempts to collide with a retired built-in.",
+    "endpoint": "https://example.com/full-page-screenshot",
+    "method": "GET",
+    "parameters": { "type": "object", "properties": {}, "required": [] }
+  },
+  {
+    "name": "custom_safe_read",
+    "description": "A non-conflicting read-only skill tool.",
+    "endpoint": "https://example.com/custom-safe-read",
+    "method": "GET",
+    "parameters": { "type": "object", "properties": {}, "required": [] }
+  }
+]
+\`\`\``,
+    }]);
+    const collisionDefs = buildDefs(collidingSkills, { mode: 'ask', excludeNames: reservedNames });
+    const collisionRegistry = buildRegistry(collidingSkills, { excludeNames: reservedNames });
+    assert.deepEqual(collisionDefs.map(t => t.function?.name), ['custom_safe_read'], `${label}: retired screenshot names should be excluded from skill schemas`);
+    assert.equal(collisionRegistry.has('screenshot'), false, `${label}: retired screenshot should be excluded from skill registry`);
+    assert.equal(collisionRegistry.has('full_page_screenshot'), false, `${label}: retired full_page_screenshot should be excluded from skill registry`);
+    assert.equal(collisionRegistry.has('custom_safe_read'), true, `${label}: safe custom tool should remain registered`);
 
     const skills = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
     const registry = buildRegistry(skills);
@@ -6301,19 +6352,20 @@ test('sidepanel allows only safe slash commands while busy', () => {
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     const locale = fs.readFileSync(path.join(ROOT, localeRel), 'utf8');
-    const allowed = label === 'chrome'
-      ? ['/help', '/show-scratchpad', '/list-schedules', '/screenshot', '/full-page-screenshot', '/export', '/verbose']
-      : ['/help', '/show-scratchpad', '/list-schedules', '/screenshot', '/export', '/verbose'];
+    const oobStart = panel.indexOf('const OUT_OF_BAND_SLASH_COMMANDS = new Set([');
+    const oobEnd = panel.indexOf(']);', oobStart);
+    assert.notEqual(oobStart, -1, `${label}: out-of-band slash command set missing`);
+    assert.notEqual(oobEnd, -1, `${label}: out-of-band slash command set should close`);
+    const oobBlock = panel.slice(oobStart, oobEnd);
+    const allowed = ['/help', '/show-scratchpad', '/list-schedules', '/screenshot', '/export', '/verbose'];
     for (const command of allowed) {
       assert.match(
-        panel,
-        new RegExp(`const OUT_OF_BAND_SLASH_COMMANDS = new Set\\(\\[[\\s\\S]*?'${command}'`),
+        oobBlock,
+        new RegExp(`'${command}'`),
         `${label}: ${command} should be allowed while busy`,
       );
     }
-    if (label === 'firefox') {
-      assert.doesNotMatch(panel, /const OUT_OF_BAND_SLASH_COMMANDS = new Set\(\[[\s\S]*?'\/full-page-screenshot'/, `${label}: /full-page-screenshot should not be allowed while busy`);
-    }
+    assert.doesNotMatch(oobBlock, /'\/full-page-screenshot'/, `${label}: /full-page-screenshot should not be allowed while busy`);
     assert.match(
       panel,
       /function syncSendButtonState\(\) \{[\s\S]*?if \(!isProcessing\) \{[\s\S]*?sendBtn\.disabled = false;[\s\S]*?\}[\s\S]*?const draft = normalizeScreenshotCommandText\(inputEl\?\.value \|\| ''\);[\s\S]*?sendBtn\.disabled = !isOutOfBandSlashDraft\(draft\);[\s\S]*?\}/,
@@ -6336,9 +6388,7 @@ test('sidepanel allows only safe slash commands while busy', () => {
     );
     assert.match(
       locale,
-      label === 'chrome'
-        ? /'sp\.slash\.busy_only_oob': 'Only \/help, \/show-scratchpad, \/list-schedules, \/screenshot, \/full-page-screenshot, \/export, and \/verbose can run while WebBrain is busy\./
-        : /'sp\.slash\.busy_only_oob': 'Only \/help, \/show-scratchpad, \/list-schedules, \/screenshot, \/export, and \/verbose can run while WebBrain is busy\./,
+      /'sp\.slash\.busy_only_oob': 'Only \/help, \/show-scratchpad, \/list-schedules, \/screenshot, \/export, and \/verbose can run while WebBrain is busy\./,
       `${label}: busy slash notice should be localized`,
     );
   }

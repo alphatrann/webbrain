@@ -354,7 +354,6 @@ const OUT_OF_BAND_SLASH_COMMANDS = new Set([
   '/show-scratchpad',
   '/list-schedules',
   '/screenshot',
-  '/full-page-screenshot',
   '/export',
   '/verbose',
 ]);

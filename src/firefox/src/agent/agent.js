@@ -1,4 +1,4 @@
-import { AGENT_TOOLS, AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID } from './tools.js';
+import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID } from './tools.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
 import { isCredentialField, CREDENTIAL_NOTE_STRICT } from './credential-fields.js';
 import { detectProgressAction, formatLedgerSummary, isValidLedgerStatus, ledgerDoneBlock, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
@@ -3279,13 +3279,13 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return buildSkillToolDefinitions(this.customSkills, {
       mode,
       tier: tier || 'full',
-      excludeNames: AGENT_TOOL_NAMES,
+      excludeNames: RESERVED_AGENT_TOOL_NAMES,
     });
   }
 
   _skillToolRegistry() {
     return buildSkillToolRegistry(this.customSkills, {
-      excludeNames: AGENT_TOOL_NAMES,
+      excludeNames: RESERVED_AGENT_TOOL_NAMES,
     });
   }
 
