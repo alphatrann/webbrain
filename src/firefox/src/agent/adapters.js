@@ -806,8 +806,8 @@ const ADAPTERS = [
     match: isMastodonUrl,
     notes: `
 - Mastodon login is per-instance. If a remote profile asks you to sign in / continue before following, don't create an account on that remote server.
-- To follow a remote account from the user's home instance: open the remote profile/status, wait_for_stable, then use the sign-in/interaction popup to enter the home server DOMAIN ONLY (example: mastoturk.org), not a full URL or @handle.
-- After submitting the home domain, expect a redirect to the user's own instance with a remote account URL like \`https://mastoturk.org/@user@remote.example\`; wait_for_stable there, then click Follow on that home-instance page.
+- To hand a remote Mastodon profile/status back to the user's home instance: open the remote profile/status, wait_for_stable, then use the sign-in/interaction popup to enter the home server DOMAIN ONLY (example: mastoturk.org), not a full URL or @handle.
+- After submitting the home domain, expect a redirect to the user's own instance with a remote URL like \`https://mastoturk.org/@user@remote.example\`; wait_for_stable there. For account/profile follow flows, click Follow; for status or authorize_interaction flows, complete the requested action on the home-instance page (reply, boost, favorite, or follow).
 - Do NOT manually synthesize the home-instance URL before this handoff. The home instance may need the remote-profile lookup/redirect to recognize the account.
 - Label variants by version/language: "Sign in to continue", "Continue on your server", "Authorize interaction", "Proceed to follow"; Turkish: Takip et=Follow, sunucu/domain=server domain.
 - If the user's Mastodon home domain is not already known from the conversation or account UI, clarify once before entering anything.`,

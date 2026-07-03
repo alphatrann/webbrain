@@ -714,6 +714,8 @@ test('matches mastodon profile and interaction URLs on any host', () => {
   assert.match(a?.notes || '', /mastoturk\.org/);
   assert.match(a?.notes || '', /Do NOT manually synthesize/);
   assert.match(a?.notes || '', /Takip et=Follow/);
+  assert.match(a?.notes || '', /For account\/profile follow flows, click Follow/);
+  assert.match(a?.notes || '', /status or authorize_interaction flows, complete the requested action/);
 
   // Earlier site-specific adapters should keep precedence for @-style URLs.
   assert.equal(getActiveAdapter('https://www.youtube.com/@OpenAI')?.name, 'youtube');
