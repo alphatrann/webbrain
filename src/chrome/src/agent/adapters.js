@@ -53,6 +53,7 @@ function safeDecodePath(pathname) {
 // Keep bare /@user matching host-agnostic for self-hosted Mastodon, but block
 // known non-Mastodon sites that use the same top-level @profile shape.
 const NON_MASTODON_AT_PROFILE_HOSTS = new Set([
+  'dev.to',
   'ko-fi.com',
   'patreon.com',
   'substack.com',
@@ -61,12 +62,41 @@ const NON_MASTODON_AT_PROFILE_HOSTS = new Set([
   'tiktok.com',
 ]);
 
-function isNonMastodonAtProfileHost(hostname) {
-  const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
-  for (const blockedHost of NON_MASTODON_AT_PROFILE_HOSTS) {
+function normalizedHostname(hostname) {
+  return String(hostname || '').toLowerCase().replace(/\.$/, '');
+}
+
+function hostMatches(hostname, hosts) {
+  const host = normalizedHostname(hostname);
+  for (const blockedHost of hosts) {
     if (host === blockedHost || host.endsWith(`.${blockedHost}`)) return true;
   }
   return false;
+}
+
+function isNonMastodonAtProfileHost(hostname) {
+  return hostMatches(hostname, NON_MASTODON_AT_PROFILE_HOSTS);
+}
+
+function isNonMastodonUsersPathHost(hostname) {
+  const host = normalizedHostname(hostname);
+  return host === 'gitlab.com' || host.startsWith('gitlab.');
+}
+
+function isLikelyMastodonUsersPathHost(hostname) {
+  const host = normalizedHostname(hostname);
+  return host === 'mastodon.social' || host.startsWith('mastodon.');
+}
+
+function isMastodonUsersPath(hostname, path) {
+  const match = /^\/users\/[A-Za-z0-9_]+(\/statuses\/[A-Za-z0-9._:-]+)?\/?$/.exec(path);
+  if (!match) return false;
+  if (isNonMastodonUsersPathHost(hostname)) return false;
+  return Boolean(match[1]) || isLikelyMastodonUsersPathHost(hostname);
+}
+
+function isMastodonRemoteUsersPath(path) {
+  return /^\/users\/[A-Za-z0-9_]+(?:\/statuses\/[A-Za-z0-9._:-]+)?\/?$/.test(path);
 }
 
 function isMastodonRemoteUri(value) {
@@ -77,7 +107,7 @@ function isMastodonRemoteUri(value) {
     if (remote.protocol !== 'http:' && remote.protocol !== 'https:') return false;
     const path = safeDecodePath(remote.pathname);
     return /^\/@[A-Za-z0-9_]+(?:@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?(?:\/\d+)?\/?$/.test(path)
-      || /^\/users\/[A-Za-z0-9_]+(?:\/statuses\/[A-Za-z0-9._:-]+)?\/?$/.test(path);
+      || isMastodonRemoteUsersPath(path);
   } catch (e) {
     return false;
   }
@@ -95,7 +125,7 @@ function isMastodonUrl(url) {
   return /^\/@[A-Za-z0-9_]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:\/\d+)?\/?$/.test(path)
     || /^\/@[A-Za-z0-9_]+(?:@[A-Za-z0-9.-]+\.[A-Za-z]{2,})?\/\d+\/?$/.test(path)
     || (/^\/@[A-Za-z0-9_]+\/?$/.test(path) && !isNonMastodonAtProfileHost(u.hostname))
-    || /^\/users\/[A-Za-z0-9_]+(?:\/statuses\/[A-Za-z0-9._:-]+)?\/?$/.test(path)
+    || isMastodonUsersPath(u.hostname, path)
     || hasMastodonInteractionSignal(u, path);
 }
 
