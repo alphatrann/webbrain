@@ -12154,7 +12154,11 @@ test('progress ledger rejects malformed statuses and normalizes null-like fields
       items: [{ id: 'MarcoSal', label: 'MarcoSal', action: 'follow', status: '「pending」' }],
     });
     assert.equal(bad.success, true);
+    const pendingSession = agent.progressSessions.get(771);
+    assert.ok(pendingSession?.sessionId, `${AgentClass.name}: wrapped pending did not create a progress session`);
     assert.equal(agent.progressLedgers.get(771)[0].status, 'pending');
+    assert.equal(agent.progressLedgers.get(771)[0].sessionId, pendingSession.sessionId);
+    assert.equal(agent._progressRowsForPrompt(771).length, 1);
 
     const unknown = agent._progressUpdate(771, {
       items: [{ id: 'MarcoSal', label: 'MarcoSal', action: 'follow', status: 'done' }],
@@ -12193,7 +12197,7 @@ test('mastodon progress guard blocks false terminal updates until handoff comple
       pageContent: 'heading "Sign in to continue"\ntextbox "Mastodon server domain"',
     }));
 
-    for (const status of ['processed', 'skipped', 'failed']) {
+    for (const status of ['processed', 'skipped', 'failed', '「processed」', '「skipped」', '「failed」']) {
       const blocked = agent._progressUpdate(tabId, {
         items: [{ id: `alice-${status}`, label: 'alice@fosstodon.org', action: 'follow', status }],
       });

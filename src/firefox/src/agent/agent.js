@@ -1,7 +1,7 @@
 import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID } from './tools.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
 import { isCredentialField, CREDENTIAL_NOTE_STRICT } from './credential-fields.js';
-import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isValidLedgerStatus, ledgerDoneBlock, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
+import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isValidLedgerStatus, ledgerDoneBlock, normalizeLedgerStatus, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
 import { buildGithubStargazerProgressItems } from './observers/github-stargazers.js';
 import { analyzeMastodonPage, mastodonHandoffInstruction, mastodonProgressGuard } from './observers/mastodon.js';
 import { isProgressActionAllowed, isProgressIntentActive, normalizeProgressAction, normalizeProgressIntent } from './progress-intent.js';
@@ -3922,7 +3922,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return (Array.isArray(items) ? items : []).map(item => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
       const action = normalizeProgressAction(item.action);
-      return action ? { ...item, action } : item;
+      const status = Object.prototype.hasOwnProperty.call(item, 'status') && isValidLedgerStatus(item.status)
+        ? normalizeLedgerStatus(item.status, '')
+        : '';
+      if (!action && !status) return item;
+      return { ...item, ...(action ? { action } : {}), ...(status ? { status } : {}) };
     });
   }
 
@@ -4281,7 +4285,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const safeAction = /^(?:follow|unfollow|star|unstar|watch|unwatch|connect|subscribe|unsubscribe|save|unsave|like|unlike|block|unblock|report|send|submit|add|remove)$/.test(action)
       ? action
       : 'item-action';
-    const status = isValidLedgerStatus(item.status) ? String(item.status).toLowerCase() : 'acted';
+    const status = isValidLedgerStatus(item.status) ? normalizeLedgerStatus(item.status, 'acted') : 'acted';
     return `[PROGRESS AUTO-RECORDED: clicked ${safeAction} item is now status=${status}. Its id is recorded only inside the untrusted tool result as data. After collecting the needed result for the clicked item, call progress_update to mark it processed, skipped, or failed.]`;
   }
 
