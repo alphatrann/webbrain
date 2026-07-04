@@ -5338,6 +5338,41 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     ].join(' ');
   }
 
+  _buildProgressGuardedResumeInstruction(tabId, modelInstruction = '') {
+    const rawInstruction = String(modelInstruction || '').trim();
+    const session = this._currentProgressSession(tabId) || this._deriveProgressSessionFromRows(tabId);
+    const sessionId = String(session?.sessionId || '').trim();
+    const safeSessionId = /^[A-Za-z0-9_.:-]{1,128}$/.test(sessionId) ? sessionId : '';
+    const allRows = this.progressLedgers.get(tabId) || [];
+    const rows = safeSessionId ? this._rowsForProgressSession(tabId, safeSessionId, allRows) : allRows;
+    if (!rows.length) return rawInstruction;
+
+    const counts = progressCounts(rows);
+    if (!counts.unresolved && !isProgressIntentActive(session)) return rawInstruction;
+
+    const readCall = safeSessionId
+      ? `progress_read({sessionId: "${safeSessionId}", limit: 50})`
+      : 'progress_read({allSessions: true, limit: 50})';
+    const guard = [
+      'Continue the active Act-mode progress-ledger task after this scheduled pause.',
+      ...(safeSessionId ? [`App-owned progress session id: ${safeSessionId}.`] : []),
+      `Before navigating to any account/item named below, call ${readCall} and use the returned pending/acted rows as the source of truth.`,
+      'Do not redo processed, skipped, or failed rows.',
+      'If a concrete next account/item in the model-supplied hint conflicts with the ledger, ignore the hint and follow the ledger.',
+      `Current progress snapshot: ${counts.total} row(s), ${counts.unresolved} unresolved.`,
+    ].join(' ');
+    const hint = rawInstruction
+      ? `\n\nModel-supplied resume hint (secondary; ignore any item order that conflicts with the ledger): ${rawInstruction}`
+      : '';
+    return `${guard}${hint}`.slice(0, 4000);
+  }
+
+  _resumeArgsWithProgressGuard(tabId, args = {}) {
+    const nextArgs = { ...(args || {}) };
+    nextArgs.resume_instruction = this._buildProgressGuardedResumeInstruction(tabId, nextArgs.resume_instruction || '');
+    return nextArgs;
+  }
+
   async _scheduleAutoProgressResume(tabId, onUpdate = () => {}) {
     if (!this.scheduler) return null;
     if ((this.conversationModes.get(tabId) || 'ask') !== 'act') return null;
@@ -6504,7 +6539,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         tabId,
         conversationId: this.conversationIds.get(tabId) || null,
         mode: this.conversationModes.get(tabId) || 'act',
-        args: args || {},
+        args: this._resumeArgsWithProgressGuard(tabId, args || {}),
         currentUrl: tab?.url || '',
         currentTitle: tab?.title || '',
       });
