@@ -14141,6 +14141,53 @@ test('schedule_resume ignores unscoped rows stamped with a different task key', 
   }
 });
 
+test('schedule_resume mixed migration state: foreign stamped row does not starve unstamped legacy rows', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 823 : 824;
+    agent.conversationModes.set(tabId, 'act');
+    agent.conversationIds.set(tabId, 'conv_mixed_migration_resume_guard');
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: "follow 100 accounts i don't follow yet here" },
+    ]);
+    agent.progressLedgers.set(tabId, [
+      { id: 'other_task_row', label: 'other_task_row', action: 'follow', status: 'pending', taskKey: 'tk_00000000' },
+      { id: 'legacy_pending', label: 'legacy_pending', action: 'follow', status: 'pending' },
+    ]);
+    assert.notEqual(agent._progressTaskKeyHash(tabId), 'tk_00000000', `${AgentClass.name}: setup precondition — stamped row must belong to a different task`);
+
+    const guarded = agent._legacyUnscopedProgressRowsForResumeGuard(tabId, agent.progressLedgers.get(tabId));
+    assert.deepEqual(guarded.map(r => r.id), ['legacy_pending'], `${AgentClass.name}: unstamped current-task rows must still pass the lexical heuristic despite a foreign stamped row`);
+
+    let scheduledPayload = null;
+    agent.setScheduler({
+      createResumeJob: async payload => {
+        scheduledPayload = payload;
+        return {
+          success: true,
+          scheduled: true,
+          jobId: 'resume_mixed_migration_test',
+          scheduledAt: '2026-06-30T09:01:30.000Z',
+          summary: 'Resume scheduled.',
+          done: true,
+        };
+      },
+    });
+
+    const result = await agent.executeTool(tabId, 'schedule_resume', {
+      after_seconds: 60,
+      reason: '60-second pause between follows',
+      resume_instruction: 'Next account to follow is @eXeDK.',
+    });
+
+    assert.equal(result.success, true, `${AgentClass.name}: mixed-state schedule_resume should succeed`);
+    const instruction = scheduledPayload?.args?.resume_instruction || '';
+    assert.match(instruction, /^Continue the active Act-mode progress-ledger task/, `${AgentClass.name}: mixed-state guard should still attach via the legacy heuristic`);
+    assert.match(instruction, /1 row\(s\), 1 unresolved/, `${AgentClass.name}: guard counts must exclude the foreign stamped row`);
+  }
+});
+
 test('progress_update refuses to reopen terminal rows unless reopen:true', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });

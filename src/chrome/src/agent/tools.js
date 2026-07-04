@@ -754,6 +754,7 @@ export const AGENT_TOOLS = [
             },
           },
           sessionId: { type: 'string', description: 'Optional advanced override. Usually omit this; the app assigns rows to the active progress session.' },
+          reopen: { type: 'boolean', description: 'Rows already processed/skipped/failed are locked; status changes back to pending/acted are ignored with a warning. Pass true only when the user explicitly asked to redo those rows.' },
         },
         required: ['items'],
       },

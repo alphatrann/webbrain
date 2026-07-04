@@ -5408,16 +5408,24 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     if (!rows.length) return [];
     if (this._currentTaskIsProgressContinuation(tabId)) return rows;
 
-    const stamped = rows.filter(row => String(row.taskKey || '').trim());
-    if (stamped.length) {
-      const taskKey = this._progressTaskKeyHash(tabId);
-      return taskKey ? stamped.filter(row => row.taskKey === taskKey) : [];
+    // Mixed migration state: stamped rows are matched by exact taskKey, while
+    // pre-stamp rows still go through the lexical heuristic — a stamped row
+    // from another task must not starve unstamped rows of the current task.
+    const taskKey = this._progressTaskKeyHash(tabId);
+    const unstamped = rows.filter(row => !String(row.taskKey || '').trim());
+    let keepUnstamped = false;
+    if (unstamped.length) {
+      const latestTask = this._progressTaskTextKey(this._latestTaskText(tabId));
+      const originalTask = this._progressTaskTextKey(this._originalTaskText(tabId));
+      keepUnstamped = !!latestTask
+        && latestTask === originalTask
+        && this._taskTextLooksLikeLegacyProgressWork(latestTask, unstamped);
     }
-
-    const latestTask = this._progressTaskTextKey(this._latestTaskText(tabId));
-    const originalTask = this._progressTaskTextKey(this._originalTaskText(tabId));
-    if (!latestTask || latestTask !== originalTask) return [];
-    return this._taskTextLooksLikeLegacyProgressWork(latestTask, rows) ? rows : [];
+    return rows.filter(row => {
+      const rowKey = String(row.taskKey || '').trim();
+      if (rowKey) return !!taskKey && rowKey === taskKey;
+      return keepUnstamped;
+    });
   }
 
   _progressRowsForResumeGuard(tabId) {
