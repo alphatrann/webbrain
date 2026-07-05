@@ -10990,7 +10990,7 @@ test('agent requires fresh submit confirmation across modes and prompt sources',
 
       agent.conversationModes.set(tabId, scenario.mode);
       agent._ensureGateSetting = async () => {};
-      agent._skipPermissionGate = true;
+      agent._skipPermissionGate = false;
       agent._currentUrl = async () => 'https://host.com/account';
       agent._recordProgressObservation = async () => null;
       agent._autoRecordProgressAction = () => null;
@@ -10998,7 +10998,7 @@ test('agent requires fresh submit confirmation across modes and prompt sources',
       agent._persist = () => {};
       if (scenario.scheduled) {
         agent.setScheduledRunPolicy(tabId, {
-          requireConsequentialConfirmation: false,
+          requireConsequentialConfirmation: true,
           autoApprovePlanReview: true,
         });
       }
@@ -11046,6 +11046,70 @@ test('agent requires fresh submit confirmation across modes and prompt sources',
       assert.equal(denied.submitConfirmationRequired, true, `${AgentClass.name} ${scenario.label}: result did not mark submit confirmation requirement`);
       assert.equal(denied.denied, true, `${AgentClass.name} ${scenario.label}: submit denial missing denied flag`);
       assert.ok(updates.some(update => /Form submission blocked/.test(update.data?.message || '')), `${AgentClass.name} ${scenario.label}: missing submit blocked warning`);
+    }
+  }
+});
+
+test('submit confirmation honors scheduled and global gate bypasses', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    for (const scenario of [
+      { label: 'global gate disabled', skipGate: true },
+      { label: 'scheduled confirmations disabled', scheduledBypass: true },
+    ]) {
+      const agent = new AgentClass({ getVisionProvider: async () => null });
+      const tabId = 5108 + (scenario.skipGate ? 1 : 2);
+      let executed = false;
+      let submitProbeCalls = 0;
+      const messages = [];
+
+      agent._ensureGateSetting = async () => {};
+      agent._skipPermissionGate = !!scenario.skipGate;
+      agent._currentUrl = async () => 'https://host.com/form';
+      agent._recordProgressObservation = async () => null;
+      agent._autoRecordProgressAction = () => null;
+      agent._progressWarningForAction = () => '';
+      agent._persist = () => {};
+      if (scenario.scheduledBypass) {
+        agent.setScheduledRunPolicy(tabId, {
+          requireConsequentialConfirmation: false,
+          autoApprovePlanReview: true,
+        });
+      }
+      agent._detectLikelySubmitAction = async () => {
+        submitProbeCalls += 1;
+        return {
+          isSubmit: true,
+          host: 'host.com',
+          tool: 'click_ax',
+          reason: 'submit button/control activation',
+        };
+      };
+      agent._promptSubmitConfirmation = async () => {
+        throw new Error(`${AgentClass.name} ${scenario.label}: submit prompt should be bypassed`);
+      };
+      agent.executeTool = async () => {
+        executed = true;
+        return { success: true, submitted: true };
+      };
+
+      await agent._executeToolBatch(
+        tabId,
+        [{
+          id: `tool_submit_bypass_${scenario.label}`,
+          function: { name: 'click_ax', arguments: '{"ref_id":"ref_submit"}' },
+        }],
+        messages,
+        () => {},
+        { supportsVision: false },
+        '',
+        new Set(['click_ax']),
+        1,
+      );
+
+      assert.equal(submitProbeCalls, 0, `${AgentClass.name} ${scenario.label}: submit probe should be skipped before bypassed prompts`);
+      assert.equal(executed, true, `${AgentClass.name} ${scenario.label}: bypassed submit tool should execute`);
+      assert.equal(messages.length, 1, `${AgentClass.name} ${scenario.label}: expected one tool result`);
+      assert.equal(JSON.parse(messages[0].content).success, true, `${AgentClass.name} ${scenario.label}: tool result should be successful`);
     }
   }
 });

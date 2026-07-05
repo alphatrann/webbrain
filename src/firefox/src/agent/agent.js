@@ -1540,45 +1540,47 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         onUpdate('warning', { message: 'API mutation blocked until /allow-api is enabled.' });
         continue;
       }
-      const submitConfirmation = await this._detectLikelySubmitAction(tabId, fnName, fnArgs);
-      if (submitConfirmation?.isSubmit) {
-        const choice = await this._promptSubmitConfirmation(tabId, submitConfirmation, onUpdate);
-        if (choice === null) {
-          const value = '[Stopped by user before executing requested tool calls.]';
-          this._appendSyntheticToolResults(tabId, toolCalls, toolIndex, messages, onUpdate, step, () => ({
-            success: false,
-            cancelled: true,
-            error: value,
-          }));
-          onUpdate('warning', { message: 'Stopped by user.' });
-          return { action: 'abort', value };
-        }
-        if (choice !== 'once') {
-          messages.push({
-            role: 'tool',
-            tool_call_id: tc.id,
-            content: JSON.stringify({
-              success: false,
-              denied: true,
-              submitConfirmationRequired: true,
-              error: `The user did not confirm submitting the form on ${submitConfirmation.host || 'this site'}. Do NOT retry this submit action unless the user explicitly confirms it.`,
-            }),
-          });
-          onUpdate('warning', { message: 'Form submission blocked until the user confirms.' });
-          continue;
-        }
-        // The submit-specific card is fresher and more precise than the
-        // generic click/submit capability prompt. Keep any other required
-        // capabilities (e.g. TYPE for set_field), but avoid a duplicate click
-        // card for same-frame submissions. iframe_click is different: the
-        // generic gate is what identifies and fail-closes the target frame host
-        // when urlFilter is missing, so keep CLICK for that tool.
-        if (fnName !== 'iframe_click') {
-          capabilities = capabilities.filter(capability => capability !== Capability.CLICK);
-        }
-      }
       const scheduledPolicy = this.scheduledRunPolicies.get(tabId);
       const scheduledBypassesGate = scheduledPolicy?.requireConsequentialConfirmation === false;
+      if (!this._skipPermissionGate && !scheduledBypassesGate) {
+        const submitConfirmation = await this._detectLikelySubmitAction(tabId, fnName, fnArgs);
+        if (submitConfirmation?.isSubmit) {
+          const choice = await this._promptSubmitConfirmation(tabId, submitConfirmation, onUpdate);
+          if (choice === null) {
+            const value = '[Stopped by user before executing requested tool calls.]';
+            this._appendSyntheticToolResults(tabId, toolCalls, toolIndex, messages, onUpdate, step, () => ({
+              success: false,
+              cancelled: true,
+              error: value,
+            }));
+            onUpdate('warning', { message: 'Stopped by user.' });
+            return { action: 'abort', value };
+          }
+          if (choice !== 'once') {
+            messages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: JSON.stringify({
+                success: false,
+                denied: true,
+                submitConfirmationRequired: true,
+                error: `The user did not confirm submitting the form on ${submitConfirmation.host || 'this site'}. Do NOT retry this submit action unless the user explicitly confirms it.`,
+              }),
+            });
+            onUpdate('warning', { message: 'Form submission blocked until the user confirms.' });
+            continue;
+          }
+          // The submit-specific card is fresher and more precise than the
+          // generic click/submit capability prompt. Keep any other required
+          // capabilities (e.g. TYPE for set_field), but avoid a duplicate click
+          // card for same-frame submissions. iframe_click is different: the
+          // generic gate is what identifies and fail-closes the target frame host
+          // when urlFilter is missing, so keep CLICK for that tool.
+          if (fnName !== 'iframe_click') {
+            capabilities = capabilities.filter(capability => capability !== Capability.CLICK);
+          }
+        }
+      }
       if (capabilities.length && !this._skipPermissionGate && !scheduledBypassesGate) {
         await this.permissions.hydrate();
         const curUrl = await this._currentUrl(tabId);
