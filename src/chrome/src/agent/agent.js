@@ -1,7 +1,7 @@
 import { AGENT_TOOLS, AGENT_TOOL_NAMES, RESERVED_AGENT_TOOL_NAMES, getToolsForMode, SYSTEM_PROMPT_ASK, SYSTEM_PROMPT_ACT, SYSTEM_PROMPT_ACT_COMPACT, SYSTEM_PROMPT_ACT_MID } from './tools.js';
 import { URL_FAMILY_TOOLS, resourceBucket, bucketArgsKey } from './loop-bucket.js';
 import { isCredentialField, CREDENTIAL_NOTE_STRICT } from './credential-fields.js';
-import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isBlockedLedgerDowngrade, isValidLedgerStatus, ledgerDoneBlock, normalizeLedgerStatus, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
+import { detectProgressAction, formatLedgerRow, formatLedgerSummary, isBlockedLedgerDowngrade, isTerminalLedgerStatus, isValidLedgerStatus, ledgerDoneBlock, normalizeLedgerStatus, progressCounts, selectLedgerRows, unresolvedLedgerRows, upsertLedgerItems } from './progress-ledger.js';
 import { buildGithubStargazerProgressItems } from './observers/github-stargazers.js';
 import { analyzeMastodonPage, mastodonHandoffInstruction, mastodonProgressGuard } from './observers/mastodon.js';
 import { isProgressActionAllowed, isProgressIntentActive, normalizeProgressAction, normalizeProgressIntent } from './progress-intent.js';
@@ -5593,6 +5593,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     });
   }
 
+  _dedupeProgressRowsForResumeGuard(rows = []) {
+    const byId = new Map();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!row || typeof row !== 'object') continue;
+      const key = String(row.id || '').trim().toLowerCase();
+      if (!key) continue;
+      const previous = byId.get(key);
+      if (!previous) {
+        byId.set(key, row);
+        continue;
+      }
+      const rowTerminal = isTerminalLedgerStatus(row.status);
+      const previousTerminal = isTerminalLedgerStatus(previous.status);
+      if (rowTerminal && !previousTerminal) {
+        byId.set(key, row);
+      } else if (rowTerminal === previousTerminal && !String(row.sessionId || row.session_id || '').trim()) {
+        byId.set(key, row);
+      }
+    }
+    return Array.from(byId.values());
+  }
+
   _progressRowsForResumeGuard(tabId) {
     const taskKey = this._progressTaskKeyHash(tabId);
     let session = this._currentProgressSession(tabId, { readOnly: true });
@@ -5620,6 +5642,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     } else if (legacyRows.length) {
       const keep = new Set([...rows, ...legacyRows]);
       rows = allRows.filter(row => keep.has(row));
+      rows = this._dedupeProgressRowsForResumeGuard(rows);
       readSessionId = '';
     }
     return { rows, sessionId: readSessionId };

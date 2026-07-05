@@ -14753,6 +14753,35 @@ test('progress_update adoption preserves terminal legacy status against non-term
   }
 });
 
+test('resume guard de-duplicates terminal legacy rows before resuming', async () => {
+  for (const AgentClass of [AgentCh, AgentFx]) {
+    const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
+    const tabId = AgentClass === AgentCh ? 859 : 860;
+    agent.conversationModes.set(tabId, 'act');
+    agent._persist = () => {};
+    agent.conversations.set(tabId, [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: "follow 100 accounts i don't follow yet here" },
+    ]);
+    const taskKey = agent._progressTaskKeyHash(tabId);
+    allowProgress(agent, tabId, ['follow']);
+    const sessionId = agent.progressSessions.get(tabId)?.sessionId;
+    assert.ok(sessionId, `${AgentClass.name}: setup did not create a progress session`);
+    agent.progressLedgers.set(tabId, [
+      { id: 'octocat', label: 'octocat', action: 'follow', status: 'processed', taskKey },
+      { id: 'octocat', label: 'octocat', action: 'follow', status: 'pending', taskKey, sessionId },
+    ]);
+
+    const read = agent._progressRead(tabId, { currentTaskOnly: true });
+    assert.equal(read.counts.total, 1, `${AgentClass.name}: duplicate legacy/scoped rows should collapse before reads`);
+    assert.equal(read.counts.unresolved, 0, `${AgentClass.name}: terminal legacy status should suppress the scoped pending copy`);
+    assert.deepEqual(read.rows.map(row => [row.id, row.status]), [['octocat', 'processed']], `${AgentClass.name}: currentTaskOnly should expose the terminal row`);
+
+    const rawInstruction = 'Check whether the unrelated deployment is ready.';
+    assert.equal(agent._buildProgressGuardedResumeInstruction(tabId, rawInstruction), rawInstruction, `${AgentClass.name}: terminal legacy duplicate must not create a resume guard`);
+  }
+});
+
 test('progress_update refuses to reopen terminal rows unless reopen:true', async () => {
   for (const AgentClass of [AgentCh, AgentFx]) {
     const agent = new AgentClass({ getActive: () => ({ contextWindow: 128000, supportsVision: false }) });
