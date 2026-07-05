@@ -273,6 +273,28 @@ const { buildRecommendedActions: buildRecommendedActionsCh, shouldShowRecommende
 const { buildRecommendedActions: buildRecommendedActionsFx, shouldShowRecommendedActions: shouldShowRecommendedActionsFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/ui/recommended-actions.js').replace(/\\/g, '/')
 );
+const {
+  recordSuccessfulTask: recordStoreReviewSuccessCh,
+  shouldShowPrompt: shouldShowStoreReviewCh,
+  markDismissed: markStoreReviewDismissedCh,
+  markPromptShown: markStoreReviewShownCh,
+  getStoreUrl: getStoreUrlCh,
+  buildFeedbackUrl: buildFeedbackUrlCh,
+  positiveRating: positiveStoreReviewCh,
+  MIN_SUCCESSFUL_TASKS: STORE_REVIEW_MIN_TASKS,
+  MIN_DAYS_BEFORE_PROMPT: STORE_REVIEW_MIN_DAYS,
+  DISMISS_COOLDOWN_DAYS: STORE_REVIEW_DISMISS_DAYS,
+} = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/ui/store-review-prompt.js').replace(/\\/g, '/')
+);
+const {
+  recordSuccessfulTask: recordStoreReviewSuccessFx,
+  shouldShowPrompt: shouldShowStoreReviewFx,
+  getStoreUrl: getStoreUrlFx,
+  buildFeedbackUrl: buildFeedbackUrlFx,
+} = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/ui/store-review-prompt.js').replace(/\\/g, '/')
+);
 const { Agent: AgentCh } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/agent/agent.js').replace(/\\/g, '/')
 );
@@ -17878,5 +17900,66 @@ for (const [label, build] of [['chrome', buildRecommendedActionsCh], ['firefox',
     assert.ok(!noPrice.some((a) => a.id === 'compare-price'), 'no compare-price without a shopping/price signal');
   });
 }
+
+// ── Store review prompt (#208) ───────────────────────────────────────────────
+const MS_DAY = 24 * 60 * 60 * 1000;
+
+test('store-review-prompt: eligibility requires successful tasks and cooling period', () => {
+  const now = Date.now();
+  const eligibleBase = {
+    successfulTasks: STORE_REVIEW_MIN_TASKS,
+    firstSuccessAt: now - (STORE_REVIEW_MIN_DAYS + 1) * MS_DAY,
+  };
+  assert.equal(shouldShowStoreReviewCh(eligibleBase, { now, onboardingComplete: true }), true);
+  assert.equal(shouldShowStoreReviewCh(eligibleBase, { now, onboardingComplete: false }), false);
+  assert.equal(shouldShowStoreReviewCh({ ...eligibleBase, successfulTasks: STORE_REVIEW_MIN_TASKS - 1 }, { now, onboardingComplete: true }), false);
+  assert.equal(shouldShowStoreReviewCh({ ...eligibleBase, firstSuccessAt: now - MS_DAY }, { now, onboardingComplete: true }), false);
+
+  let state = recordStoreReviewSuccessCh(null, { now });
+  for (let i = 1; i < STORE_REVIEW_MIN_TASKS; i += 1) {
+    state = recordStoreReviewSuccessCh(state, { now });
+  }
+  assert.equal(state.successfulTasks, STORE_REVIEW_MIN_TASKS);
+  assert.equal(shouldShowStoreReviewCh(state, { now: now + STORE_REVIEW_MIN_DAYS * MS_DAY, onboardingComplete: true }), true);
+
+  const dismissed = markStoreReviewDismissedCh(eligibleBase, { now });
+  assert.equal(
+    shouldShowStoreReviewCh(dismissed, { now: now + (STORE_REVIEW_DISMISS_DAYS - 1) * MS_DAY, onboardingComplete: true }),
+    false,
+  );
+  const shown = markStoreReviewShownCh(eligibleBase, { now });
+  assert.equal(shouldShowStoreReviewCh(shown, { now, onboardingComplete: true }), false);
+});
+
+test('store-review-prompt: positive ratings route to store URLs; feedback URL encodes rating', () => {
+  assert.equal(positiveStoreReviewCh(4), true);
+  assert.equal(positiveStoreReviewCh(3), false);
+  assert.match(getStoreUrlCh('chrome'), /chromewebstore\.google\.com/);
+  assert.match(getStoreUrlFx('firefox'), /addons\.mozilla\.org/);
+  const url = buildFeedbackUrlCh({ rating: 2, comment: 'Needs work on forms' });
+  assert.match(url, /github\.com\/webbrain-one\/webbrain\/issues\/new/);
+  assert.match(decodeURIComponent(url), /Rating:\*\* 2\/5/);
+  assert.match(decodeURIComponent(url), /Needs work on forms/);
+  assert.equal(buildFeedbackUrlCh({ rating: 2 }), buildFeedbackUrlFx({ rating: 2 }));
+});
+
+test('sidepanel wires store review prompt after successful agent completion', () => {
+  for (const [label, panelRel, htmlRel, localeRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/src/ui/sidepanel.html', 'src/chrome/src/ui/locales/en.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/src/ui/sidepanel.html', 'src/firefox/src/ui/locales/en.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const html = fs.readFileSync(path.join(ROOT, htmlRel), 'utf8');
+    const locale = fs.readFileSync(path.join(ROOT, localeRel), 'utf8');
+    assert.match(html, /id="store-review-prompt"/, `${label}: store review card should live in chat container`);
+    assert.match(html, /id="store-review-step-rating"/, `${label}: rating step should exist`);
+    assert.match(html, /id="store-review-step-positive"/, `${label}: positive step should exist`);
+    assert.match(html, /id="store-review-step-negative"/, `${label}: negative step should exist`);
+    assert.match(panel, /from '\.\/store-review-prompt\.js'/, `${label}: sidepanel should import store-review-prompt`);
+    assert.match(panel, /void maybePromptStoreReviewAfterSuccess\(\)/, `${label}: successful completion should trigger review prompt check`);
+    assert.match(panel, /getStoreUrl\(getExtensionStoreKey\(\)\)/, `${label}: store link should pick chrome vs firefox URL`);
+    assert.match(locale, /'sp\.review\.rating_title'/, `${label}: review strings should be localized`);
+  }
+});
 
 await run();

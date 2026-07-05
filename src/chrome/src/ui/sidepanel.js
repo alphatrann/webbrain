@@ -8,6 +8,20 @@ import { sanitizeMarkdownLinks } from './markdown-link.js';
 import { applyMode, loadMode, watch } from './theme.js';
 import { buildRecommendedActions, shouldShowRecommendedActions } from './recommended-actions.js';
 import { createContextMenuPromptHandler } from './context-menu-prompts.js';
+import {
+  STORAGE_KEY as STORE_REVIEW_STORAGE_KEY,
+  recordSuccessfulTask,
+  shouldShowPrompt as shouldShowStoreReviewPrompt,
+  markPromptShown,
+  markDismissed,
+  markRated,
+  markReviewOpened,
+  markFeedbackSubmitted,
+  positiveRating,
+  getStoreUrl,
+  buildFeedbackUrl,
+  normalizeState as normalizeStoreReviewState,
+} from './store-review-prompt.js';
 
 // Hydrate the theme from chrome.storage.local (the inline <head> bootstrap
 // only sees localStorage; if the user changes the theme on another device
@@ -323,6 +337,8 @@ const queuedMessagesEl = document.getElementById('queued-messages');
 const recommendedActionsEl = document.getElementById('recommended-actions');
 const recommendedActionsToggleEl = document.getElementById('recommended-actions-toggle');
 const recommendedActionsListEl = document.getElementById('recommended-actions-list');
+const storeReviewEl = document.getElementById('store-review-prompt');
+const storeReviewFeedbackEl = document.getElementById('store-review-feedback');
 const scheduledJobsEl = document.getElementById('scheduled-jobs');
 const stopBtn = document.getElementById('btn-stop');
 const RECOMMENDED_ACTIONS_COLLAPSED_KEY = 'recommendedActionsCollapsed';
@@ -550,7 +566,129 @@ function triggerCompletionConfetti() {
 function notifyCompletion({ success = false } = {}) {
   playCompletionSound();
   if (success) triggerCompletionConfetti();
+  if (success) void maybePromptStoreReviewAfterSuccess();
 }
+
+function getExtensionStoreKey() {
+  return (typeof browser !== 'undefined' && typeof browser.runtime?.getBrowserInfo === 'function')
+    ? 'firefox'
+    : 'chrome';
+}
+
+let storeReviewState = normalizeStoreReviewState(null);
+let storeReviewSelectedRating = null;
+
+async function loadStoreReviewState() {
+  const stored = await chrome.storage.local.get(STORE_REVIEW_STORAGE_KEY);
+  storeReviewState = normalizeStoreReviewState(stored[STORE_REVIEW_STORAGE_KEY]);
+  return storeReviewState;
+}
+
+async function saveStoreReviewState(next) {
+  storeReviewState = normalizeStoreReviewState(next);
+  await chrome.storage.local.set({ [STORE_REVIEW_STORAGE_KEY]: storeReviewState }).catch(() => {});
+}
+
+function hideStoreReviewPrompt() {
+  storeReviewEl?.classList.add('hidden');
+}
+
+function showStoreReviewStep(step) {
+  for (const id of ['rating', 'positive', 'negative', 'thanks']) {
+    document.getElementById(`store-review-step-${id}`)?.classList.toggle('hidden', id !== step);
+  }
+  storeReviewEl?.classList.remove('hidden');
+  scrollToBottom();
+}
+
+async function openStoreReviewPrompt() {
+  if (!storeReviewEl || isProcessing) return;
+  storeReviewSelectedRating = null;
+  if (storeReviewFeedbackEl) storeReviewFeedbackEl.value = '';
+  document.querySelectorAll('.store-review-star').forEach((btn) => btn.classList.remove('active'));
+  showStoreReviewStep('rating');
+  applyDOMTranslations(storeReviewEl);
+  const next = markPromptShown(storeReviewState);
+  await saveStoreReviewState(next);
+}
+
+async function maybePromptStoreReviewAfterSuccess() {
+  if (isProcessing || !storeReviewEl) return;
+  await loadStoreReviewState();
+  const onboardingStored = await chrome.storage.local.get('onboardingComplete');
+  const updated = recordSuccessfulTask(storeReviewState);
+  await saveStoreReviewState(updated);
+  if (shouldShowStoreReviewPrompt(updated, { onboardingComplete: !!onboardingStored.onboardingComplete })) {
+    await openStoreReviewPrompt();
+  }
+}
+
+async function handleStoreReviewRating(rating) {
+  storeReviewSelectedRating = rating;
+  document.querySelectorAll('.store-review-star').forEach((btn) => {
+    btn.classList.toggle('active', Number(btn.dataset.rating) <= rating);
+  });
+  const next = markRated(storeReviewState, rating);
+  await saveStoreReviewState(next);
+  showStoreReviewStep(positiveRating(rating) ? 'positive' : 'negative');
+}
+
+async function dismissStoreReview({ neverAsk = false } = {}) {
+  const next = markDismissed(storeReviewState, { neverAsk });
+  await saveStoreReviewState(next);
+  hideStoreReviewPrompt();
+}
+
+async function handleStoreReviewOpenStore() {
+  try {
+    chrome.tabs.create({ url: getStoreUrl(getExtensionStoreKey()) });
+  } catch { /* ignore */ }
+  const next = markReviewOpened(storeReviewState);
+  await saveStoreReviewState(next);
+  showStoreReviewStep('thanks');
+  setTimeout(() => hideStoreReviewPrompt(), 2500);
+}
+
+async function handleStoreReviewSendFeedback() {
+  const rating = storeReviewSelectedRating || storeReviewState.rating || 3;
+  const comment = storeReviewFeedbackEl?.value || '';
+  try {
+    chrome.tabs.create({ url: buildFeedbackUrl({ rating, comment }) });
+  } catch { /* ignore */ }
+  const next = markFeedbackSubmitted(storeReviewState);
+  await saveStoreReviewState(next);
+  showStoreReviewStep('thanks');
+  setTimeout(() => hideStoreReviewPrompt(), 2500);
+}
+
+function initStoreReviewPrompt() {
+  if (!storeReviewEl) return;
+  applyDOMTranslations(storeReviewEl);
+  storeReviewEl.querySelectorAll('.store-review-star').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const rating = Number(btn.dataset.rating);
+      if (Number.isFinite(rating)) void handleStoreReviewRating(rating);
+    });
+  });
+  document.getElementById('store-review-open-store')?.addEventListener('click', () => {
+    void handleStoreReviewOpenStore();
+  });
+  document.getElementById('store-review-send-feedback')?.addEventListener('click', () => {
+    void handleStoreReviewSendFeedback();
+  });
+  document.getElementById('store-review-not-now')?.addEventListener('click', () => {
+    void dismissStoreReview({ neverAsk: false });
+  });
+  document.getElementById('store-review-never')?.addEventListener('click', () => {
+    void dismissStoreReview({ neverAsk: true });
+  });
+  document.getElementById('store-review-close')?.addEventListener('click', () => {
+    void dismissStoreReview({ neverAsk: false });
+  });
+}
+
+initStoreReviewPrompt();
+void loadStoreReviewState();
 
 function isSuccessfulDoneUpdate(update) {
   const result = update?.data?.result;
