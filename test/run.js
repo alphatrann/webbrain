@@ -17906,6 +17906,8 @@ const MS_DAY = 24 * 60 * 60 * 1000;
 
 test('store-review-prompt: eligibility requires successful tasks and cooling period', () => {
   const now = Date.now();
+  assert.equal(STORE_REVIEW_MIN_DAYS, 0);
+  assert.equal(STORE_REVIEW_DISMISS_DAYS, 7);
   const eligibleBase = {
     successfulTasks: STORE_REVIEW_MIN_TASKS,
     firstSuccessAt: now - (STORE_REVIEW_MIN_DAYS + 1) * MS_DAY,
@@ -17913,7 +17915,7 @@ test('store-review-prompt: eligibility requires successful tasks and cooling per
   assert.equal(shouldShowStoreReviewCh(eligibleBase, { now, onboardingComplete: true }), true);
   assert.equal(shouldShowStoreReviewCh(eligibleBase, { now, onboardingComplete: false }), false);
   assert.equal(shouldShowStoreReviewCh({ ...eligibleBase, successfulTasks: STORE_REVIEW_MIN_TASKS - 1 }, { now, onboardingComplete: true }), false);
-  assert.equal(shouldShowStoreReviewCh({ ...eligibleBase, firstSuccessAt: now - MS_DAY }, { now, onboardingComplete: true }), false);
+  assert.equal(shouldShowStoreReviewCh({ ...eligibleBase, firstSuccessAt: now }, { now, onboardingComplete: true }), true);
 
   let state = recordStoreReviewSuccessCh(null, { now });
   for (let i = 1; i < STORE_REVIEW_MIN_TASKS; i += 1) {

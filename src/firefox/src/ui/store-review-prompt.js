@@ -10,8 +10,8 @@ export const STORE_URLS = {
 export const FEEDBACK_ISSUES_URL = 'https://github.com/webbrain-one/webbrain/issues/new';
 
 export const MIN_SUCCESSFUL_TASKS = 3;
-export const MIN_DAYS_BEFORE_PROMPT = 3;
-export const DISMISS_COOLDOWN_DAYS = 30;
+export const MIN_DAYS_BEFORE_PROMPT = 0;
+export const DISMISS_COOLDOWN_DAYS = 7;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
