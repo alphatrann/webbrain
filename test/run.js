@@ -12432,9 +12432,9 @@ test('submit detector source covers submit controls, Enter, set_field, iframes, 
     assert.match(agent, /toolName === 'press_keys'[\s\S]*isSubmitControl\(target\)[\s\S]*Enter key on a submit button\/control[\s\S]*isFormField\(target\)/, `${label}: focused submit controls should be checked before form fields for Enter`);
     assert.match(agent, /name === 'iframe_click' \|\| name === 'press_keys'/, `${label}: iframe/all-frame probing missing`);
     assert.match(agent, /allFrames/, `${label}: iframe equivalent submit checks should use allFrames`);
-    assert.match(agent, /requestSubmit\|submit\|click/, `${label}: execute_js submit/click reference detection missing`);
-    assert.match(agent, /\\b\(\?:requestSubmit\|submit\|click\)\\b/, `${label}: execute_js should fail closed on submit/click method references`);
-    assert.match(agent, /execute_js references submit\/requestSubmit\/click/, `${label}: execute_js submit-click reason missing`);
+    assert.doesNotMatch(agent, /name === 'execute_js' && !this\._executeJsLooksLikeFormSubmit/, `${label}: execute_js should not depend on incomplete static submit regexes`);
+    assert.match(agent, /if \(name === 'execute_js'\) \{[\s\S]*execute_js can run page JavaScript/, `${label}: execute_js should fail closed before generic execute_js grants`);
+    assert.match(agent, /JavaScript execution can trigger form submission through dynamic code/, `${label}: execute_js submit confirmation summary missing`);
     assert.match(agent, /__wb_resolve_click_target_for_submit_probe/, `${label}: submit probe should reuse content click-index resolver when available`);
     assert.match(agent, /const deepQuerySelector = \(root, selector\)/, `${label}: selector submit probing should pierce open shadow roots`);
     assert.match(agent, /return deepQuerySelector\(doc, args\.selector\)/, `${label}: selector submit probing should use the deep selector resolver`);

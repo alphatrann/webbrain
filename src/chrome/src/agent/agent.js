@@ -4096,11 +4096,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     return 'deny'; // 'deny', or anything unexpected → fail safe
   }
 
-  _executeJsLooksLikeFormSubmit(code) {
-    const text = String(code || '');
-    return /\b(?:requestSubmit|submit|click)\b/i.test(text);
-  }
-
   _fallbackSubmitConfirmationInfo(host, tool, reason, summary = '') {
     const normalizedHost = normalizeHost(host || '') || String(host || '').trim() || 'this site';
     return {
@@ -4124,10 +4119,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const keys = JSON.stringify(args?.key ?? args?.keys ?? '').toLowerCase();
       if (!/\b(enter|return)\b/.test(keys)) return null;
     }
-    if (name === 'execute_js' && !this._executeJsLooksLikeFormSubmit(args?.code ?? args?.script ?? args?.js)) {
-      return null;
-    }
-
     let currentUrl = '';
     const fallbackHostForPrompt = async () => {
       if (!currentUrl) {
@@ -4139,8 +4130,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return this._fallbackSubmitConfirmationInfo(
         await fallbackHostForPrompt(),
         name,
-        'execute_js references submit/requestSubmit/click',
-        'JavaScript code appears to reference submit(), requestSubmit(), or click() methods that can submit a form.'
+        'execute_js can run page JavaScript',
+        'JavaScript execution can trigger form submission through dynamic code, so it requires fresh submit confirmation.'
       );
     }
 
