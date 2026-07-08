@@ -6385,6 +6385,44 @@ test('sidepanel hydrates restored history ids before fallback records', () => {
   }
 });
 
+test('sidepanel deletes durable history when clearing conversations', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(panel, /import \{ deleteChatHistoryRecord, saveChatHistoryRecord \} from '\.\/chat-history-store\.js';/, `${label}: sidepanel should import durable history deletion`);
+
+    const resetMatch = panel.match(/async function resetChatHistoryStateForTab\(tabId\) \{([\s\S]*?)\n\}/);
+    assert.ok(resetMatch, `${label}: resetChatHistoryStateForTab should be async`);
+    const resetBody = resetMatch[1];
+    const recordSetIdx = resetBody.indexOf('const recordIdsToDelete = new Set([');
+    const activeRecordIdx = resetBody.indexOf('chatHistoryRecordIdsByTab.get(numericTabId)');
+    const conversationRecordIdx = resetBody.indexOf('chatHistoryConversationIdsByTab.get(numericTabId)');
+    const deleteIdx = resetBody.indexOf('deleteChatHistoryRecord(recordId)');
+    const mapDeleteIdx = resetBody.indexOf('chatHistoryRecordIdsByTab.delete(numericTabId)');
+    assert.notEqual(recordSetIdx, -1, `${label}: reset should collect durable record ids before clearing maps`);
+    assert.notEqual(activeRecordIdx, -1, `${label}: reset should delete the active history record id`);
+    assert.notEqual(conversationRecordIdx, -1, `${label}: reset should also delete the conversation id record`);
+    assert.notEqual(deleteIdx, -1, `${label}: reset should delete IndexedDB history records`);
+    assert.notEqual(mapDeleteIdx, -1, `${label}: reset should clear in-memory history ids`);
+    assert.equal(recordSetIdx < deleteIdx && activeRecordIdx < deleteIdx && conversationRecordIdx < deleteIdx && deleteIdx < mapDeleteIdx, true, `${label}: durable history must be deleted before in-memory ids are dropped`);
+
+    const helperStart = panel.indexOf('async function renderClearedConversationForTab(tabId)');
+    assert.notEqual(helperStart, -1, `${label}: clear helper should be async`);
+    const helperBody = panel.slice(helperStart, panel.indexOf('refreshScheduledJobs({', helperStart));
+    assert.match(helperBody, /await resetChatHistoryStateForTab\(tabId\);[\s\S]*?if \(currentTabId !== tabId\) return;/, `${label}: clear helper should delete durable history before visible-tab guards`);
+
+    const resetIdx = panel.indexOf('// /reset');
+    const resetSlashBody = panel.slice(resetIdx, panel.indexOf('// /screenshot', resetIdx));
+    assert.match(resetSlashBody, /await sendToBackground\('clear_conversation', \{ tabId \}\);[\s\S]*?await renderClearedConversationForTab\(tabId\);/, `${label}: /reset should await durable history deletion`);
+
+    const clearStart = panel.indexOf("clearBtn.addEventListener('click', async () => {");
+    const clearBody = panel.slice(clearStart, panel.indexOf('\n});', clearStart) + 4);
+    assert.match(clearBody, /await sendToBackground\('clear_conversation', \{ tabId \}\);[\s\S]*?await renderClearedConversationForTab\(tabId\);/, `${label}: clear button should await durable history deletion`);
+  }
+});
+
 test('chrome sidepanel persists tab chat to the tab captured before debounce', () => {
   const panel = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/sidepanel.js'), 'utf8');
   const start = panel.indexOf('function schedulePersist() {');
@@ -6472,7 +6510,7 @@ test('chrome sidepanel serializes tab-chat storage writes with clears and reads'
   assert.match(panel, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?await chrome\.storage\.session\.set\(\{ \[key\]: html \}\)\.catch\(\(\) => \{\}\);/, 'chrome: tab-chat persistence should be serialized through the queue');
   const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
   assert.notEqual(clearStart, -1, 'chrome: clearCachedTabChat missing');
-  const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nfunction renderClearedConversationForTab', clearStart) + 2);
+  const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nasync function renderClearedConversationForTab', clearStart) + 2);
   assert.match(clearBody, /tabChats\.delete\(tabId\);/, 'chrome: clearing tab chat should delete the cached HTML before queuing storage removal');
   assert.match(clearBody, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{/, 'chrome: clearing tab chat should be serialized through the queue');
   assert.match(clearBody, /return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?tabChats\.delete\(numericTabId\);[\s\S]*?chrome\.storage\.session\?\.remove\(TAB_CHAT_PREFIX \+ numericTabId\)/, 'chrome: queued clears should delete stale HTML re-cached by older queued writes before removing storage');
@@ -6512,7 +6550,7 @@ test('chrome sidepanel cancels stale tab-chat persistence when clearing a tab', 
 
   const clearStart = panel.indexOf('function clearCachedTabChat(tabId) {');
   assert.notEqual(clearStart, -1, 'chrome: clearCachedTabChat missing');
-  const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nfunction renderClearedConversationForTab', clearStart) + 2);
+  const clearBody = panel.slice(clearStart, panel.indexOf('\n}\n\nasync function renderClearedConversationForTab', clearStart) + 2);
   assert.match(
     clearBody,
     /if \(persistTimer && persistTimerTabId === tabId\) \{[\s\S]*?clearTimeout\(persistTimer\);[\s\S]*?persistTimer = null;[\s\S]*?persistTimerTabId = null;[\s\S]*?\}[\s\S]*?tabChats\.delete\(tabId\);[\s\S]*?return enqueueTabChatOperation\(tabId, async \(numericTabId\) => \{[\s\S]*?tabChats\.delete\(numericTabId\);[\s\S]*?chrome\.storage\.session\?\.remove\(TAB_CHAT_PREFIX \+ numericTabId\)/,

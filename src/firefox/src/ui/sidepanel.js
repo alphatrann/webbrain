@@ -8,7 +8,7 @@ import { sanitizeMarkdownLinks } from './markdown-link.js';
 import { applyMode, loadMode, watch } from './theme.js';
 import { buildRecommendedActions, shouldShowRecommendedActions } from './recommended-actions.js';
 import { createContextMenuPromptHandler } from './context-menu-prompts.js';
-import { saveChatHistoryRecord } from './chat-history-store.js';
+import { deleteChatHistoryRecord, saveChatHistoryRecord } from './chat-history-store.js';
 import {
   STORAGE_KEY as STORE_REVIEW_STORAGE_KEY,
   recordSuccessfulTask,
@@ -975,7 +975,7 @@ async function flushChatHistorySnapshot(tabId, options = {}) {
   await persistChatHistorySnapshot(tabId, options);
 }
 
-function resetChatHistoryStateForTab(tabId) {
+async function resetChatHistoryStateForTab(tabId) {
   const numericTabId = Number(tabId);
   if (!Number.isFinite(numericTabId)) return;
   if (historyPersistTimer && sameTabId(historyPersistTimerTabId, numericTabId)) {
@@ -983,6 +983,15 @@ function resetChatHistoryStateForTab(tabId) {
     historyPersistTimer = null;
     historyPersistTimerTabId = null;
   }
+  const recordIdsToDelete = new Set([
+    chatHistoryRecordIdsByTab.get(numericTabId),
+    chatHistoryConversationIdsByTab.get(numericTabId),
+  ].filter(Boolean));
+  await Promise.all(Array.from(recordIdsToDelete).map((recordId) => (
+    deleteChatHistoryRecord(recordId).catch((error) => {
+      console.warn('[WebBrain] failed to delete chat history:', error);
+    })
+  )));
   chatHistoryRecordIdsByTab.delete(numericTabId);
   chatHistoryConversationIdsByTab.delete(numericTabId);
   chatHistoryCreatedAtByTab.delete(numericTabId);
@@ -1225,7 +1234,7 @@ function drainQueuedComposerMessageForCurrentTab() {
   return true;
 }
 
-function renderClearedConversationForTab(tabId) {
+async function renderClearedConversationForTab(tabId) {
   clearCachedTabChat(tabId);
   saveInputDraftForTab(tabId, '');
   clearPendingAttachmentsForTab(tabId);
@@ -1233,7 +1242,7 @@ function renderClearedConversationForTab(tabId) {
   if (sameTabId(currentTabId, tabId)) releaseRetryAttachmentsInTree(messagesEl);
   clearRetryAttachmentsForTab(tabId);
   setApiMutationsAllowedForTab(tabId, false);
-  resetChatHistoryStateForTab(tabId);
+  await resetChatHistoryStateForTab(tabId);
   if (currentTabId !== tabId) return;
   renderedTabId = tabId;
   messagesEl.innerHTML = '';
@@ -3130,7 +3139,7 @@ async function parseSlashCommands(text, tabId = currentTabId) {
   // /reset — clear conversation (same as clear button)
   if (/^\/reset\b\s*/i.test(text)) {
     await sendToBackground('clear_conversation', { tabId });
-    renderClearedConversationForTab(tabId);
+    await renderClearedConversationForTab(tabId);
     return '';
   }
 
@@ -5229,7 +5238,7 @@ clearBtn.addEventListener('click', async () => {
   const tabId = currentTabId;
   if (!window.confirm(t('sp.clear.confirm'))) return;
   await sendToBackground('clear_conversation', { tabId });
-  renderClearedConversationForTab(tabId);
+  await renderClearedConversationForTab(tabId);
 });
 
 providerSelect.addEventListener('change', async () => {
