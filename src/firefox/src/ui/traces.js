@@ -75,6 +75,17 @@ async function refresh() {
   renderList();
 }
 
+async function ensureRunLoaded(runId) {
+  if (!runId || allRuns.some((run) => run.runId === runId)) return true;
+  const run = await getRun(runId).catch(() => null);
+  if (!run) return false;
+  allRuns.push(run);
+  allRuns.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  rebuildConversationMap();
+  countPill.textContent = t(allRuns.length === 1 ? 'tr.run' : 'tr.runs', { n: allRuns.length });
+  return true;
+}
+
 function renderList() {
   const needle = filterText.value.trim().toLowerCase();
   const modelFilter = filterModel.value;
@@ -581,7 +592,7 @@ document.addEventListener('visibilitychange', () => {
 // polling if the freshly-loaded data shows a live run.
 (async () => {
   await refresh();
-  if (initialRunId && allRuns.some((run) => run.runId === initialRunId)) {
+  if (initialRunId && await ensureRunLoaded(initialRunId)) {
     selectedRunId = initialRunId;
     renderList();
     await renderRun(initialRunId);

@@ -3306,7 +3306,7 @@ async function sendMessage(extraChatParams = {}) {
   }
 
   if (!retryOptions) text = await parseSlashCommands(text, tabId);
-  const renderToCurrentTab = currentTabId === tabId;
+  let renderToCurrentTab = sameTabId(currentTabId, tabId) && sameTabId(renderedTabId, tabId);
   if (!renderToCurrentTab) {
     if (text) saveInputDraftForTab(tabId, text);
     return false;
@@ -3318,6 +3318,11 @@ async function sendMessage(extraChatParams = {}) {
     return;
   }
   await prepareChatHistoryForTurn(tabId, modeForSend);
+  renderToCurrentTab = sameTabId(currentTabId, tabId) && sameTabId(renderedTabId, tabId);
+  if (!renderToCurrentTab) {
+    if (text) saveInputDraftForTab(tabId, text);
+    return false;
+  }
 
   let assistantEl = null;
   const attachmentsForSend = retryOptions
@@ -4394,17 +4399,23 @@ async function continueAgent() {
   const tabId = currentTabId;
   const modeForSend = agentMode;
   clearActiveChatPayloadForTab(tabId);
-  document.querySelectorAll('.continue-bar').forEach(el => el.remove());
 
   isProcessing = true;
   abortRequested = false;
   syncSendButtonState();
 
-  const assistantEl = addMessage('assistant', '');
-  currentAssistantEl = assistantEl;
-  showActivity(t('sp.activity.continuing'));
+  let assistantEl = null;
 
   try {
+    await prepareChatHistoryForTurn(tabId, modeForSend);
+    if (!sameTabId(currentTabId, tabId) || !sameTabId(renderedTabId, tabId)) return false;
+
+    document.querySelectorAll('.continue-bar').forEach(el => el.remove());
+
+    assistantEl = addMessage('assistant', '');
+    currentAssistantEl = assistantEl;
+    showActivity(t('sp.activity.continuing'));
+
     const res = await sendToBackground('continue', {
       tabId,
       mode: modeForSend,
@@ -4426,11 +4437,11 @@ async function continueAgent() {
       }
     }
   } catch (e) {
-    if (currentTabId === tabId && !abortRequested) {
+    if (currentTabId === tabId && assistantEl && !abortRequested) {
       addMessage('error', t('sp.error_prefix', { msg: e.message }));
     }
   } finally {
-    if (currentTabId === tabId) finalizeSteps(assistantEl);
+    if (currentTabId === tabId && assistantEl) finalizeSteps(assistantEl);
     clearAssistantTextStreamState(assistantEl);
     isProcessing = false;
     abortRequested = false;
