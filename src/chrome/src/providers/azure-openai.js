@@ -22,6 +22,10 @@ export class AzureOpenAIProvider extends BaseLLMProvider {
     return String(this.config.model || '').trim();
   }
 
+  get model() {
+    return this.deployment;
+  }
+
   get apiVersion() {
     return String(this.config.apiVersion || '2024-10-21').trim();
   }
@@ -77,6 +81,14 @@ export class AzureOpenAIProvider extends BaseLLMProvider {
     return !(this.config.omitToolsWhenImagesPresent && this._messagesContainImage(messages));
   }
 
+  _addStreamUsageOptions(body) {
+    if (this.config.supportsStreamUsageOptions === false) return;
+    const streamOptions = body.stream_options && typeof body.stream_options === 'object'
+      ? body.stream_options
+      : {};
+    body.stream_options = { ...streamOptions, include_usage: true };
+  }
+
   async chat(messages, options = {}) {
     const body = { messages, stream: false };
     this._addTemperature(body, options);
@@ -127,6 +139,7 @@ export class AzureOpenAIProvider extends BaseLLMProvider {
     if (options.extraBody && typeof options.extraBody === 'object') {
       Object.assign(body, options.extraBody);
     }
+    this._addStreamUsageOptions(body);
 
     const url = this._chatUrl();
     let res;

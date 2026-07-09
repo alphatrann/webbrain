@@ -469,6 +469,8 @@ export default {
   'st.provider.field.output_cost_per_million': 'Estimated output cost ($ / 1M tokens)',
   'st.provider.field.model_loaded_hint': 'leave blank to use loaded model',
   'st.provider.field.model_custom': 'Custom...',
+  'st.provider.field.deployment_name': 'Deployment name',
+  'st.provider.field.api_version': 'API version',
 
   'st.vision.heading': 'Vision',
   'st.vision.desc': 'If set, screenshots are sent to this model for reading the page, while the active provider handles planning and tool calls. Leave blank to use the active provider for vision too. OpenAI-compatible endpoints only.',
