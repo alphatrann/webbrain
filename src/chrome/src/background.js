@@ -30,6 +30,20 @@ import {
   setProviderManager as setRecorderProviderManager,
 } from './recorder/host.js';
 import { normalizeOllamaLaunchHandoff } from './ollama-handoff.js';
+import {
+  USER_MEMORY_AUTO_CAPTURE_KEY,
+  USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS,
+  USER_MEMORY_ENABLED_KEY,
+  USER_MEMORY_EXTRACTION_QUEUE_KEY,
+  USER_MEMORY_MAX_PROMPT_CHARS_KEY,
+  USER_MEMORY_STORAGE_KEY,
+  applyUserMemoryExtractionOperations,
+  buildUserMemoryExtractionMessages,
+  createUserMemoryStore,
+  normalizeUserMemoryStore,
+  normalizeUserMemoryText,
+  parseUserMemoryExtractionResult,
+} from './agent/user-memory.js';
 
 /**
  * WebBrain Service Worker (Background Script)
@@ -38,6 +52,7 @@ import { normalizeOllamaLaunchHandoff } from './ollama-handoff.js';
 
 const providerManager = new ProviderManager();
 const agent = new Agent(providerManager);
+const userMemoryStore = createUserMemoryStore(chrome.storage.local);
 const scheduler = new ScheduledJobManager({
   api: chrome,
   agent,
@@ -139,6 +154,227 @@ async function loadProfile() {
   // exist yet. Refresh only fires on user-initiated setting changes below.
 }
 loadProfile();
+
+function normalizeUserMemoryMaxPromptChars(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0
+    ? Math.min(10000, Math.floor(n))
+    : USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS;
+}
+
+async function syncAgentUserMemoryFromStorage() {
+  const [store, settings] = await Promise.all([
+    userMemoryStore.load(),
+    chrome.storage.local.get([
+      USER_MEMORY_ENABLED_KEY,
+      USER_MEMORY_MAX_PROMPT_CHARS_KEY,
+    ]),
+  ]);
+  agent.setUserMemory({
+    enabled: settings[USER_MEMORY_ENABLED_KEY] !== false,
+    records: store.records,
+    maxPromptChars: normalizeUserMemoryMaxPromptChars(settings[USER_MEMORY_MAX_PROMPT_CHARS_KEY]),
+  });
+  return store;
+}
+const userMemoryReady = syncAgentUserMemoryFromStorage().catch(() => {});
+
+const USER_MEMORY_EXTRACTION_MAX_QUEUE = 10;
+const USER_MEMORY_EXTRACTION_DELAY_MS = 1200;
+let userMemoryExtractionDrainPromise = null;
+let userMemoryExtractionTimer = null;
+let userMemoryExtractionQueueLock = Promise.resolve();
+let userMemoryStoreLock = Promise.resolve();
+
+async function loadUserMemoryExtractionQueue() {
+  const stored = await chrome.storage.local.get(USER_MEMORY_EXTRACTION_QUEUE_KEY);
+  const queue = Array.isArray(stored[USER_MEMORY_EXTRACTION_QUEUE_KEY])
+    ? stored[USER_MEMORY_EXTRACTION_QUEUE_KEY]
+    : [];
+  return queue.slice(-USER_MEMORY_EXTRACTION_MAX_QUEUE);
+}
+
+async function saveUserMemoryExtractionQueue(queue) {
+  await chrome.storage.local.set({
+    [USER_MEMORY_EXTRACTION_QUEUE_KEY]: Array.isArray(queue)
+      ? queue.slice(-USER_MEMORY_EXTRACTION_MAX_QUEUE)
+      : [],
+  });
+}
+
+async function isUserMemoryExtractionEnabled() {
+  const stored = await chrome.storage.local.get([
+    USER_MEMORY_ENABLED_KEY,
+    USER_MEMORY_AUTO_CAPTURE_KEY,
+  ]);
+  return stored[USER_MEMORY_ENABLED_KEY] !== false
+    && stored[USER_MEMORY_AUTO_CAPTURE_KEY] === true;
+}
+
+async function withUserMemoryExtractionQueueLock(task) {
+  const run = userMemoryExtractionQueueLock.then(task, task);
+  userMemoryExtractionQueueLock = run.catch(() => {});
+  return run;
+}
+
+async function updateUserMemoryExtractionQueue(updater) {
+  return withUserMemoryExtractionQueueLock(async () => {
+    const queue = await loadUserMemoryExtractionQueue();
+    const nextQueue = await updater(queue);
+    await saveUserMemoryExtractionQueue(Array.isArray(nextQueue) ? nextQueue : queue);
+    return nextQueue;
+  });
+}
+
+async function clearUserMemoryExtractionQueue() {
+  await updateUserMemoryExtractionQueue(() => []);
+}
+
+function shouldClearUserMemoryExtractionQueueForChanges(changes) {
+  return changes[USER_MEMORY_ENABLED_KEY]?.newValue === false
+    || (changes[USER_MEMORY_AUTO_CAPTURE_KEY] && changes[USER_MEMORY_AUTO_CAPTURE_KEY].newValue !== true);
+}
+
+async function claimUserMemoryExtractionJob(jobId) {
+  if (!jobId) return false;
+  let claimed = false;
+  await updateUserMemoryExtractionQueue((queue) => {
+    const index = queue.findIndex((job) => job?.id === jobId);
+    if (index >= 0) {
+      queue.splice(index, 1);
+      claimed = true;
+    }
+    return queue;
+  });
+  return claimed;
+}
+
+async function peekUserMemoryExtractionJob() {
+  let job = null;
+  await withUserMemoryExtractionQueueLock(async () => {
+    const queue = await loadUserMemoryExtractionQueue();
+    job = queue[0] || null;
+  });
+  return job;
+}
+
+async function removeUserMemoryExtractionJob(jobId) {
+  if (!jobId) return;
+  await updateUserMemoryExtractionQueue((queue) => {
+    return queue.filter((job) => job?.id !== jobId);
+  });
+}
+
+async function markUserMemoryExtractionJobFailed(jobId) {
+  if (!jobId) return;
+  await updateUserMemoryExtractionQueue((queue) => {
+    return queue.map((job) => {
+      if (job?.id !== jobId) return job;
+      const attempts = Number(job.attempts || 0);
+      if (attempts >= 1) return null;
+      return { ...job, attempts: attempts + 1 };
+    }).filter(Boolean);
+  });
+}
+
+async function withUserMemoryStoreLock(task) {
+  const run = userMemoryStoreLock.then(task, task);
+  userMemoryStoreLock = run.catch(() => {});
+  return run;
+}
+
+async function applyUserMemoryExtractionOperationsToCurrentStore(jobId, operations) {
+  return withUserMemoryStoreLock(async () => {
+    if (!await isUserMemoryExtractionEnabled()) {
+      await clearUserMemoryExtractionQueue();
+      return { changed: false, claimed: false, disabled: true };
+    }
+    if (!await claimUserMemoryExtractionJob(jobId)) return { changed: false, claimed: false };
+    const latestStore = await userMemoryStore.load();
+    const applied = applyUserMemoryExtractionOperations(latestStore, operations);
+    if (applied.changed) applied.store = await userMemoryStore.save(applied.store);
+    return { ...applied, claimed: true };
+  });
+}
+
+function scheduleUserMemoryExtractionDrain(delayMs = USER_MEMORY_EXTRACTION_DELAY_MS) {
+  if (userMemoryExtractionTimer) clearTimeout(userMemoryExtractionTimer);
+  userMemoryExtractionTimer = setTimeout(() => {
+    userMemoryExtractionTimer = null;
+    drainUserMemoryExtractionQueue().catch((error) => {
+      console.warn('[WebBrain] user-memory extraction failed:', error);
+    });
+  }, delayMs);
+}
+
+async function enqueueUserMemoryExtraction(payload = {}) {
+  if (!await isUserMemoryExtractionEnabled()) return { queued: false, reason: 'disabled' };
+  const userText = normalizeUserMemoryText(payload.userText, 2000);
+  const assistantText = normalizeUserMemoryText(payload.assistantText, 2000);
+  if (!userText || !assistantText) return { queued: false, reason: 'empty' };
+  await updateUserMemoryExtractionQueue((queue) => {
+    queue.push({
+      id: `memjob_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      userText,
+      assistantText,
+      mode: ['ask', 'act', 'dev'].includes(payload.mode) ? payload.mode : 'ask',
+      succeeded: payload.succeeded !== false,
+      attempts: 0,
+      createdAt: Date.now(),
+    });
+    return queue;
+  });
+  scheduleUserMemoryExtractionDrain();
+  return { queued: true };
+}
+
+function enqueueUserMemoryExtractionAfterTurn(payload) {
+  queueMicrotask(() => {
+    enqueueUserMemoryExtraction(payload).catch((error) => {
+      console.warn('[WebBrain] failed to enqueue user-memory extraction:', error);
+    });
+  });
+}
+
+async function drainUserMemoryExtractionQueue() {
+  if (userMemoryExtractionDrainPromise) return userMemoryExtractionDrainPromise;
+  userMemoryExtractionDrainPromise = (async () => {
+    while (true) {
+      if (!await isUserMemoryExtractionEnabled()) return;
+      const job = await peekUserMemoryExtractionJob();
+      if (!job) return;
+
+      try {
+        await customSkillsReady;
+        if (providerManager.providers.size === 0) await providerManager.load();
+        const store = await userMemoryStore.load();
+        const provider = providerManager.getActive();
+        const costState = agent._newCostRunState();
+        const result = await agent._chatWithCostAllowance(provider, buildUserMemoryExtractionMessages({
+          userText: job.userText,
+          assistantText: job.assistantText,
+          memories: store.records,
+          mode: job.mode,
+          succeeded: job.succeeded,
+        }), { maxTokens: 600, temperature: 0 }, costState);
+        const operations = parseUserMemoryExtractionResult(result?.content || '');
+        const applied = await applyUserMemoryExtractionOperationsToCurrentStore(job.id, operations);
+        if (applied.changed) await syncAgentUserMemoryFromStorage();
+      } catch (error) {
+        if (agent._isCostAllowanceError?.(error)) {
+          await removeUserMemoryExtractionJob(job.id);
+          return;
+        }
+        await markUserMemoryExtractionJobFailed(job.id);
+        scheduleUserMemoryExtractionDrain();
+        return;
+      }
+    }
+  })().finally(() => {
+    userMemoryExtractionDrainPromise = null;
+  });
+  return userMemoryExtractionDrainPromise;
+}
 
 async function loadDefaultSkillRecords() {
   const records = [];
@@ -294,6 +530,8 @@ chrome.runtime.onInstalled.addListener(async () => {
   createContextMenus();
   await providerManager.load();
   await loadMaxSteps();
+  await syncAgentUserMemoryFromStorage().catch(() => {});
+  scheduleUserMemoryExtractionDrain(5000);
   console.log('[WebBrain] Extension installed, providers loaded.');
 });
 
@@ -302,6 +540,8 @@ chrome.runtime.onStartup?.addListener(async () => {
   createContextMenus();
   await providerManager.load();
   await loadMaxSteps();
+  await syncAgentUserMemoryFromStorage().catch(() => {});
+  scheduleUserMemoryExtractionDrain(5000);
 });
 
 // Listen for setting changes
@@ -336,6 +576,24 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes.profileText) {
     agent.profileText = changes.profileText.newValue || '';
     refreshPrompts = true;
+  }
+  if (changes[USER_MEMORY_ENABLED_KEY] || changes[USER_MEMORY_MAX_PROMPT_CHARS_KEY] || changes[USER_MEMORY_STORAGE_KEY]) {
+    const memoryUpdate = {};
+    if (changes[USER_MEMORY_ENABLED_KEY]) {
+      memoryUpdate.enabled = changes[USER_MEMORY_ENABLED_KEY].newValue !== false;
+    }
+    if (changes[USER_MEMORY_MAX_PROMPT_CHARS_KEY]) {
+      memoryUpdate.maxPromptChars = normalizeUserMemoryMaxPromptChars(changes[USER_MEMORY_MAX_PROMPT_CHARS_KEY].newValue);
+    }
+    if (changes[USER_MEMORY_STORAGE_KEY]) {
+      memoryUpdate.records = normalizeUserMemoryStore(changes[USER_MEMORY_STORAGE_KEY].newValue).records;
+    }
+    agent.setUserMemory(memoryUpdate);
+  }
+  if (shouldClearUserMemoryExtractionQueueForChanges(changes)) {
+    clearUserMemoryExtractionQueue().catch((error) => {
+      console.warn('[WebBrain] failed to clear user-memory extraction queue:', error);
+    });
   }
   if (changes[CUSTOM_SKILLS_STORAGE_KEY]) {
     agent.customSkills = normalizeCustomSkills(changes[CUSTOM_SKILLS_STORAGE_KEY].newValue);
@@ -961,7 +1219,7 @@ async function handleMessage(msg, sender) {
     // Agent toggles and prompt add-ons hydrate once at SW boot — await those
     // promises so the first chat can't race ahead of hydration, without a
     // storage round-trip on every message.
-    await Promise.all([planBeforeActReady, planReviewReady, customSkillsReady]);
+    await Promise.all([planBeforeActReady, planReviewReady, customSkillsReady, userMemoryReady]);
   }
 
   switch (msg.action) {
@@ -988,6 +1246,84 @@ async function handleMessage(msg, sender) {
           beforeFinalizeRecording: loadProvidersForRecordingFinalize,
         }),
       };
+
+    // --- User Memory ---
+    case 'get_user_memory': {
+      const store = await userMemoryStore.load();
+      const settings = await chrome.storage.local.get([
+        USER_MEMORY_ENABLED_KEY,
+        USER_MEMORY_AUTO_CAPTURE_KEY,
+        USER_MEMORY_MAX_PROMPT_CHARS_KEY,
+      ]);
+      return {
+        ok: true,
+        store,
+        records: store.records,
+        enabled: settings[USER_MEMORY_ENABLED_KEY] !== false,
+        autoCaptureEnabled: settings[USER_MEMORY_AUTO_CAPTURE_KEY] === true,
+        maxPromptChars: normalizeUserMemoryMaxPromptChars(settings[USER_MEMORY_MAX_PROMPT_CHARS_KEY]),
+      };
+    }
+
+    case 'add_user_memory': {
+      const result = await withUserMemoryStoreLock(() => userMemoryStore.add(msg.text, {
+        kind: msg.kind,
+        scope: msg.scope,
+        source: 'manual',
+        confidence: 1,
+      }));
+      if (result.changed) await syncAgentUserMemoryFromStorage();
+      return { ok: !!result.record, ...result };
+    }
+
+    case 'update_user_memory': {
+      const result = await withUserMemoryStoreLock(() => userMemoryStore.update(String(msg.id || ''), {
+        text: msg.text,
+        kind: msg.kind,
+        scope: msg.scope,
+        confidence: msg.confidence,
+      }));
+      if (result.changed) await syncAgentUserMemoryFromStorage();
+      return { ok: result.changed, ...result };
+    }
+
+    case 'delete_user_memory': {
+      const result = await withUserMemoryStoreLock(() => userMemoryStore.delete(String(msg.id || '')));
+      if (result.changed) await syncAgentUserMemoryFromStorage();
+      return { ok: result.changed, ...result };
+    }
+
+    case 'clear_user_memory': {
+      const store = await withUserMemoryStoreLock(async () => {
+        await clearUserMemoryExtractionQueue();
+        return userMemoryStore.clear();
+      });
+      await syncAgentUserMemoryFromStorage();
+      return { ok: true, store };
+    }
+
+    case 'export_user_memory': {
+      const store = await userMemoryStore.load();
+      return { ok: true, store, json: JSON.stringify(store, null, 2) };
+    }
+
+    case 'import_user_memory': {
+      let payload = msg.store || msg.json || {};
+      if (typeof payload === 'string') payload = JSON.parse(payload);
+      const store = await withUserMemoryStoreLock(() => userMemoryStore.replace(payload));
+      await syncAgentUserMemoryFromStorage();
+      return { ok: true, store };
+    }
+
+    case 'enqueue_user_memory_extraction': {
+      const result = await enqueueUserMemoryExtraction({
+        userText: msg.userText,
+        assistantText: msg.assistantText,
+        mode: msg.mode,
+        succeeded: msg.succeeded,
+      });
+      return { ok: true, ...result };
+    }
 
     // --- Chat / Agent ---
     case 'ensure_conversation_id': {
@@ -1035,6 +1371,12 @@ async function handleMessage(msg, sender) {
           }).catch(() => {});
         }, mode, msg.attachments);
 
+        enqueueUserMemoryExtractionAfterTurn({
+          userText: msg.text,
+          assistantText: result,
+          mode,
+          succeeded: !updates.some((update) => update?.type === 'error'),
+        });
         return { content: result, updates, conversationId: await agent.getConversationId(tabId) };
       } finally {
         sendAgentRunComplete(tabId);
@@ -1061,6 +1403,12 @@ async function handleMessage(msg, sender) {
           }).catch(() => {});
         }, mode);
 
+        enqueueUserMemoryExtractionAfterTurn({
+          userText: msg.text,
+          assistantText: result,
+          mode,
+          succeeded: true,
+        });
         return { content: result, conversationId: await agent.getConversationId(tabId) };
       } finally {
         sendAgentRunComplete(tabId);
@@ -1085,6 +1433,12 @@ async function handleMessage(msg, sender) {
           }).catch(() => {});
         }, mode);
 
+        enqueueUserMemoryExtractionAfterTurn({
+          userText: 'Please continue from where you left off.',
+          assistantText: result,
+          mode,
+          succeeded: true,
+        });
         return { content: result, conversationId: await agent.getConversationId(tabId) };
       } finally {
         sendAgentRunComplete(tabId);
