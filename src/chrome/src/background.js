@@ -177,7 +177,9 @@ const userMemoryReady = syncAgentUserMemoryFromStorage().catch(() => {});
 
 const USER_MEMORY_EXTRACTION_MAX_QUEUE = 10;
 const USER_MEMORY_EXTRACTION_DELAY_MS = 1200;
-const USER_MEMORY_EXTRACTION_RETRY_DELAY_MS = 30000;
+// Long enough for a transient network/provider blip to clear, short enough
+// that the timer fires before Chrome's ~30s idle service-worker teardown.
+const USER_MEMORY_EXTRACTION_RETRY_DELAY_MS = 3000;
 const USER_MEMORY_CLARIFICATION_BUFFER_LIMIT = 6;
 let userMemoryExtractionDrainPromise = null;
 let userMemoryExtractionTimer = null;
