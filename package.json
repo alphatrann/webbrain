@@ -1,6 +1,6 @@
 {
   "name": "webbrain",
-  "version": "22.1.1",
+  "version": "22.1.2",
   "description": "Open-source AI browser agent — chat with pages, automate tasks, multi-provider LLM support.",
   "private": true,
   "type": "module",
@@ -14,7 +14,7 @@
     "build:blog": "node scripts/build-blog.mjs",
     "build:web": "node web/build/build.mjs",
     "build:zip": "node scripts/build-zip.mjs",
-    "sync:logo": "python3 scripts/sync-logo-assets.py && python3 scripts/gen-store-promos.py",
+    "sync:logo": "python3 scripts/sync-logo-assets.py && python3 scripts/gen-store-promos.py && node assets/webstore-explainer-2026/render.mjs",
     "bump": "node scripts/bump-version.mjs",
     "release": "node scripts/bump-version.mjs --release"
   },

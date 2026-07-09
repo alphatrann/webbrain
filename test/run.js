@@ -5786,14 +5786,27 @@ test('logo metadata and generated icon assets use the correct canonical artwork 
   assert.deepEqual(dimensions('web/og-image.png'), [1200, 630]);
   assert.deepEqual(dimensions('assets/store-promo-440x280.png'), [440, 280]);
   assert.deepEqual(dimensions('assets/store-promo-1400x560.png'), [1400, 560]);
+  for (const [rel, size] of [
+    ['assets/banners/webbrain-banner-en.png', [2560, 800]],
+    ['assets/banners/webbrain-banner-tr.png', [2560, 800]],
+    ['assets/banners/webbrain-banner-vertical-en.png', [1280, 2560]],
+    ['assets/webbrain-social-card-300x188.png', [300, 188]],
+    ['assets/webbrain-social-card.png', [1280, 640]],
+    ['web/assets/webbrain-ollama-heart.png', [1200, 630]],
+  ]) {
+    assert.deepEqual(dimensions(rel), size, `${rel}: branded composite dimensions changed`);
+  }
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   assert.match(packageJson.scripts['sync:logo'], /sync-logo-assets\.py/);
   assert.match(packageJson.scripts['sync:logo'], /gen-store-promos\.py/);
+  assert.match(packageJson.scripts['sync:logo'], /webstore-explainer-2026\/render\.mjs/);
 
   const logoSync = fs.readFileSync(path.join(ROOT, 'scripts/sync-logo-assets.py'), 'utf8');
   assert.match(logoSync, /MARK = ROOT \/ "assets" \/ "logo-mark\.png"/);
   assert.match(logoSync, /save_png\(icon_logo\(mark, size\), icon_dir/);
+  assert.match(logoSync, /save_jpeg\(full_logo\(source, 128\), ASSETS \/ "logo-github-128\.jpg"\)/);
+  assert.match(logoSync, /replace_composite_logo\(path, source, box, radius\)/);
 
   const template = fs.readFileSync(path.join(ROOT, 'web/build/template.html'), 'utf8');
   const blogBuilder = fs.readFileSync(path.join(ROOT, 'scripts/build-blog.mjs'), 'utf8');

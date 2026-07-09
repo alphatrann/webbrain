@@ -20,6 +20,17 @@ MARK = ROOT / "assets" / "logo-mark.png"
 ASSETS = ROOT / "assets"
 WEB = ROOT / "web"
 
+# Static branded graphics that embed the logo directly. Their surrounding
+# layout stays untouched; only the existing logo tile is replaced.
+COMPOSITE_LOGOS = (
+    (ASSETS / "banners" / "webbrain-banner-en.png", (140, 228, 396, 484), 48),
+    (ASSETS / "banners" / "webbrain-banner-tr.png", (140, 228, 396, 484), 48),
+    (ASSETS / "banners" / "webbrain-banner-vertical-en.png", (472, 456, 808, 792), 64),
+    (ASSETS / "webbrain-social-card-300x188.png", (91, 25, 126, 60), 8),
+    (ASSETS / "webbrain-social-card.png", (436, 84, 556, 204), 26),
+    (WEB / "assets" / "webbrain-ollama-heart.png", (202, 175, 460, 433), 30),
+)
+
 
 def full_logo(source: Image.Image, size: int) -> Image.Image:
     return source.resize((size, size), Image.Resampling.LANCZOS)
@@ -61,6 +72,31 @@ def save_png(image: Image.Image, path: Path) -> None:
     image.save(path, format="PNG", optimize=True)
 
 
+def save_jpeg(image: Image.Image, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.convert("RGB").save(
+        path,
+        format="JPEG",
+        quality=94,
+        optimize=True,
+        progressive=True,
+    )
+
+
+def replace_composite_logo(path: Path, source: Image.Image, box: tuple[int, int, int, int], radius: int) -> None:
+    image = Image.open(path).convert("RGB")
+    left, top, right, bottom = box
+    width, height = right - left, bottom - top
+    if width != height:
+        raise SystemExit(f"Composite logo box must be square: {path} {box}")
+
+    tile = full_logo(source, width).convert("RGB")
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, width - 1, height - 1), radius=radius, fill=255)
+    image.paste(tile, (left, top), mask)
+    save_png(image, path)
+
+
 def main() -> None:
     source = Image.open(CANONICAL).convert("RGB")
     if source.size != (1254, 1254):
@@ -69,14 +105,9 @@ def main() -> None:
     if mark.size != source.size:
         raise SystemExit(f"Unexpected transparent logo mark size: {mark.size}; expected {source.size}")
 
+    save_jpeg(full_logo(source, 128), ASSETS / "logo-github-128.jpg")
     save_png(full_logo(source, 512), ASSETS / "logo-github-512.png")
-    full_logo(source, 512).save(
-        ASSETS / "logo-github-512.jpg",
-        format="JPEG",
-        quality=94,
-        optimize=True,
-        progressive=True,
-    )
+    save_jpeg(full_logo(source, 512), ASSETS / "logo-github-512.jpg")
 
     for size in (64, 128):
         save_png(icon_logo(mark, size), ASSETS / f"store-icon-{size}.png")
@@ -90,6 +121,9 @@ def main() -> None:
     save_png(icon_logo(mark, 64), WEB / "favicon.png")
     save_png(full_logo(source, 512), WEB / "twitter-image.png")
     save_png(wide_social_logo(source, 1200, 630), WEB / "og-image.png")
+
+    for path, box, radius in COMPOSITE_LOGOS:
+        replace_composite_logo(path, source, box, radius)
 
     print("Synchronized WebBrain logo assets from assets/logo-github.png")
 
