@@ -7338,12 +7338,16 @@ test('sidepanel drops stale recommended-action refreshes after tab changes or ru
     const sendIdx = body.indexOf("sendToBackground('get_page_info', { tabId })");
     const guard = 'requestId !== recommendationsRequestId || currentTabId !== tabId || isProcessing';
     const guardIdx = body.indexOf(guard);
+    const sourceUrlIdx = body.indexOf("const sourceUrl = typeof pageInfo?.url === 'string' ? pageInfo.url : '';");
+    const actionForClickIdx = body.indexOf('const actionForClick = sourceUrl ? { ...action, sourceUrl } : action;');
     const renderIdx = body.indexOf('recommendedActionsListEl.replaceChildren();');
     assert.notEqual(captureIdx, -1, `${label}: recommended-action refresh should capture the requested tab`);
     assert.notEqual(sendIdx, -1, `${label}: recommended-action refresh should request page info for the captured tab`);
     assert.notEqual(guardIdx, -1, `${label}: stale recommended-action refreshes should be dropped after tab switches or run start`);
+    assert.notEqual(sourceUrlIdx, -1, `${label}: rendered recommended actions should bind the source page URL`);
+    assert.notEqual(actionForClickIdx, -1, `${label}: click handlers should receive source-bound action metadata`);
     assert.notEqual(renderIdx, -1, `${label}: recommended-action refresh render point missing`);
-    assert.equal(captureIdx < sendIdx && sendIdx < guardIdx && guardIdx < renderIdx, true, `${label}: stale guard must run after the async page-info read and before rendering chips`);
+    assert.equal(captureIdx < sendIdx && sendIdx < guardIdx && guardIdx < sourceUrlIdx && sourceUrlIdx < renderIdx && renderIdx < actionForClickIdx, true, `${label}: stale guard must run before source binding and rendering chips`);
   }
 });
 
@@ -7359,24 +7363,34 @@ test('sidepanel drops stale recommended-action clicks after async act confirmati
     const captureIdx = body.indexOf('const tabId = currentTabId;');
     const initialGuard = '!prompt || tabId == null || isProcessing';
     const initialGuardIdx = body.indexOf(initialGuard);
+    const sourceGuard = 'recommendedActionSourceStillCurrent(action, tabId)';
+    const firstSourceGuardIdx = body.indexOf(sourceGuard);
     const ensureIdx = body.indexOf('await ensureActMode();');
-    const staleGuard = '!ok || currentTabId !== tabId || isProcessing';
+    const staleGuard = '!ok) return';
     const staleGuardIdx = body.indexOf(staleGuard);
+    const secondSourceGuardIdx = body.indexOf(sourceGuard, firstSourceGuardIdx + 1);
     const inputIdx = body.indexOf('inputEl.value = prompt;');
     const sendIdx = body.indexOf('sendMessage(recommendedActionSendParams(action));');
+    const sourceHelperMatch = panel.match(/async function recommendedActionSourceStillCurrent\(action, tabId\) \{([\s\S]*?)\n\}/);
     const helperMatch = panel.match(/function recommendedActionSendParams\(action\) \{([\s\S]*?)\n\}/);
+    assert.ok(sourceHelperMatch, `${label}: recommendedActionSourceStillCurrent missing`);
     assert.ok(helperMatch, `${label}: recommendedActionSendParams missing`);
+    const sourceHelperBody = sourceHelperMatch[1];
     const helperBody = helperMatch[1];
     assert.notEqual(captureIdx, -1, `${label}: recommended-action click should capture the initiating tab`);
     assert.notEqual(initialGuardIdx, -1, `${label}: recommended-action click should reject missing tabs before sending`);
+    assert.notEqual(firstSourceGuardIdx, -1, `${label}: recommended-action click should re-check the source URL before sending`);
     assert.notEqual(ensureIdx, -1, `${label}: act recommended-action click should await act confirmation`);
     assert.notEqual(staleGuardIdx, -1, `${label}: stale recommended-action clicks should be dropped after act confirmation`);
+    assert.notEqual(secondSourceGuardIdx, -1, `${label}: act recommended-action click should re-check the source URL after confirmation`);
     assert.notEqual(inputIdx, -1, `${label}: recommended-action click composer write missing`);
     assert.notEqual(sendIdx, -1, `${label}: recommended-action click should pass trusted run options to chat`);
+    assert.match(sourceHelperBody, /const sourceUrl = typeof action\?\.sourceUrl === 'string' \? action\.sourceUrl : '';/, `${label}: source URL helper should read bound action source`);
+    assert.match(sourceHelperBody, /const tab = await (chrome|browser)\.tabs\.get\(tabId\);[\s\S]*?return \(tab\?\.url \|\| ''\) === sourceUrl;/, `${label}: source URL helper should compare against the live tab URL`);
     assert.ok(helperBody.includes('const params = action?.runOptions ? { recommendedAction: action.runOptions } : {};'), `${label}: recommended-action send params should preserve trusted run options`);
     assert.ok(helperBody.includes("if (['ask', 'act', 'dev'].includes(action?.mode)) {"), `${label}: recommended-action send params should only allow known modes`);
     assert.ok(helperBody.includes('params.__mode = action.mode;'), `${label}: recommended-action send params should pass the declared action mode`);
-    assert.equal(captureIdx < initialGuardIdx && initialGuardIdx < ensureIdx && ensureIdx < staleGuardIdx && staleGuardIdx < inputIdx && inputIdx < sendIdx, true, `${label}: stale click guard must run after async act confirmation and before mutating the composer`);
+    assert.equal(captureIdx < initialGuardIdx && initialGuardIdx < firstSourceGuardIdx && firstSourceGuardIdx < ensureIdx && ensureIdx < staleGuardIdx && staleGuardIdx < secondSourceGuardIdx && secondSourceGuardIdx < inputIdx && inputIdx < sendIdx, true, `${label}: stale click guards must run before mutating the composer`);
   }
 });
 
