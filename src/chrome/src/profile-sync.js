@@ -55,9 +55,15 @@ export async function decryptProfileVault(envelope, password, key = null) {
 function newer(local, remote, localAt, remoteAt, conflicts, name) {
   if (remoteAt > localAt) return remote;
   // A remote vault with no metadata predates sync timestamps. On another
-  // device's first unlock, prefer that established cloud value instead of
-  // letting empty/default local state overwrite it on a 0/0 tie.
-  if (localAt === 0 && remoteAt === 0) return remote;
+  // device's first unlock, prefer that established cloud value only when
+  // local state is genuinely empty/default. Meaningful legacy local state
+  // remains the tie winner and the remote variant is retained as a conflict.
+  const localIsEmpty = name === 'providers'
+    ? Object.keys(local || {}).length === 0
+    : name === 'profile'
+      ? !local?.enabled && !String(local?.text || '').trim()
+      : local == null || local === '';
+  if (localAt === 0 && remoteAt === 0 && localIsEmpty) return remote;
   if (remoteAt === localAt && stable(local) !== stable(remote)) conflicts.push({ dataset: name, local, remote, at: Date.now() });
   return local;
 }

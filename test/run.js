@@ -19951,6 +19951,20 @@ test('profile sync prefers an established remote vault when legacy metadata ties
   assert.deepEqual(vault.profile, remote.profile);
 });
 
+test('profile sync preserves meaningful local legacy data when metadata ties at zero', async () => {
+  const { mergeProfileVaults } = await import(
+    'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
+  );
+  const local = { providers: { openai: { apiKey: 'local-secret' } }, activeProvider: 'openai', profile: { enabled: true, text: 'local profile' }, memory: { records: [] }, tombstones: {}, meta: {} };
+  const remote = { providers: { anthropic: { apiKey: 'remote-secret' } }, activeProvider: 'anthropic', profile: { enabled: true, text: 'remote profile' }, memory: { records: [] }, tombstones: {}, meta: {} };
+  const { vault, conflicts } = mergeProfileVaults(local, remote);
+  assert.deepEqual(vault.providers, local.providers);
+  assert.equal(vault.activeProvider, 'openai');
+  assert.deepEqual(vault.profile, local.profile);
+  assert.equal(conflicts.some(conflict => conflict.dataset === 'providers'), true);
+  assert.equal(conflicts.some(conflict => conflict.dataset === 'profile'), true);
+});
+
 test('profile sync password change uploads a vault encrypted with the new password', async () => {
   const { ProfileSyncManager, decryptProfileVault } = await import(
     'file://' + path.join(ROOT, 'src/chrome/src/profile-sync.js').replace(/\\/g, '/')
