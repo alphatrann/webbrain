@@ -90,7 +90,8 @@ the v1 bridge for moving memory between browser profiles.
 
 Active WebBrain Cloud subscribers may explicitly enable encrypted profile sync in
 Settings. The extension combines user memory, profile autofill, and provider
-configuration (including API keys and OAuth credentials) into one vault and
+configuration (including API keys, but excluding legacy OAuth access/refresh
+token stores) into one vault and
 encrypts it in the browser with AES-256-GCM. Its key is derived from the sync
 password with PBKDF2-HMAC-SHA-256 (600,000 iterations). The password and derived
 key are retained in memory only for the browser session.
