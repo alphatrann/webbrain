@@ -62,7 +62,7 @@ function hasMedia(pageInfo = {}) {
 function isYouTubeVideoPage(host = '', path = '/', url = '') {
   if (host === 'youtu.be') return /^\/[^/?#]+/.test(path);
   if (host !== 'youtube.com' && !host.endsWith('.youtube.com')) return false;
-  if (/^\/(?:shorts|live|embed)\/[^/?#]+/i.test(path)) return true;
+  if (/^\/(?:shorts|live)\/[^/?#]+/i.test(path)) return true;
   try {
     const u = new URL(url);
     return path === '/watch' && !!u.searchParams.get('v');

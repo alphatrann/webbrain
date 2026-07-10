@@ -3254,7 +3254,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const id = sanitizePlannerText(action.id, 80, { collapseWhitespace: true });
     if (!this.constructor.RECOMMENDED_ACTION_FAST_PATH_IDS.has(id)) return null;
     const tool = sanitizePlannerText(action.tool, 80, { collapseWhitespace: true });
-    if (id === 'download-media' && tool !== 'download_public_media') return null;
+    if (id === 'download-media') {
+      if (tool !== 'download_public_media') return null;
+      if (!this._skillToolForName(tool)) return null;
+    }
     const summary = sanitizePlannerText(action.summary || 'Run the selected recommended action.', 500, { collapseWhitespace: true });
     const steps = Array.isArray(action.steps)
       ? action.steps.map(step => sanitizePlannerText(step, 300, { collapseWhitespace: true })).filter(Boolean).slice(0, 5)

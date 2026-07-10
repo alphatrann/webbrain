@@ -3123,6 +3123,22 @@ test('YouTube video recommendations start with transcript skill and keep media d
       assert.equal(download?.runOptions?.tool, 'download_public_media', `YouTube download should use public media skill for ${pageInfo.url}`);
       assert.equal(download?.runOptions?.skipPlanner, true, `YouTube download should skip planner for ${pageInfo.url}`);
     }
+
+    const embedActions = buildRecommendedActions({
+      url: 'https://www.youtube.com/embed/abc123',
+      title: 'Embedded YouTube player',
+      media: { videoCount: 1, imageCount: 0 },
+    });
+    assert.equal(
+      embedActions.find((a) => a.id === 'summarize-youtube-video'),
+      undefined,
+      'YouTube embed pages should not recommend the transcript-only shortcut',
+    );
+    assert.equal(
+      embedActions.find((a) => a.id === 'download-media')?.runOptions?.tool,
+      'download_public_media',
+      'YouTube embed pages should keep the public media download shortcut',
+    );
   }
 });
 
@@ -19311,9 +19327,10 @@ test('planner gate: approving plan appends without deleting scratchpad facts', a
 
 test('planner gate: trusted recommended media action skips planner and pins ready plan', async () => {
   await withPlannerBrowserGlobals(async () => {
-    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    for (const [label, AgentClass, prefix] of [['chrome', AgentCh, 'src/chrome'], ['firefox', AgentFx, 'src/firefox']]) {
       const tabId = label === 'chrome' ? 9207 : 9208;
       const agent = new AgentClass({ getActive: () => ({}) });
+      agent.setCustomSkills([packagedFreeSkillzRecord(prefix)]);
       agent.setPlanBeforeActMode('strict');
       agent.setPlanReviewSettings({ mode: 'always' });
       agent.conversations.set(tabId, [{ role: 'system', content: 'system' }]);
@@ -19389,6 +19406,37 @@ test('planner gate: trusted recommended media action skips planner and pins read
       );
       assert.equal(rejectedOutcome.proceed, true, `${label} rejected fast path should still proceed through normal planner`);
       assert.equal(fallbackPlannerCalls, 1, `${label} rejected fast path should run planner`);
+
+      const noSkillTabId = tabId + 40;
+      const noSkillAgent = new AgentClass({ getActive: () => ({}) });
+      noSkillAgent.setCustomSkills([]);
+      noSkillAgent.setPlanBeforeActMode('try');
+      noSkillAgent.conversations.set(noSkillTabId, [{ role: 'system', content: 'system' }]);
+      let noSkillPlannerCalls = 0;
+      noSkillAgent._runPlannerGate = async () => {
+        noSkillPlannerCalls += 1;
+        return { proceed: true };
+      };
+      const noSkillOutcome = await noSkillAgent._maybeRunPlannerGate(
+        noSkillTabId,
+        noSkillAgent.conversations.get(noSkillTabId),
+        { role: 'user', content: 'Download this public media from the current page.' },
+        () => {},
+        'act',
+        null,
+        null,
+        null,
+        {
+          recommendedAction: {
+            id: 'download-media',
+            skipPlanner: true,
+            tool: 'download_public_media',
+            summary: 'Download the public media from the current page.',
+          },
+        },
+      );
+      assert.equal(noSkillOutcome.proceed, true, `${label} missing skill should still proceed through normal planner`);
+      assert.equal(noSkillPlannerCalls, 1, `${label} missing skill should run planner`);
     }
   });
 });
