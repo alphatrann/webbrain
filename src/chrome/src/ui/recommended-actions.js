@@ -75,9 +75,9 @@ function isYouTubeVideoPage(host = '', path = '/', url = '') {
 function publicMediaKind(pageInfo = {}, path = '/') {
   const media = pageInfo.media || {};
   if ((media.videoCount || 0) > 0) return 'video';
-  if ((media.imageCount || 0) > 0) return 'image';
   if (/\b(video|reel|shorts|watch|live)\b/i.test(`${path} ${pageInfo.title || ''}`)) return 'video';
   if (/\b(photo|image|picture|pin)\b/i.test(`${path} ${pageInfo.title || ''}`)) return 'image';
+  if ((media.imageCount || 0) > 0) return 'auto';
   return 'auto';
 }
 
@@ -98,6 +98,21 @@ function publicMediaDownloadRunOptions(kind = 'auto') {
       'Report the saved downloadId/result. Use download_social_media only if download_public_media fails.',
     ],
   };
+}
+
+function firstToolRunOptions(id, tool, args = {}, summary = '', steps = []) {
+  return {
+    id,
+    autoExecute: true,
+    tool,
+    args,
+    summary: summary || 'Read the current page before answering.',
+    steps: steps.length ? steps : [`Call ${tool} first for this recommended action.`],
+  };
+}
+
+function visibleTreeArgs(maxDepth = 10) {
+  return { filter: 'visible', maxDepth };
 }
 
 function hasCartOrPriceSignal(pageInfo = {}) {
@@ -212,7 +227,14 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
     addUnique(actions, {
       id: 'rewrite-focused-draft',
       label: 'Rewrite this draft',
-      prompt: 'Rewrite the text in the currently focused compose box in three versions: softer, shorter, and more formal. Do not type, send, or publish anything unless I ask.',
+      prompt: 'Use get_accessibility_tree with filter:"visible" first to read the currently focused compose box. Rewrite that draft in three versions: softer, shorter, and more formal. Do not type, send, or publish anything unless I ask.',
+      runOptions: firstToolRunOptions(
+        'rewrite-focused-draft',
+        'get_accessibility_tree',
+        visibleTreeArgs(8),
+        'Read the focused compose box before rewriting the draft.',
+        ['Call get_accessibility_tree with filter:"visible" and maxDepth:8.', 'Use the focused textbox/input text from the result to write variants only.'],
+      ),
     });
   }
 
@@ -225,12 +247,26 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
     addUnique(actions, {
       id: 'summarize-thread',
       label: 'Summarize this thread',
-      prompt: 'Summarize the currently open email or message thread, including key points, decisions, and unanswered questions.',
+      prompt: 'Use get_accessibility_tree with filter:"visible" first to read the currently open email or message thread. Summarize key points, decisions, and unanswered questions.',
+      runOptions: firstToolRunOptions(
+        'summarize-thread',
+        'get_accessibility_tree',
+        visibleTreeArgs(12),
+        'Read the visible conversation thread before summarizing it.',
+        ['Call get_accessibility_tree with filter:"visible" and maxDepth:12.', 'Summarize the thread from the returned page data.'],
+      ),
     });
     addUnique(actions, {
       id: 'find-followups',
       label: 'Find follow-ups',
-      prompt: 'Extract action items, deadlines, people to follow up with, and open questions from this conversation.',
+      prompt: 'Use get_accessibility_tree with filter:"visible" first to read the current conversation. Extract action items, deadlines, people to follow up with, and open questions.',
+      runOptions: firstToolRunOptions(
+        'find-followups',
+        'get_accessibility_tree',
+        visibleTreeArgs(12),
+        'Read the visible conversation thread before extracting follow-ups.',
+        ['Call get_accessibility_tree with filter:"visible" and maxDepth:12.', 'Extract follow-ups from the returned page data.'],
+      ),
     });
   }
 
@@ -272,8 +308,15 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
     addUnique(actions, {
       id: 'summarize-youtube-video',
       label: 'Summarize this video',
-      prompt: 'Use read_youtube_transcript for the current YouTube video first. Summarize the transcript in concise bullets with key points and timestamps when available. If the transcript tool is unavailable or returns no transcript, say that and use only the visible page context.',
+      prompt: 'Use read_youtube_transcript for the current YouTube video first, omitting url so it uses the active tab. Summarize the transcript in concise bullets with key points and timestamps when available. If the transcript tool is unavailable or returns no transcript, say that and use only the visible page context.',
       mode: 'ask',
+      runOptions: firstToolRunOptions(
+        'summarize-youtube-video',
+        'read_youtube_transcript',
+        { timestamps: true, text_limit: 6000, include_segments: false },
+        'Read the YouTube transcript before summarizing the video.',
+        ['Call read_youtube_transcript for the active tab with timestamps:true, text_limit:6000, and include_segments:false.', 'Summarize the transcript with key points and timestamps when available.'],
+      ),
     });
   }
 
@@ -302,7 +345,14 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
     addUnique(actions, {
       id: 'summarize-page',
       label: 'Summarize this page',
-      prompt: 'Summarize this page in 5-8 concise bullet points and include any action items.',
+      prompt: 'Use read_page first for the current long-form page. Summarize it in 5-8 concise bullet points and include any action items.',
+      runOptions: firstToolRunOptions(
+        'summarize-page',
+        'read_page',
+        { includeChrome: false },
+        'Read the long-form page before summarizing it.',
+        ['Call read_page with includeChrome:false.', 'Summarize the returned article/page text in 5-8 concise bullets.'],
+      ),
     });
   }
 
@@ -310,15 +360,40 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
     addUnique(actions, {
       id: 'compare-price',
       label: 'Compare this price with other stores',
-      prompt: 'Compare this product\'s price with other stores and summarize the best alternatives.',
+      prompt: 'Use get_accessibility_tree with filter:"visible" first to read the product title, price, and purchase context. Compare this product\'s price with other stores and summarize the best alternatives.',
+      runOptions: firstToolRunOptions(
+        'compare-price',
+        'get_accessibility_tree',
+        visibleTreeArgs(10),
+        'Read the visible product details before comparing prices.',
+        ['Call get_accessibility_tree with filter:"visible" and maxDepth:10.', 'Use the product title, price, and store context from the result before comparing alternatives.'],
+      ),
     });
   }
 
   if (!actions.length && pageInfo.title) {
+    const explainUsesArticleRead = isLongArticle(pageInfo);
     addUnique(actions, {
       id: 'explain-page',
       label: 'Explain this page',
-      prompt: 'Explain what this page is about and what I can do next.',
+      prompt: explainUsesArticleRead
+        ? 'Use read_page first for the current long-form page. Explain what this page is about and what I can do next.'
+        : 'Use get_accessibility_tree with filter:"visible" first for the current page. Explain what this page is about and what I can do next.',
+      runOptions: explainUsesArticleRead
+        ? firstToolRunOptions(
+          'explain-page',
+          'read_page',
+          { includeChrome: false },
+          'Read the long-form page before explaining it.',
+          ['Call read_page with includeChrome:false.', 'Explain the page from the returned page text.'],
+        )
+        : firstToolRunOptions(
+          'explain-page',
+          'get_accessibility_tree',
+          visibleTreeArgs(10),
+          'Read the visible page state before explaining it.',
+          ['Call get_accessibility_tree with filter:"visible" and maxDepth:10.', 'Explain the page from the returned page data.'],
+        ),
     });
   }
 

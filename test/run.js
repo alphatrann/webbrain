@@ -3073,7 +3073,10 @@ test('actionable recommendations opt into Act mode', () => {
 test('public media recommendations carry immediate download_public_media fast paths', () => {
   const pages = [
     { url: 'https://x.com/someone/status/123', title: 'Post with video / X', media: { videoCount: 1, imageCount: 0 }, expectedKind: 'video' },
+    { url: 'https://x.com/someone/status/456', title: 'Post / X', media: { videoCount: 0, imageCount: 1 }, expectedKind: 'auto' },
     { url: 'https://www.tiktok.com/@user/video/123', title: 'TikTok video', media: { videoCount: 1, imageCount: 0 }, expectedKind: 'video' },
+    { url: 'https://www.tiktok.com/@user/video/456', title: 'TikTok', media: { videoCount: 0, imageCount: 1 }, expectedKind: 'video' },
+    { url: 'https://www.youtube.com/watch?v=abc123', title: 'YouTube', media: { videoCount: 0, imageCount: 1 }, expectedKind: 'video' },
     { url: 'https://www.reddit.com/r/pics/comments/abc/photo/', title: 'A photo post', media: { imageCount: 1, videoCount: 0 }, expectedKind: 'image' },
     { url: 'https://www.linkedin.com/posts/example_123', title: 'LinkedIn public post video', media: { videoCount: 1, imageCount: 0 }, expectedKind: 'video' },
     { url: 'https://threads.net/@user/post/abc', title: 'Threads photo', media: { imageCount: 1, videoCount: 0 }, expectedKind: 'image' },
@@ -3118,6 +3121,8 @@ test('YouTube video recommendations start with transcript skill and keep media d
       assert.equal(transcript?.label, 'Summarize this video', `expected transcript summary for ${pageInfo.url}`);
       assert.equal(transcript?.mode, 'ask', `transcript summary should stay in Ask mode for ${pageInfo.url}`);
       assert.match(transcript?.prompt || '', /read_youtube_transcript/, `transcript summary should name the skill for ${pageInfo.url}`);
+      assert.equal(transcript?.runOptions?.autoExecute, true, `transcript summary should auto-execute first tool for ${pageInfo.url}`);
+      assert.equal(transcript?.runOptions?.tool, 'read_youtube_transcript', `transcript summary should pin transcript tool for ${pageInfo.url}`);
 
       const download = actions.find((a) => a.id === 'download-media');
       assert.equal(download?.runOptions?.tool, 'download_public_media', `YouTube download should use public media skill for ${pageInfo.url}`);
@@ -3142,6 +3147,60 @@ test('YouTube video recommendations start with transcript skill and keep media d
   }
 });
 
+test('read-only recommendations carry immediate first-tool run options', () => {
+  const cases = [
+    [
+      { url: 'https://news.example.com/article/story', title: 'Long article', text: 'word '.repeat(500) },
+      'summarize-page',
+      'read_page',
+      { includeChrome: false },
+    ],
+    [
+      { url: 'https://example.com/dashboard', title: 'Dashboard' },
+      'explain-page',
+      'get_accessibility_tree',
+      { filter: 'visible', maxDepth: 10 },
+    ],
+    [
+      { url: 'https://mail.google.com/mail/u/0/#inbox/FMfc123', title: 'Gmail - Thread', text: 'From Ada Subject Launch Reply' },
+      'summarize-thread',
+      'get_accessibility_tree',
+      { filter: 'visible', maxDepth: 12 },
+    ],
+    [
+      { url: 'https://x.com/messages/123-456', title: 'Messages / X', text: 'Direct message conversation' },
+      'find-followups',
+      'get_accessibility_tree',
+      { filter: 'visible', maxDepth: 12 },
+    ],
+    [
+      {
+        url: 'https://x.com/compose/post',
+        title: 'Post / X',
+        activeElement: { tag: 'div', role: 'textbox', editable: true, ariaLabel: 'Post text', textPreview: 'Please soften this draft.' },
+      },
+      'rewrite-focused-draft',
+      'get_accessibility_tree',
+      { filter: 'visible', maxDepth: 8 },
+    ],
+    [
+      { url: 'https://www.amazon.com/dp/B000000', title: 'Product', description: 'Price $19.99 Add to Cart' },
+      'compare-price',
+      'get_accessibility_tree',
+      { filter: 'visible', maxDepth: 10 },
+    ],
+  ];
+
+  for (const buildRecommendedActions of [buildRecommendedActionsCh, buildRecommendedActionsFx]) {
+    for (const [pageInfo, id, tool, args] of cases) {
+      const action = buildRecommendedActions(pageInfo).find((a) => a.id === id);
+      assert.equal(action?.runOptions?.autoExecute, true, `${id}: missing auto-execute metadata`);
+      assert.equal(action?.runOptions?.tool, tool, `${id}: wrong first tool`);
+      assert.deepEqual(action?.runOptions?.args, args, `${id}: wrong first-tool args`);
+    }
+  }
+});
+
 test('communication threads get reply, summary, and follow-up suggestions', () => {
   const pages = [
     { url: 'https://mail.google.com/mail/u/0/#inbox/FMfc123', title: 'Gmail - Thread', text: 'From Ada Subject Launch Reply' },
@@ -3155,6 +3214,8 @@ test('communication threads get reply, summary, and follow-up suggestions', () =
       assert.ok(labels.includes('Summarize this thread'), `expected thread summary for ${pageInfo.url}; got ${labels.join(', ')}`);
       assert.ok(labels.includes('Find follow-ups'), `expected follow-ups for ${pageInfo.url}; got ${labels.join(', ')}`);
       assert.equal(actions.find((a) => a.id === 'draft-reply')?.mode, undefined);
+      assert.equal(actions.find((a) => a.id === 'summarize-thread')?.runOptions?.tool, 'get_accessibility_tree');
+      assert.equal(actions.find((a) => a.id === 'find-followups')?.runOptions?.tool, 'get_accessibility_tree');
     }
     const inboxActions = buildRecommendedActions({
       url: 'https://mail.google.com/mail/u/0/#inbox',
@@ -3192,6 +3253,7 @@ test('focused compose boxes get rewrite suggestions', () => {
     const composeActions = buildRecommendedActions(composePage);
     assert.ok(composeActions.some((a) => a.id === 'rewrite-focused-draft'), 'expected rewrite action for focused compose box');
     assert.equal(composeActions.find((a) => a.id === 'rewrite-focused-draft')?.mode, undefined);
+    assert.equal(composeActions.find((a) => a.id === 'rewrite-focused-draft')?.runOptions?.tool, 'get_accessibility_tree');
     assert.equal(buildRecommendedActions(searchPage).some((a) => a.id === 'rewrite-focused-draft'), false);
   }
 });
@@ -19437,6 +19499,136 @@ test('planner gate: trusted recommended media action skips planner and pins read
       );
       assert.equal(noSkillOutcome.proceed, true, `${label} missing skill should still proceed through normal planner`);
       assert.equal(noSkillPlannerCalls, 1, `${label} missing skill should run planner`);
+    }
+  });
+});
+
+test('recommended action first tools are allowlisted and sanitized', () => {
+  for (const [label, AgentClass, prefix] of [['chrome', AgentCh, 'src/chrome'], ['firefox', AgentFx, 'src/firefox']]) {
+    const agent = new AgentClass({ getActive: () => ({}) });
+    const allowed = new Set(['read_page', 'get_accessibility_tree', 'read_youtube_transcript', 'click_ax']);
+
+    assert.deepEqual(
+      agent._recommendedActionFirstTool({
+        recommendedAction: {
+          id: 'summarize-page',
+          autoExecute: true,
+          tool: 'read_page',
+          args: { includeChrome: false, maxDepth: 999 },
+        },
+      }, allowed),
+      { id: 'summarize-page', tool: 'read_page', args: { includeChrome: false } },
+      `${label}: read_page args should be sanitized`,
+    );
+
+    assert.deepEqual(
+      agent._recommendedActionFirstTool({
+        recommendedAction: {
+          id: 'explain-page',
+          autoExecute: true,
+          tool: 'get_accessibility_tree',
+          args: { filter: 'visible', maxDepth: 99, maxChars: 999999, ref_id: 'ref_1' },
+        },
+      }, allowed),
+      { id: 'explain-page', tool: 'get_accessibility_tree', args: { filter: 'visible', maxDepth: 20, maxChars: 60000 } },
+      `${label}: accessibility tree args should be allowlisted and clamped`,
+    );
+
+    assert.equal(
+      agent._recommendedActionFirstTool({
+        recommendedAction: { id: 'summarize-page', autoExecute: true, tool: 'click_ax', args: { ref_id: 'ref_1' } },
+      }, allowed),
+      null,
+      `${label}: state-changing tools must not be accepted as recommended first tools`,
+    );
+
+    assert.equal(
+      agent._recommendedActionFirstTool({
+        recommendedAction: { id: 'summarize-youtube-video', autoExecute: true, tool: 'read_youtube_transcript', args: {} },
+      }, allowed),
+      null,
+      `${label}: transcript first tool should require the enabled skill`,
+    );
+
+    agent.setCustomSkills([packagedFreeSkillzRecord(prefix)]);
+    assert.deepEqual(
+      agent._recommendedActionFirstTool({
+        recommendedAction: {
+          id: 'summarize-youtube-video',
+          autoExecute: true,
+          tool: 'read_youtube_transcript',
+          args: { timestamps: true, include_segments: false, text_limit: 99999, url: 'https://youtu.be/abc' },
+        },
+      }, allowed),
+      {
+        id: 'summarize-youtube-video',
+        tool: 'read_youtube_transcript',
+        args: { timestamps: true, include_segments: false, text_limit: 12000 },
+      },
+      `${label}: transcript args should be sanitized and omit client URL`,
+    );
+  }
+});
+
+test('recommended action first tool executes before first model call', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+      const tabId = label === 'chrome' ? 9217 : 9218;
+      const executed = [];
+      let requestMessages = null;
+      const provider = {
+        supportsTools: true,
+        supportsVision: false,
+        promptTier: 'full',
+        contextWindow: 128000,
+        model: 'test-model',
+        name: 'test-provider',
+        chat: async (messages) => {
+          requestMessages = messages;
+          return { content: 'Summary from pre-read content.', toolCalls: [] };
+        },
+      };
+      const agent = new AgentClass({
+        getActive: () => provider,
+        getVisionProvider: async () => null,
+      });
+      agent.planBeforeAct = false;
+      agent.maxSteps = 1;
+      agent._skipPermissionGate = true;
+      agent._hydrate = async () => {};
+      agent._manageContext = async () => {};
+      agent._enrichUserMessageWithCurrentPage = async (_tabId, _messages, content) => ({ role: 'user', content });
+      agent._maybeReinjectAdapter = async () => {};
+      agent._persist = () => {};
+      agent._startTraceRun = async () => null;
+      agent._endTraceRun = () => {};
+      agent.executeTool = async (_tabId, name, args) => {
+        executed.push({ name, args });
+        return { success: true, text: 'Article body from read_page.' };
+      };
+
+      const final = await agent.processMessage(
+        tabId,
+        'Summarize this page in bullets.',
+        () => {},
+        'ask',
+        [],
+        {
+          recommendedAction: {
+            id: 'summarize-page',
+            autoExecute: true,
+            tool: 'read_page',
+            args: { includeChrome: false },
+          },
+        },
+      );
+
+      assert.equal(final, 'Summary from pre-read content.', `${label}: final response mismatch`);
+      assert.deepEqual(executed, [{ name: 'read_page', args: { includeChrome: false } }], `${label}: first tool was not executed before LLM call`);
+      const assistantToolIdx = requestMessages.findIndex((m) => m.role === 'assistant' && m.tool_calls?.[0]?.function?.name === 'read_page');
+      const toolResultIdx = requestMessages.findIndex((m) => m.role === 'tool' && m.tool_call_id === 'recommended_summarize-page_first_tool');
+      assert.ok(assistantToolIdx >= 0, `${label}: synthetic first-tool assistant call missing`);
+      assert.ok(toolResultIdx > assistantToolIdx, `${label}: first-tool result should precede first model answer`);
     }
   });
 });
