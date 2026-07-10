@@ -6735,6 +6735,8 @@ test('sidepanel reports missing background responses without res.content crash',
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     assert.match(panel, /No response from WebBrain background/, `${label}: missing background response should become a clear error`);
+    assert.match(panel, /formatBackgroundSendError\(action/, `${label}: runtime disconnects should be rewritten as WebBrain errors`);
+    assert.match(panel, /Receiving end does not exist/, `${label}: Chrome missing-receiver errors should be recognized`);
     assert.match(panel, /response == null/, `${label}: sendToBackground should reject nullish responses`);
     assert.equal((panel.match(/res\?\.content && (?:currentAssistantEl|assistantEl)/g) || []).length >= 2, true, `${label}: chat and continue should not dereference missing responses`);
     assert.doesNotMatch(panel, /res\.content && (?:currentAssistantEl|assistantEl)/, `${label}: unsafe res.content render guard returned`);
@@ -19163,6 +19165,11 @@ test('sidepanel: restored plan review cards rebind approve and cancel actions', 
     assert.match(source, /function bindPlanReviewCard\(/, `${file} should expose a card binder`);
     assert.match(source, /function rebindPlanReviewCards\(/, `${file} should expose a restored-card rebinder`);
     assert.match(source, /function reattachPlanReviewActiveRun\(/, `${file} should reattach restored approvals to the active run`);
+    assert.match(source, /function restoreActiveRunState\(/, `${file} should restore background active-run state on panel remount`);
+    assert.match(source, /sendToBackground\('agent_run_state'/, `${file} should ask background for active-run state`);
+    assert.match(source, /const awaitingPlanReviewTabs = new Set\(\);/, `${file} should track tabs awaiting plan approval`);
+    assert.match(source, /function isAwaitingPlanReviewForTab\(/, `${file} should detect awaiting plan-review tabs`);
+    assert.match(source, /if \(isAwaitingPlanReviewForTab\(tabId\)\) \{[\s\S]*?sp\.plan\.awaiting_review[\s\S]*?return false;/, `${file} should block normal sends while a plan awaits approval`);
     assert.match(source, /rebindPlanReviewCards\(\);/, `${file} should call the rebinder after chat restore`);
     assert.match(source, /plan-review-approve[\s\S]*submitPlanReview\(card, tabId, planId, 'approve'/, `${file} should rebind approve`);
     assert.match(source, /plan-review-change[\s\S]*revealPlanReviewEditor\(card, true\)/, `${file} should reveal editing only through Change`);
@@ -19178,9 +19185,54 @@ test('sidepanel: restored plan review cards rebind approve and cancel actions', 
     assert.match(source, /markdownMode = String\(card\.dataset\.planMarkdownMode \|\| 'compact'\)/, `${file} should send the displayed markdown mode with plan approval`);
     assert.match(source, /decision: action, editedText, markdownMode/, `${file} should include markdown mode in plan responses`);
     assert.match(source, /const activeAssistantEl = action === 'approve' \? reattachPlanReviewActiveRun\(card\) : null;/, `${file} should mark approvals active before posting`);
+    assert.match(source, /setPlanReviewAwaiting\(tabId, false\);/, `${file} should clear awaiting-plan state after a plan decision`);
     assert.match(source, /if \(action !== 'approve'\) \{[\s\S]*?card\.remove\(\);[\s\S]*?sendToBackground\('plan_response'/, `${file} should remove cancelled plan review cards`);
     assert.match(source, /if \(res\?\.matched\) \{[\s\S]*?card\.remove\(\);[\s\S]*?\} else \{[\s\S]*?note\.textContent = expiredText\(\);/, `${file} should remove successfully approved plan review cards`);
+    assert.match(source, /\.catch\(\(error\) => \{[\s\S]*?note\.textContent = failureText\(error\);/, `${file} should distinguish background disconnects from expired plans`);
     assert.match(source, /case 'run_complete':/, `${file} should clear restored active state when the resumed run completes`);
+  }
+});
+
+test('planner gate: background exposes pending plan state for restored sidepanels', () => {
+  for (const [label, agentRel, bgRel] of [
+    ['chrome', 'src/chrome/src/agent/agent.js', 'src/chrome/src/background.js'],
+    ['firefox', 'src/firefox/src/agent/agent.js', 'src/firefox/src/background.js'],
+  ]) {
+    const agentSource = fs.readFileSync(path.join(ROOT, agentRel), 'utf8');
+    const bgSource = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    assert.match(agentSource, /activeRunState\(tabId\)/, `${label}: agent should expose active run state`);
+    assert.match(agentSource, /pendingPlan:[\s\S]*?null/, `${label}: active run state should include pendingPlan`);
+    assert.match(agentSource, /tabPending\.set\(planId, \{ resolve, ts: Date\.now\(\), plan, markdown, verboseMarkdown \}\)/, `${label}: pending plans should keep renderable metadata`);
+    assert.match(bgSource, /case 'agent_run_state':[\s\S]*?agent\.activeRunState\(tabId\)/, `${label}: background should expose active run state to the sidepanel`);
+  }
+});
+
+test('sidepanel renders stopped-by-user as UI text instead of brittle bracket status', () => {
+  for (const [label, panelRel, localeRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/src/ui/locales/en.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/src/ui/locales/en.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const locale = fs.readFileSync(path.join(ROOT, localeRel), 'utf8');
+    assert.match(panel, /function isStoppedByUserStatus\(content\)/, `${label}: sidepanel should normalize stopped status content`);
+    assert.ok(panel.includes('(?:[\\w-]+:)?think\\b'), `${label}: stopped status should ignore leaked namespaced thinking tags`);
+    assert.match(panel, /textEl\.innerHTML = t\('sp\.stopped_by_user_html'\);/, `${label}: stopped status should render as UI text`);
+    assert.match(locale, /'sp\.plan\.awaiting_review': 'Approve or cancel the plan above before sending another message\.'/, `${label}: awaiting-plan toast should be localized`);
+  }
+});
+
+test('agent strips namespaced reasoning tags from visible model output', () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    assert.equal(
+      AgentClass._stripReasoningTags('</mm:think>[Stopped by user'),
+      '[Stopped by user',
+      `${label}: orphan namespaced think close tag should not leak into visible text`,
+    );
+    assert.equal(
+      AgentClass._stripReasoningTags('<mm:think>hidden</mm:think>Visible'),
+      'Visible',
+      `${label}: namespaced think block should be removed from visible text`,
+    );
   }
 });
 

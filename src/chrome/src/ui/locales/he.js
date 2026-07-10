@@ -202,6 +202,7 @@ export default {
   "sp.plan.approved": "התוכנית אושרה - פועל...",
   "sp.plan.cancelled": "התוכנית בוטלה.",
   "sp.plan.expired": "התוכנית הזו כבר לא ממתינה לבדיקה - הריצה בוטלה.",
+  "sp.plan.awaiting_review": "אשר או בטל את התוכנית שלמעלה לפני שליחת הודעה נוספת.",
   "sp.perm.question": "WebBrain רוצה {verb} {host}. לאפשר את זה?",
   "sp.perm.reason": "בדיקת הרשאה - WebBrain נוקט רק פעולות תוצאתיות באתרים שאתה מתיר.",
   "sp.perm.allow_once": "אפשר פעם אחת",

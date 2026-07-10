@@ -1425,6 +1425,12 @@ async function handleMessage(msg, sender) {
       return { ok: true };
     }
 
+    case 'agent_run_state': {
+      const tabId = msg.tabId || sender.tab?.id;
+      if (!tabId) return { ok: false, error: 'No tab ID' };
+      return { ok: true, ...agent.activeRunState(tabId) };
+    }
+
     case 'get_scratchpad': {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) return { ok: false, error: 'No tab ID' };
