@@ -607,12 +607,6 @@ class LoopDetectorShim {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Screenshot redaction (issue #312)
-// ────────────────────────────────────────────────────────────────────────
-
-console.log('\nscreenshot redaction');
-
-// ────────────────────────────────────────────────────────────────────────
 // Test framework (one function, no deps)
 // ────────────────────────────────────────────────────────────────────────
 
@@ -634,6 +628,15 @@ test('selectRedactionRegions blurs text inputs only when opted in', () => {
   const el = { kind: 'input', type: 'text', rect: { x: 0, y: 0, w: 80, h: 20 } };
   assert.equal(selectRedactionRegions([el], { redactTextInputs: true }).length, 1, 'text input blurred when enabled');
   assert.equal(selectRedactionRegions([el], { redactTextInputs: false }).length, 0, 'text input skipped when disabled');
+});
+
+test('selectRedactionRegions treats textarea descriptors as sensitive fields', () => {
+  const regions = selectRedactionRegions([
+    { kind: 'textarea', type: 'textarea', rect: { x: 4, y: 8, w: 160, h: 64 } },
+    { kind: 'textarea', type: 'div', rect: { x: 4, y: 80, w: 160, h: 64 } },
+  ], { redactTextInputs: true });
+  assert.equal(regions.length, 2, 'textarea/contenteditable descriptors should be redacted');
+  assert.deepEqual(regions.map((r) => r.kind), [REGION_KIND.INPUT, REGION_KIND.INPUT]);
 });
 
 test('selectRedactionRegions detects email and phone text, ignores noise', () => {
@@ -673,10 +676,40 @@ test('mapRegionsToImage drops regions entirely outside the image', () => {
   assert.equal(out.length, 0, 'region fully outside image is removed');
 });
 
+test('mapRegionsToImage clips partially off-image regions before rounding', () => {
+  const out = mapRegionsToImage(
+    [{ kind: REGION_KIND.INPUT, rect: { x: -50, y: 10, w: 100, h: 30 } }],
+    { scaleX: 1, scaleY: 1, imageWidth: 120, imageHeight: 120 }
+  );
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].rect, { x: 0, y: 10, w: 50, h: 30 }, 'left clipping should reduce width');
+});
+
 test('rectIntersects handles edges correctly', () => {
   const r = { x: 0, y: 0, w: 100, h: 100 };
   assert.equal(rectIntersects(r, 50, 50, 100, 100), true, 'overlapping box intersects');
   assert.equal(rectIntersects(r, 200, 200, 10, 10), false, 'disjoint box does not intersect');
+});
+
+test('firefox auto and media screenshot helpers redact model-facing data URLs', () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src/firefox/src/agent/agent.js'), 'utf8');
+  const autoStart = source.indexOf('async _captureAutoScreenshot(tabId)');
+  const autoEnd = source.indexOf('async _describeScreenshot', autoStart);
+  const autoBody = source.slice(autoStart, autoEnd);
+  assert.match(
+    autoBody,
+    /let dataUrl = shrunk\.dataUrl;[\s\S]*?if \(this\.screenshotRedaction\) \{[\s\S]*?dataUrl = await this\._redactScreenshotDataUrl\(tabId, dataUrl, \{ coordinateSpace: 'viewport' \}\);[\s\S]*?return \{ dataUrl, width: shrunk\.width, height: shrunk\.height \};/,
+    'firefox auto screenshots should redact before any model-facing use'
+  );
+
+  const mediaStart = source.indexOf('async _captureVisibleMediaScreenshot(tabId)');
+  const mediaEnd = source.indexOf('async _locateVisibleMediaWithVision', mediaStart);
+  const mediaBody = source.slice(mediaStart, mediaEnd);
+  assert.match(
+    mediaBody,
+    /let dataUrl = await this\._compressJpegToByteCeiling\(cropDataUrl\);[\s\S]*?if \(this\.screenshotRedaction\) \{[\s\S]*?dataUrl = await this\._redactScreenshotDataUrl\(tabId, dataUrl, \{ coordinateSpace: 'viewport' \}\);[\s\S]*?return \{ dataUrl, cropDataUrl, width, height, coordAligned: true \};/,
+    'firefox visible-media localization should redact the model-facing screenshot while keeping the raw crop source local'
+  );
 });
 
 async function run() {

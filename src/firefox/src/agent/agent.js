@@ -2695,7 +2695,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         // factor). So we capture at CSS size and shrink via DOM canvas to
         // the token budget. On small viewports this is a no-op fast-exit.
         const shrunk = await this._shrinkImageForBudget(rawDataUrl, w, h);
-        return { dataUrl: shrunk.dataUrl, width: shrunk.width, height: shrunk.height };
+        let dataUrl = shrunk.dataUrl;
+        if (this.screenshotRedaction) {
+          dataUrl = await this._redactScreenshotDataUrl(tabId, dataUrl, { coordinateSpace: 'viewport' });
+        }
+        return { dataUrl, width: shrunk.width, height: shrunk.height };
       };
       const first = await captureOnce();
       return await this._retryBlankScreenshotCapture(first, captureOnce, { probe });
@@ -2841,7 +2845,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         })
       );
       if (!cropDataUrl) return null;
-      const dataUrl = await this._compressJpegToByteCeiling(cropDataUrl);
+      let dataUrl = await this._compressJpegToByteCeiling(cropDataUrl);
+      if (this.screenshotRedaction) {
+        dataUrl = await this._redactScreenshotDataUrl(tabId, dataUrl, { coordinateSpace: 'viewport' });
+      }
       return { dataUrl, cropDataUrl, width, height, coordAligned: true };
     } catch (_) {
       const fallback = await this._captureAutoScreenshot(tabId);
