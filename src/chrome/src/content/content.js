@@ -99,14 +99,14 @@
   /**
    * Collect DOM-aware redaction regions for the screenshot redaction feature
    * (issue #312). Returns descriptors the background/agent turns into
-   * image-pixel blur boxes. Everything is local — no data leaves the page.
+   * image-pixel blur boxes. Everything stays on-device — nothing is sent to a remote endpoint.
    *
    * @param {{coordinateSpace?: 'viewport'|'page'}} params
    *   'viewport' (default): rects are relative to the current viewport
    *     (uses getBoundingClientRect), for viewport captures.
    *   'page': rects are relative to the full document (adds scrollX/scrollY),
    *     for full-page captures.
-   * @returns {{elements: Array<{kind,type,rect:{x,y,w,h},text,value}>}}
+   * @returns {{elements: Array<{kind:string,type:string,rect:{x,y,w,h},text?:string}>, viewport:{width:number,height:number}}}
    */
   function collectRedactionRegions(params) {
     const space = params && params.coordinateSpace === 'page' ? 'page' : 'viewport';
