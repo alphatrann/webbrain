@@ -39,7 +39,7 @@ import { extractFirstJsonObject } from './json-extract.js';
 import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
 import { buildCustomSkillsPrompt, buildSkillToolDefinitions, buildSkillToolRegistry, normalizeCustomSkills } from './skills.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
-import { selectRedactionRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
+import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -2303,18 +2303,30 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
-    let resp;
+    const coordinateSpace = opts.coordinateSpace === 'page' ? 'page' : 'viewport';
+    let navigationFrames;
     try {
-      resp = await browser.tabs.sendMessage(tabId, {
-        target: 'content',
-        action: 'get_redaction_regions',
-        params: { coordinateSpace: opts.coordinateSpace === 'page' ? 'page' : 'viewport' },
-      });
+      navigationFrames = await browser.webNavigation.getAllFrames({ tabId });
     } catch {
-      return dataUrl;
+      navigationFrames = [{ frameId: 0, parentFrameId: -1, url: '' }];
     }
-    const elements = resp?.elements || [];
-    if (!elements.length) return dataUrl;
+    if (!Array.isArray(navigationFrames) || navigationFrames.length === 0) {
+      navigationFrames = [{ frameId: 0, parentFrameId: -1, url: '' }];
+    }
+    const frameSnapshots = (await Promise.all(navigationFrames.map(async (frame) => {
+      try {
+        const resp = await browser.tabs.sendMessage(tabId, {
+          target: 'redaction-content',
+          action: 'get_redaction_regions',
+          params: { coordinateSpace: frame.frameId === 0 ? coordinateSpace : 'viewport' },
+        }, { frameId: frame.frameId });
+        return { ...resp, frameId: frame.frameId, parentFrameId: frame.parentFrameId, url: frame.url || '' };
+      } catch {
+        return null;
+      }
+    }))).filter(Boolean);
+    const resp = frameSnapshots.find((frame) => frame.frameId === 0);
+    if (!resp) return dataUrl;
 
     const cssBox = resp?.viewport || { width: imageWidth, height: imageHeight };
     const cssW = Number.isFinite(cssBox.width) && cssBox.width > 0 ? cssBox.width : imageWidth;
@@ -2322,7 +2334,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const scaleX = imageWidth / cssW;
     const scaleY = imageHeight / cssH;
 
-    const regions = selectRedactionRegions(elements, { viewport: cssBox });
+    const regions = mergeRedactionFrameRegions(frameSnapshots);
     if (!regions.length) return dataUrl;
 
     const imageRegions = mapRegionsToImage(regions, {
@@ -7307,11 +7319,14 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             // runs regardless.
             const provider = this.providerManager.getActive();
             const plannerCanSeeImages = !!provider?.supportsVision;
-            const dataUrl = plannerCanSeeImages
+            let dataUrl = plannerCanSeeImages
               ? await this._withIndicatorsHidden(tabId, () =>
                   browser.tabs.captureVisibleTab(tab.windowId, { format: 'png', quality: 80 })
                 )
               : null;
+            if (dataUrl && this.screenshotRedaction) {
+              dataUrl = await this._redactScreenshotDataUrl(tabId, dataUrl, { coordinateSpace: 'viewport' });
+            }
 
             // Synthesize a warning when summary claims completion but page
             // state contradicts it.

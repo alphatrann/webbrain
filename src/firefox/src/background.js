@@ -165,7 +165,7 @@ async function loadScreenshotRedaction() {
   const stored = await browser.storage.local.get('screenshotRedaction');
   if (stored.screenshotRedaction != null) agent.screenshotRedaction = !!stored.screenshotRedaction;
 }
-loadScreenshotRedaction();
+const screenshotRedactionReady = loadScreenshotRedaction().catch(() => {});
 
 async function syncAgentUserMemoryFromStorage() {
   const [store, settings] = await Promise.all([
@@ -1193,6 +1193,7 @@ async function handleMessage(msg, sender) {
   // Hydrate agent toggles and prompt add-ons once at boot (not per message);
   // onChanged keeps them in sync afterward.
   await Promise.all([planBeforeActReady, planReviewReady, customSkillsReady, userMemoryReady]);
+  await screenshotRedactionReady;
 
   switch (msg.action) {
     case 'profile_sync_state': return { ok: true, ...(await profileSync.state()) };

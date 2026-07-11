@@ -41,7 +41,7 @@ import { extractFirstJsonObject } from './json-extract.js';
 import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
 import { buildCustomSkillsPrompt, buildSkillToolDefinitions, buildSkillToolRegistry, normalizeCustomSkills } from './skills.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
-import { selectRedactionRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
+import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -3087,24 +3087,34 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       }
     }
 
-    // Ask the content script for DOM-aware rects of form fields + email/phone
-    // text, plus the captured viewport/page box (CSS px). The rects are in the
-    // same CSS-pixel space as that box, so scale = imagePx / cssPx maps them
-    // into image space regardless of how the capture was scaled.
-    let resp;
+    // Collect DOM-aware regions from every injectable frame. The top frame
+    // uses the capture's requested coordinate space; child frames always
+    // report viewport-local coordinates because only their visible viewport
+    // is composited into the top-level screenshot.
+    const coordinateSpace = opts.coordinateSpace === 'page' ? 'page' : 'viewport';
+    let navigationFrames;
     try {
-      resp = await chrome.tabs.sendMessage(tabId, {
-        target: 'content',
-        action: 'get_redaction_regions',
-        params: { coordinateSpace: opts.coordinateSpace === 'page' ? 'page' : 'viewport' },
-      });
+      navigationFrames = await chrome.webNavigation.getAllFrames({ tabId });
     } catch {
-      // Content script unreachable (e.g. chrome:// page, PDF viewer). Skip
-      // redaction rather than failing the whole capture.
-      return dataUrl;
+      navigationFrames = [{ frameId: 0, parentFrameId: -1, url: '' }];
     }
-    const elements = resp?.elements || [];
-    if (!elements.length) return dataUrl;
+    if (!Array.isArray(navigationFrames) || navigationFrames.length === 0) {
+      navigationFrames = [{ frameId: 0, parentFrameId: -1, url: '' }];
+    }
+    const frameSnapshots = (await Promise.all(navigationFrames.map(async (frame) => {
+      try {
+        const resp = await chrome.tabs.sendMessage(tabId, {
+          target: 'redaction-content',
+          action: 'get_redaction_regions',
+          params: { coordinateSpace: frame.frameId === 0 ? coordinateSpace : 'viewport' },
+        }, { frameId: frame.frameId });
+        return { ...resp, frameId: frame.frameId, parentFrameId: frame.parentFrameId, url: frame.url || '' };
+      } catch {
+        return null; // restricted/uninjectable frame — keep the capture path alive
+      }
+    }))).filter(Boolean);
+    const resp = frameSnapshots.find((frame) => frame.frameId === 0);
+    if (!resp) return dataUrl;
 
     // The captured CSS box (CSS px) in the SAME space as the element rects.
     // Default to the image's own pixel size so scale==1 when the content
@@ -3115,7 +3125,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const scaleX = imageWidth / cssW;
     const scaleY = imageHeight / cssH;
 
-    const regions = selectRedactionRegions(elements, { viewport: cssBox });
+    const regions = mergeRedactionFrameRegions(frameSnapshots);
     if (!regions.length) return dataUrl;
 
     const imageRegions = mapRegionsToImage(regions, {
@@ -8190,13 +8200,6 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           const captured = await this._retryBlankScreenshotCapture(await captureOnce(), captureOnce, { probe });
           if (!captured?.dataUrl) throw new Error('CDP returned an empty screenshot');
           dataUrl = captured.dataUrl;
-          // Local screenshot redaction (issue #312): pixelate form fields +
-          // email/phone text BEFORE the image is shown to any vision model
-          // (or saved). Runs once here so both the CDP and tabs-API capture
-          // fallbacks are covered. No-op when the setting is off.
-          if (this.screenshotRedaction) {
-            dataUrl = await this._redactScreenshotDataUrl(tabId, dataUrl, { coordinateSpace: 'viewport' });
-          }
           description = captured.description || '';
           blankFrameRetry = captured.blankFrameRetry || null;
         } catch {
@@ -8236,6 +8239,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             success: false,
             error: 'Screenshot failed: no image data was captured.',
           };
+        }
+
+        // Apply redaction after both capture branches converge so the tabs-API
+        // fallback cannot bypass the privacy setting when CDP is unavailable.
+        if (this.screenshotRedaction) {
+          dataUrl = await this._redactScreenshotDataUrl(tabId, dataUrl, { coordinateSpace: 'viewport' });
         }
 
         // If the user asked to save this screenshot to Downloads, do it

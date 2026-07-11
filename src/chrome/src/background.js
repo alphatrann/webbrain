@@ -149,7 +149,7 @@ async function loadScreenshotRedaction() {
   const stored = await chrome.storage.local.get('screenshotRedaction');
   if (stored.screenshotRedaction != null) agent.screenshotRedaction = !!stored.screenshotRedaction;
 }
-loadScreenshotRedaction();
+const screenshotRedactionReady = loadScreenshotRedaction().catch(() => {});
 
 async function loadStrictSecretMode() {
   const stored = await chrome.storage.local.get('strictSecretMode');
@@ -1343,6 +1343,7 @@ async function handleMessage(msg, sender) {
     // promises so the first chat can't race ahead of hydration, without a
     // storage round-trip on every message.
     await Promise.all([planBeforeActReady, planReviewReady, customSkillsReady, userMemoryReady]);
+    await screenshotRedactionReady;
   }
 
   switch (msg.action) {

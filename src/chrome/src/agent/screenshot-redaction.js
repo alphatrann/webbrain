@@ -218,6 +218,131 @@ export function mapRegionsToImage(regions, opts = {}) {
 }
 
 /**
+ * Merge DOM redaction snapshots from the top document and its child frames.
+ * Each frame reports regions in its own coordinate space plus the content-box
+ * rectangles of its direct iframe/frame children. Browser frame IDs provide
+ * the trusted parent hierarchy; URL/order matching associates each navigation
+ * child with the corresponding DOM frame element.
+ *
+ * @param {Array<{
+ *   frameId:number,
+ *   parentFrameId:number,
+ *   url?:string,
+ *   elements?:Array,
+ *   viewport?:{width:number,height:number},
+ *   childFrames?:Array<{url?:string,rect:{x:number,y:number,w:number,h:number}}>
+ * }>} frames
+ * @param {object} [opts]
+ * @param {number} [opts.maxRegions=400]
+ * @returns {Array<{kind:string,rect:{x:number,y:number,w:number,h:number}}>} Regions in top-frame capture coordinates.
+ */
+export function mergeRedactionFrameRegions(frames, opts = {}) {
+  if (!Array.isArray(frames) || frames.length === 0) return [];
+  const maxRegions = Number.isFinite(opts.maxRegions) && opts.maxRegions > 0
+    ? Math.floor(opts.maxRegions)
+    : 400;
+  const usable = frames.filter((frame) => frame && Number.isFinite(frame.frameId));
+  const byId = new Map(usable.map((frame) => [frame.frameId, frame]));
+  const root = byId.get(0) || usable.find((frame) => frame.parentFrameId == null || frame.parentFrameId < 0);
+  if (!root) return [];
+  const captureWidth = Number(root.viewport?.width);
+  const captureHeight = Number(root.viewport?.height);
+
+  const transforms = new Map([[root.frameId, { x: 0, y: 0, scaleX: 1, scaleY: 1 }]]);
+  const queue = [root];
+  const merged = [];
+  const urlKey = (value) => {
+    const text = String(value || '');
+    try {
+      const parsed = new URL(text);
+      parsed.hash = '';
+      return parsed.href;
+    } catch {
+      return text.split('#')[0];
+    }
+  };
+
+  while (queue.length > 0 && merged.length < maxRegions) {
+    const frame = queue.shift();
+    const transform = transforms.get(frame.frameId);
+    if (!transform) continue;
+    const viewport = frame.viewport || {};
+    const localRegions = selectRedactionRegions(frame.elements || [], {
+      viewport,
+      maxRegions: maxRegions - merged.length,
+    });
+    for (const region of localRegions) {
+      const r = region.rect;
+      const mapped = {
+        kind: region.kind,
+        rect: {
+          x: transform.x + r.x * transform.scaleX,
+          y: transform.y + r.y * transform.scaleY,
+          w: r.w * transform.scaleX,
+          h: r.h * transform.scaleY,
+        },
+      };
+      if (Number.isFinite(captureWidth) && Number.isFinite(captureHeight) &&
+          !rectIntersects(mapped.rect, 0, 0, captureWidth, captureHeight)) continue;
+      merged.push(mapped);
+      if (merged.length >= maxRegions) break;
+    }
+
+    const children = usable
+      .filter((candidate) => candidate.parentFrameId === frame.frameId)
+      .sort((a, b) => a.frameId - b.frameId);
+    const descriptors = Array.isArray(frame.childFrames) ? frame.childFrames : [];
+    const unused = new Set(descriptors.map((_, index) => index));
+    const assignments = [];
+    const unmatchedChildren = [];
+
+    for (const child of children) {
+      const childUrl = urlKey(child.url);
+      let descriptorIndex = -1;
+      for (const index of unused) {
+        if (urlKey(descriptors[index]?.url) === childUrl) {
+          descriptorIndex = index;
+          break;
+        }
+      }
+      if (descriptorIndex < 0) unmatchedChildren.push(child);
+      else {
+        unused.delete(descriptorIndex);
+        assignments.push([child, descriptorIndex]);
+      }
+    }
+    // Redirected/about:blank frames may not match the element's current src.
+    // Pair only the remaining siblings by creation/DOM order after exact URL
+    // matches are claimed, so an earlier unmatched frame cannot steal a later
+    // sibling's exact descriptor.
+    for (const child of unmatchedChildren) {
+      const descriptorIndex = unused.values().next().value ?? -1;
+      if (descriptorIndex < 0) break;
+      unused.delete(descriptorIndex);
+      assignments.push([child, descriptorIndex]);
+    }
+
+    for (const [child, descriptorIndex] of assignments) {
+      const descriptor = descriptors[descriptorIndex];
+      const rect = descriptor?.rect;
+      const childWidth = Number(child.viewport?.width);
+      const childHeight = Number(child.viewport?.height);
+      if (!rect || !(rect.w > 0 && rect.h > 0) || !(childWidth > 0 && childHeight > 0)) continue;
+
+      transforms.set(child.frameId, {
+        x: transform.x + rect.x * transform.scaleX,
+        y: transform.y + rect.y * transform.scaleY,
+        scaleX: transform.scaleX * rect.w / childWidth,
+        scaleY: transform.scaleY * rect.h / childHeight,
+      });
+      queue.push(child);
+    }
+  }
+
+  return merged;
+}
+
+/**
  * Pixelate (blur) the given image-pixel regions on a copy of the screenshot.
  *
  * Works in the MV3 service worker, which has OffscreenCanvas + createImageBitmap
