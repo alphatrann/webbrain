@@ -21709,6 +21709,25 @@ test('planner input: agent memory is skipped from recent conversation digest', (
   }
 });
 
+test('planner input: runtime context does not consume prior user-turn history budget', () => {
+  const runtimeContext = buildTrustedRuntimeContextCh({
+    now: new Date('2026-07-12T05:14:22.298Z'),
+    timeZone: 'Europe/Istanbul',
+  });
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
+    const digest = agent._buildPlannerHistoryDigest([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: `${runtimeContext}\n\nSearch GitHub for the WebBrain repository and open its first issue.` },
+      { role: 'assistant', content: 'I found the repository and its issues list.' },
+    ], 2000);
+
+    assert.match(digest, /User: Search GitHub for the WebBrain repository and open its first issue\./, `${label}: prior task was lost behind runtime context`);
+    assert.match(digest, /Assistant: I found the repository and its issues list\./, `${label}: assistant antecedent should remain visible`);
+    assert.doesNotMatch(digest, /Trusted runtime context|Current local date|Use this clock/, `${label}: runtime context leaked into planner history`);
+  }
+});
+
 // ── Anthropic parallel tool_result merge (regression) ──────────────────────
 // One assistant turn emitting parallel tool_use calls must have ALL its
 // tool_result blocks combined into a SINGLE user message — otherwise the

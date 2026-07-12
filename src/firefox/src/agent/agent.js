@@ -3428,7 +3428,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     for (const m of messages.slice(-10)) {
       if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
       if (this._isPinnedAgentStateMessage(m)) continue;
-      const text = sanitizePlannerText(userMessageToText(m), 300, { collapseWhitespace: true });
+      const rawText = userMessageToText(m);
+      const taskText = m.role === 'user' ? this._stripInjectedTaskContext(rawText) : rawText;
+      const text = sanitizePlannerText(taskText, 300, { collapseWhitespace: true });
       if (!text) continue;
       lines.push(`${m.role === 'user' ? 'User' : 'Assistant'}: ${text}`);
     }
