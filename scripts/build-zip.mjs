@@ -20,24 +20,18 @@
  *   dist/webbrain-edge-<version>.zip
  *   dist/webbrain-firefox-<version>.zip
  *
- * <version> is read from package.json so a single npm-version bump
- * cascades into the right filenames.
+ * <version> is read from package.json at HEAD, and every archived manifest
+ * must match it. An uncommitted version bump is rejected instead of creating
+ * a new-looking filename around an old manifest.
  */
 
 import { readFileSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
-const version = pkg.version;
-
-const distDir = path.join(root, 'dist');
-mkdirSync(distDir, { recursive: true });
-
-console.log(`Building extension zips for v${version} …`);
 
 const targets = [
   { packageName: 'chrome', sourceDir: 'chrome' },
@@ -46,14 +40,58 @@ const targets = [
   { packageName: 'firefox', sourceDir: 'firefox' },
 ];
 
-for (const { packageName, sourceDir } of targets) {
-  const out = path.join(distDir, `webbrain-${packageName}-${version}.zip`);
-  // -o writes directly to the file; avoids needing shell redirection,
-  // so this runs identically on bash, zsh, cmd, and PowerShell.
-  execFileSync(
-    'git',
-    ['archive', '--format=zip', '-o', out, `HEAD:src/${sourceDir}`],
-    { stdio: 'inherit', cwd: root }
+export function assertMatchingArchiveVersion(expected, actual, label) {
+  if (actual !== expected) {
+    throw new Error(`${label} is ${actual}, but the release package version is ${expected}.`);
+  }
+}
+
+function readJsonAtHead(relativePath) {
+  const json = execFileSync('git', ['show', `HEAD:${relativePath}`], {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return JSON.parse(json);
+}
+
+function runCli() {
+  const workingPackage = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const headPackage = readJsonAtHead('package.json');
+  assertMatchingArchiveVersion(
+    headPackage.version,
+    workingPackage.version,
+    'Working-tree package.json version'
   );
-  console.log(`  ✓ dist/webbrain-${packageName}-${version}.zip`);
+
+  const version = headPackage.version;
+  for (const { sourceDir } of targets) {
+    const manifest = readJsonAtHead(`src/${sourceDir}/manifest.json`);
+    assertMatchingArchiveVersion(version, manifest.version, `HEAD src/${sourceDir}/manifest.json version`);
+  }
+
+  const distDir = path.join(root, 'dist');
+  mkdirSync(distDir, { recursive: true });
+  console.log(`Building extension zips for v${version} from HEAD …`);
+
+  for (const { packageName, sourceDir } of targets) {
+    const out = path.join(distDir, `webbrain-${packageName}-${version}.zip`);
+    // -o writes directly to the file; avoids needing shell redirection,
+    // so this runs identically on bash, zsh, cmd, and PowerShell.
+    execFileSync(
+      'git',
+      ['archive', '--format=zip', '-o', out, `HEAD:src/${sourceDir}`],
+      { stdio: 'inherit', cwd: root }
+    );
+    console.log(`  ✓ dist/webbrain-${packageName}-${version}.zip`);
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    runCli();
+  } catch (error) {
+    console.error(`build-zip: ${error.message}`);
+    process.exit(1);
+  }
 }

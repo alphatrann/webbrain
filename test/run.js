@@ -266,6 +266,9 @@ const { bumpSemver, rewriteVersionInJsonText, rewriteVersionByAnchor, isReleaseB
 const { normalizeChangelogBody, buildChangelogSection, insertChangelogEntry } = await import(
   'file://' + path.join(ROOT, 'scripts/update-changelog.mjs').replace(/\\/g, '/')
 );
+const { assertMatchingArchiveVersion } = await import(
+  'file://' + path.join(ROOT, 'scripts/build-zip.mjs').replace(/\\/g, '/')
+);
 
 // providers/manager.js — pure ESM at module load (chrome.* only inside
 // methods). We import the class so we can exercise the static categoryFor()
@@ -3342,6 +3345,11 @@ All notable changes to WebBrain are documented in this file.
   });
   assert.match(after, /^# Changelog[\s\S]*## \[1\.3\.0\] - 2026-06-28[\s\S]*## \[1\.2\.3\] - 2026-06-01/);
   assert.match(after, /### Added\n- Added a release workflow\./);
+  assert.equal(
+    after.slice(after.indexOf('## [1.2.3]')),
+    before.slice(before.indexOf('## [1.2.3]')),
+    'inserting a release must preserve the existing changelog byte-for-byte'
+  );
 });
 
 test('update-changelog: normalizes plain notes and fenced AI output', () => {
@@ -3363,6 +3371,26 @@ test('update-changelog: rejects duplicate versions and nested release headings',
     body: '### Changed\n- Duplicate.',
   }), /already contains/);
   assert.throws(() => buildChangelogSection('1.4.0', '2026-06-28', '## [1.4.0] - 2026-06-28'), /must not include/);
+});
+
+test('repository changelog retains complete, non-empty release history', () => {
+  const changelog = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
+  const packageVersion = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  const releases = [...changelog.matchAll(/^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}$/gm)];
+  const versions = releases.map((match) => match[1]);
+
+  assert.equal(versions[0], packageVersion, 'the newest changelog entry must match package.json');
+  assert.ok(versions.length >= 100, `expected the full changelog history, found only ${versions.length} releases`);
+  assert.ok(versions.includes('0.7.0'), 'the changelog must retain its earliest documented release');
+  assert.equal(new Set(versions).size, versions.length, 'changelog release versions must be unique');
+
+  for (let i = 0; i < releases.length; i += 1) {
+    const bodyStart = releases[i].index + releases[i][0].length;
+    const bodyEnd = releases[i + 1]?.index ?? changelog.length;
+    const body = changelog.slice(bodyStart, bodyEnd);
+    assert.match(body, /^### (Added|Changed|Fixed|Tests)$/m, `${versions[i]} must have a change section`);
+    assert.match(body, /^- /m, `${versions[i]} must have at least one change`);
+  }
 });
 
 test('rejects bad current version', () => {
@@ -3526,6 +3554,14 @@ test('submissionZipRemoveCommand tolerates missing first Edge artifact', () => {
   assert.equal(
     submissionZipRemoveCommand('18.1.0'),
     'git rm --ignore-unmatch dist/webbrain-chrome-18.1.0.zip dist/webbrain-edge-18.1.0.zip dist/webbrain-firefox-18.1.0.zip'
+  );
+});
+
+test('build-zip rejects filenames that would disagree with archived manifests', () => {
+  assert.doesNotThrow(() => assertMatchingArchiveVersion('23.0.0', '23.0.0', 'Chrome manifest'));
+  assert.throws(
+    () => assertMatchingArchiveVersion('23.0.0', '22.4.5', 'Chrome manifest'),
+    /Chrome manifest is 22\.4\.5, but the release package version is 23\.0\.0/
   );
 });
 
