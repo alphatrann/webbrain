@@ -52,7 +52,9 @@ function cloudSnapshot(run, { includeUpdates = true } = {}) {
 function isUsableCloudTab(tab) {
   if (tab?.id == null) return false;
   try {
-    const url = new URL(tab.url || '');
+    // Chrome can leave an unpacked-extension startup tab's `url` empty while
+    // exposing the loaded page through `pendingUrl`, even with status=complete.
+    const url = new URL(tab.url || tab.pendingUrl || '');
     return ['http:', 'https:', 'file:'].includes(url.protocol) || url.href === 'about:blank';
   } catch {
     return false;

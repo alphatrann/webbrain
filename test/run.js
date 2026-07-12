@@ -4108,7 +4108,8 @@ test('done_json validates Chrome and Firefox cloud results with one repair attem
 
 test('cloud run controller uses the visible tab and persists terminal status', async () => {
   const session = {};
-  const tab = { id: 17, url: 'https://webbrain.one/', active: true, windowId: 3 };
+  const tab = { id: 17, url: '', pendingUrl: 'https://webbrain.one/', active: true, windowId: 3 };
+  let createdTabs = 0;
   let finishRun;
   let processArgs = null;
   const agent = {
@@ -4124,7 +4125,10 @@ test('cloud run controller uses the visible tab and persists terminal status', a
       query: async query => query.active ? [tab] : [tab],
       get: async () => tab,
       update: async () => tab,
-      create: async () => ({ id: 18, url: 'about:blank', active: true }),
+      create: async () => {
+        createdTabs += 1;
+        return { id: 18, url: 'about:blank', active: true };
+      },
     },
     windows: { update: async () => ({}) },
     storage: {
@@ -4146,6 +4150,7 @@ test('cloud run controller uses the visible tab and persists terminal status', a
   const started = await controller.startRun({ task: 'Open Google' });
   assert.equal(started.status, 'running');
   assert.equal(started.tabId, 17);
+  assert.equal(createdTabs, 0, 'a loaded pendingUrl tab should be reused instead of opening about:blank');
   assert.equal(processArgs[3], 'act');
   assert.deepEqual(processArgs[4], []);
   assert.equal(processArgs[5].cloudRun, true);
