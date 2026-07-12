@@ -40,6 +40,7 @@ import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
 import { buildCustomSkillsPrompt, buildSkillToolDefinitions, buildSkillToolRegistry, normalizeCustomSkills } from './skills.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
+import { buildTrustedRuntimeContext } from './runtime-context.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -3175,6 +3176,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   async _enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState = null) {
     const hasPriorUserTurn = messages.some(m => m.role === 'user');
+    // Dynamic trusted state belongs in the per-turn user context, not the
+    // cache-stable system prompt. The same enriched message is passed to the
+    // planner gate and the main agent loop, so neither has to guess the clock.
+    let contextLine = `${buildTrustedRuntimeContext()}\n\n`;
 
     let url = '', title = '';
     try {
@@ -3191,9 +3196,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       .replace(/[[\]<>`"\r\n]/g, ' ')
       .replace(/untrusted_page_content/gi, 'untrusted-content')
       .slice(0, 300);
-    let contextLine = url
-      ? `[Current page context — applies to this user message and supersedes older page context for phrases like "this page". URL: ${safeField(url)}${title ? ` — Title: ${safeField(title)}` : ''}]\n\n`
-      : '';
+    if (url) {
+      contextLine += `[Current page context — applies to this user message and supersedes older page context for phrases like "this page". URL: ${safeField(url)}${title ? ` — Title: ${safeField(title)}` : ''}]\n\n`;
+    }
 
     if (this.apiAllowedTabs.has(tabId) && !this.apiAllowedInjected.has(tabId)) {
       contextLine += `[USER OVERRIDE — /allow-api: For this conversation the user has explicitly authorized you to use API mutations (POST/PUT/PATCH/DELETE via fetch_url, or fetch() with mutation methods via execute_js) when you judge API to be more reliable than UI for a specific step. The default UI-first rule still applies — reach for the API when UI has failed/is genuinely unworkable, or when WebBrain reports a [BULK API MUTATION PATTERN] for repeated successful same-kind UI actions. Before any destructive API call, state the URL, method, and payload in plain text in your response so the user can see what you're about to do.]\n\n`;

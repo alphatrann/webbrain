@@ -42,6 +42,7 @@ import { sanitizeText as sanitizePlannerText } from './text-sanitize.js';
 import { buildCustomSkillsPrompt, buildSkillToolDefinitions, buildSkillToolRegistry, normalizeCustomSkills } from './skills.js';
 import { USER_MEMORY_DEFAULT_MAX_PROMPT_CHARS, formatUserMemoryPrompt, normalizeUserMemoryMaxPromptChars, normalizeUserMemoryStore } from './user-memory.js';
 import { mergeRedactionFrameRegions, mapRegionsToImage, pixelateDataUrl } from './screenshot-redaction.js';
+import { buildTrustedRuntimeContext } from './runtime-context.js';
 
 const DEFAULT_CLOUD_COST_ALLOWANCE_USD = 10;
 // Product default: auto-approve plans at 75% confidence to reduce review stops.
@@ -1661,6 +1662,10 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   async _enrichUserMessageWithCurrentPage(tabId, messages, userMessage, costState = null) {
     const hasPriorUserTurn = messages.some(m => m.role === 'user');
+    // Dynamic trusted state belongs in the per-turn user context, not the
+    // cache-stable system prompt. The same enriched message is passed to the
+    // planner gate and the main agent loop, so neither has to guess the clock.
+    let contextLine = `${buildTrustedRuntimeContext()}\n\n`;
 
     // Collect URL + title via chrome.tabs (cheap, no debugger needed).
     let url = '';
@@ -1679,9 +1684,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       .replace(/[[\]<>`"\r\n]/g, ' ')
       .replace(/untrusted_page_content/gi, 'untrusted-content')
       .slice(0, 300);
-    let contextLine = url
-      ? `[Current page context — applies to this user message and supersedes older page context for phrases like "this page". URL: ${safeField(url)}${title ? ` — Title: ${safeField(title)}` : ''}]\n\n`
-      : '';
+    if (url) {
+      contextLine += `[Current page context — applies to this user message and supersedes older page context for phrases like "this page". URL: ${safeField(url)}${title ? ` — Title: ${safeField(title)}` : ''}]\n\n`;
+    }
 
     // Recording status (ground truth). The tab recorder can be stopped
     // out-of-band — the sidebar/toolbar Stop button, the safety-cap auto-stop,
