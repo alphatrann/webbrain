@@ -7122,12 +7122,13 @@ test('sidepanel escapes dynamic system-message interpolation before raw HTML ins
 });
 
 test('sidepanel subscribe error card clears DOM without HTML reinterpretation', () => {
-  for (const [label, panelRel] of [
-    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
-    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  for (const [label, panelRel, styleRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/styles/sidepanel.css'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/styles/sidepanel.css'],
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
-    const start = panel.indexOf('function renderSubscribeError(textEl, content) {');
+    const styles = fs.readFileSync(path.join(ROOT, styleRel), 'utf8');
+    const start = panel.indexOf("function renderSubscribeError(textEl, content, resumeMode = '') {");
     assert.notEqual(start, -1, `${label}: renderSubscribeError missing`);
     const end = panel.indexOf('\n}\n\nfunction addMessage', start);
     assert.notEqual(end, -1, `${label}: renderSubscribeError boundary missing`);
@@ -7135,6 +7136,28 @@ test('sidepanel subscribe error card clears DOM without HTML reinterpretation', 
     assert.match(body, /textEl\.replaceChildren\(\);/, `${label}: subscribe card should clear via DOM APIs`);
     assert.doesNotMatch(body, /textEl\.innerHTML\s*=\s*'';/, `${label}: subscribe card should not clear via innerHTML`);
     assert.match(body, /msg\.textContent = parsed\.message \|\| t\('sp\.subscribe\.allowance_used'\);/, `${label}: subscribe message must remain textContent`);
+    assert.match(body, /actions\.className = 'subscribe-actions';/, `${label}: subscribe actions should share a responsive row`);
+    assert.match(body, /resumeBtn\.textContent = t\('sp\.subscribe\.resume'\);/, `${label}: subscribe card should render a localized resume action`);
+    assert.match(body, /resumeBtn\.dataset\.resumeMode = \['ask', 'act', 'dev'\]\.includes\(resumeMode\)[\s\S]*?\? resumeMode[\s\S]*?: \(textEl\.closest\('\.message\.assistant'\)\?\.dataset\.runMode \|\| agentMode\);/, `${label}: resume action should prefer an explicitly captured failed run mode`);
+    assert.match(body, /resumeAfterSubscription\(resumeBtn\)/, `${label}: subscribe card should use the shared resume handler`);
+    assert.match(panel, /function resumeAfterSubscription\(btn\) \{[\s\S]*?const mode = \['ask', 'act', 'dev'\]\.includes\(btn\?\.dataset\?\.resumeMode\)[\s\S]*?setMode\(mode\);[\s\S]*?continueAgent\(\{ mode \}\);[\s\S]*?\}/, `${label}: subscribe resume should synchronize the visible mode before continuing`);
+    assert.match(panel, /btn\.addEventListener\('click', \(\) => resumeAfterSubscription\(btn\)\);/, `${label}: restored subscribe cards should use the shared resume handler`);
+    const errorUpdateStart = panel.indexOf('function renderAgentErrorUpdate(');
+    const errorUpdateEnd = panel.indexOf('\n}\n\nfunction rebindRestoredMessageControls', errorUpdateStart);
+    assert.notEqual(errorUpdateStart, -1, `${label}: renderAgentErrorUpdate missing`);
+    assert.notEqual(errorUpdateEnd, -1, `${label}: renderAgentErrorUpdate boundary missing`);
+    const errorUpdateBody = panel.slice(errorUpdateStart, errorUpdateEnd);
+    assert.match(errorUpdateBody, /subscribeResumeMode: active\.retryPayload\?\.mode,/, `${label}: structured error cards should receive the request-scoped run mode`);
+    assert.match(panel, /renderSubscribeError\(textEl, content, options\.subscribeResumeMode\)/, `${label}: error messages should forward their captured run mode to the subscribe card`);
+    assert.match(panel, /async function continueAgent\(options = \{\}\) \{[\s\S]*?includes\(options\?\.mode\) \? options\.mode : agentMode;/, `${label}: continuation should accept a preserved mode`);
+    const runCompleteStart = panel.indexOf("case 'run_complete':");
+    const runCompleteEnd = panel.indexOf("case 'context_compacted':", runCompleteStart);
+    assert.notEqual(runCompleteStart, -1, `${label}: run_complete handler missing`);
+    assert.notEqual(runCompleteEnd, -1, `${label}: run_complete boundary missing`);
+    const runCompleteBody = panel.slice(runCompleteStart, runCompleteEnd);
+    assert.match(runCompleteBody, /else if \(!renderSubscribeError\(textEl, data\.finalContent\)\) textEl\.innerHTML = formatMarkdown\(data\.finalContent\);/, `${label}: restored run finals should render subscribe actions before markdown fallback`);
+    assert.match(styles, /\.subscribe-actions\s*\{[\s\S]*?flex-wrap:\s*wrap;/, `${label}: subscribe actions should wrap in narrow panels`);
+    assert.match(styles, /\.subscribe-resume-btn\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?border:\s*1px solid var\(--accent\);/, `${label}: resume action should use secondary styling`);
   }
 });
 
@@ -7767,7 +7790,7 @@ test('sidepanel flushes run chat before queue settlement after immediate tab swi
     assert.notEqual(sendDrainIdx, -1, `${label}: send completion should drain pending tab switches`);
     assert.equal(sendFlushIdx < sendDrainIdx, true, `${label}: send completion must flush before deferred tab switching`);
 
-    const continueMatch = panel.match(/async function continueAgent\(\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n\}/);
+    const continueMatch = panel.match(/async function continueAgent\(options = \{\}\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n\}/);
     assert.ok(continueMatch, `${label}: continueAgent finally block missing`);
     const continueFinally = continueMatch[1];
     const continueFlushIdx = continueFinally.indexOf('flushRenderedTabChat()');
@@ -8834,7 +8857,7 @@ test('sidepanel keeps retry metadata long enough for returned error updates', ()
     );
     assert.match(
       source,
-      /async function continueAgent\(\) \{[\s\S]*?const tabId = currentTabId;[\s\S]*?clearActiveChatPayloadForTab\(tabId\);[\s\S]*?setTabProcessing\(tabId, true\);/,
+      /async function continueAgent\(options = \{\}\) \{[\s\S]*?const tabId = currentTabId;[\s\S]*?clearActiveChatPayloadForTab\(tabId\);[\s\S]*?setTabProcessing\(tabId, true\);/,
       `${label}: Continue runs should clear stale chat retry metadata before starting`,
     );
   }
@@ -8977,10 +9000,10 @@ test('sidepanel continue runs use the initiating tab state', () => {
     ['firefox', 'src/firefox/src/ui/sidepanel.js'],
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
-    const match = panel.match(/async function continueAgent\(\) \{[\s\S]*?\n\}/);
+    const match = panel.match(/async function continueAgent\(options = \{\}\) \{[\s\S]*?\n\}/);
     assert.ok(match, `${label}: continueAgent missing`);
     const body = match[0];
-    assert.match(body, /const tabId = currentTabId;[\s\S]*?const modeForSend = agentMode;[\s\S]*?sendToBackground\('continue', \{[\s\S]*?tabId,[\s\S]*?mode: modeForSend,/, `${label}: Continue should send with the tab and mode captured before awaiting`);
+    assert.match(body, /const tabId = currentTabId;[\s\S]*?const modeForSend = \['ask', 'act', 'dev'\]\.includes\(options\?\.mode\) \? options\.mode : agentMode;[\s\S]*?sendToBackground\('continue', \{[\s\S]*?tabId,[\s\S]*?mode: modeForSend,/, `${label}: Continue should send with the tab and requested-or-current mode captured before awaiting`);
     assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?tabId: currentTabId/, `${label}: Continue should not read currentTabId inside the async send payload`);
     assert.doesNotMatch(body, /sendToBackground\('continue', \{[\s\S]*?mode: agentMode/, `${label}: Continue should not read agentMode inside the async send payload`);
     assert.match(body, /await prepareChatHistoryForTurn\(tabId, modeForSend\);[\s\S]*?if \(isTabAbortRequested\(tabId\)\) return false;[\s\S]*?if \(!sameTabId\(currentTabId, tabId\) \|\| !sameTabId\(renderedTabId, tabId\)\) return false;[\s\S]*?assistantEl = addMessage\('assistant', ''\);/, `${label}: Continue should hydrate history, honor aborts, and re-check the initiating tab before rendering`);
@@ -8997,7 +9020,7 @@ test('sidepanel drains queued context-menu prompts after pending tab switches on
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     const completions = [
       ['sendMessage', /async function sendMessage\([^)]*\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n  return accepted;/],
-      ['continueAgent', /async function continueAgent\(\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n\}/],
+      ['continueAgent', /async function continueAgent\(options = \{\}\) \{[\s\S]*?finally \{([\s\S]*?)\n  \}\n\}/],
     ];
     for (const [fnName, pattern] of completions) {
       const match = panel.match(pattern);
