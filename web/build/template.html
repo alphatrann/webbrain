@@ -2892,8 +2892,31 @@
       });
     });
 
-    stage.addEventListener('mouseenter', stop);
-    stage.addEventListener('mouseleave', start);
+    // Left/Right arrow keys step through scenes too, matching the on-screen
+    // prev/next buttons. Scoped to "while we're on the hero" — pointer
+    // hovering the stage, or focus already inside it (an arrow/dot) — so the
+    // keys don't hijack arrow-key behavior elsewhere on the page (typing in
+    // an input, the language <select>, browser back/forward gestures, etc).
+    let hovering = false;
+    const isRtl = document.documentElement.dir === 'rtl';
+    stage.addEventListener('mouseenter', function () { hovering = true; stop(); });
+    stage.addEventListener('mouseleave', function () { hovering = false; start(); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const active = document.activeElement;
+      const typing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' ||
+        active.tagName === 'SELECT' || active.isContentEditable);
+      if (typing) return;
+      if (!hovering && !stage.contains(active)) return;
+      // Physical Left/Right always matches the visual prev/next placement,
+      // which itself flips for RTL via CSS logical properties.
+      const visualStep = e.key === 'ArrowLeft' ? -1 : 1;
+      const step = isRtl ? -visualStep : visualStep;
+      userLocked = true;
+      stop();
+      activate(current + step);
+      e.preventDefault();
+    });
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) stop(); else start();
     });
