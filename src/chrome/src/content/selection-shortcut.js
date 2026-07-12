@@ -366,20 +366,28 @@
   }
 
   function destroySurface() {
-    clearTimeout(toastTimer);
+    hideToast();
     host?.remove();
     host = shadow = shortcut = popup = mainView = translateView = question = sendButton = null;
     translationSelect = translationSubmit = toast = null;
     snapshot = null;
   }
 
+  function hideToast() {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+    if (toast) toast.hidden = true;
+  }
+
   function showToast(message) {
+    if (suppressed) return;
     ensureSurface();
     toast.textContent = message;
     toast.hidden = false;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       if (toast) toast.hidden = true;
+      toastTimer = null;
     }, 3800);
   }
 
@@ -446,6 +454,7 @@
   api.runtime.onMessage.addListener((message) => {
     if (message?.type === 'WB_HIDE_FOR_TOOL_USE') {
       suppressed = true;
+      hideToast();
       dismissSurface();
     } else if (message?.type === 'WB_SHOW_AFTER_TOOL_USE') {
       suppressed = false;
@@ -494,6 +503,7 @@
       hasSelection: !!snapshot?.text,
       shortcutVisible: !!shortcut && !shortcut.hidden,
       popupVisible: !!popup && !popup.hidden,
+      toastVisible: !!toast && !toast.hidden,
       translateViewVisible: !!translateView && !translateView.hidden,
       translationSelectValue: translationSelect?.value || '',
       shortcutRect: shortcut && !shortcut.hidden ? shortcut.getBoundingClientRect().toJSON() : null,

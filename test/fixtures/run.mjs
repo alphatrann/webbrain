@@ -277,9 +277,16 @@ for (const [label, sourcePath, manualOpen] of [
   test(`${label}: selection shortcut persists hiding and suppresses screenshot-time UI`, async (page) => {
     await setupSelectionShortcut(page, sourcePath, { requiresManualOpen: manualOpen });
     await selectFixtureText(page);
+    if (manualOpen) {
+      await page.evaluate(() => window.__webbrainSelectionShortcut.submitPreset('summarize'));
+      const toastState = await page.evaluate(() => window.__webbrainSelectionShortcut.getState());
+      if (!toastState.toastVisible) throw new Error(`manual-open guidance toast was not visible: ${JSON.stringify(toastState)}`);
+    }
     await page.evaluate(() => window.__sendSelectionRuntimeMessage({ type: 'WB_HIDE_FOR_TOOL_USE' }));
     let state = await page.evaluate(() => window.__webbrainSelectionShortcut.getState());
-    if (!state.suppressed || state.shortcutVisible) throw new Error(`tool-use hide should suppress the surface: ${JSON.stringify(state)}`);
+    if (!state.suppressed || state.shortcutVisible || state.toastVisible) {
+      throw new Error(`tool-use hide should suppress the complete surface: ${JSON.stringify(state)}`);
+    }
     await page.evaluate(() => window.__sendSelectionRuntimeMessage({ type: 'WB_SHOW_AFTER_TOOL_USE' }));
     await selectFixtureText(page);
     await page.evaluate(() => window.__webbrainSelectionShortcut.hideShortcut());
