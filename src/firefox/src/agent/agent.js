@@ -28,6 +28,7 @@ import {
   PDF_PASSTHROUGH_MAX_BYTES,
 } from './pdf-tools.js';
 import * as trace from '../trace/recorder.js';
+import { tracesToMarkdown } from './trace-export.js';
 import { solveCaptcha, detectCaptcha, injectToken } from './captcha-solver.js';
 import { Capability, CAPABILITY_LABEL, capabilitiesFor, requiredHosts, frameHostMatches, isNetworkMutation, normalizeHost, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
 import {
@@ -5451,6 +5452,38 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const messages = this.conversations.get(tabId) || [];
     const idx = this._findOriginalTaskIndex(messages);
     return idx >= 0 ? this._messageText(messages[idx]?.content) : '';
+  }
+
+  /**
+   * Serialize a tab's conversation to Markdown for /export-with-traces, sourced
+   * from the trace store (compaction-immune, raw structured results) — NOT from
+   * this.conversations. Hydrates first so it works across background restarts.
+   * Returns { ok, markdown|null, turnCount, reason }: reason 'no-conversation', or
+   * 'no-traces' (tracing off / nothing recorded) so the UI can say so instead of
+   * downloading an empty-but-official-looking file.
+   */
+  async exportTraces(tabId) {
+    await this._hydrate(tabId);
+    const conversationId = this.conversationIds.get(tabId);
+    if (!conversationId) return { ok: true, markdown: null, turnCount: 0, reason: 'no-conversation' };
+    let runs;
+    try {
+      const all = await trace.listRuns();
+      runs = all
+        .filter((r) => r && r.conversationId === conversationId)
+        .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    if (runs.length === 0) return { ok: true, markdown: null, turnCount: 0, reason: 'no-traces' };
+    const withEvents = [];
+    for (const run of runs) {
+      let events = [];
+      try { events = await trace.getRunEvents(run.runId); } catch (e) { events = []; }
+      withEvents.push({ run, events });
+    }
+    const { markdown, turnCount, toolCount } = tracesToMarkdown(withEvents);
+    return { ok: true, markdown, turnCount, toolCount };
   }
 
   _isAgentInjectedUserContent(content) {

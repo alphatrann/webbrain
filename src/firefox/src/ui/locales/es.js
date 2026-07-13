@@ -711,4 +711,7 @@ export default {
   "sp.upload_picker.cancelled": "Subida cancelada",
   "sp.upload_picker.too_large": "El archivo seleccionado supera el límite de 25 MB (máx. 25 MB)",
   "sp.upload_picker.read_failed": "No se pudo leer el archivo seleccionado",
+  "sp.slash.export_traces": "Exportar la cadena de herramientas (trazas)",
+  "sp.export_traces.none": "No hay trazas para esta conversación. Activa «Registrar trazas» en Ajustes y vuelve a ejecutar.",
+  "sp.export_traces.error": "No se pudieron exportar las trazas.",
 };

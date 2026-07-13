@@ -704,4 +704,7 @@ export default {
   "st.redaction.toggle.label": "Flouter le contenu sensible dans les captures d'écran",
   "st.redaction.toggle.desc": "Avant qu'une capture d'écran soit envoyée à un modèle de vision, floute les champs de formulaire et le texte qui ressemble à un e-mail ou un numéro de téléphone. La détection s'exécute entièrement sur votre appareil — rien de plus n'est transmis.",
   "st.redaction.warning": "⚠️ Meilleur effort et fail-open : si le floutage ne peut pas s'exécuter sur une page (par exemple juste après une navigation, dans les visionneuses PDF, ou sur des pages restreintes du navigateur), la capture est quand même envoyée non floutée. La détection utilise uniquement des heuristiques DOM — texte dessiné sur un canvas, données personnelles dans des images, ou tout ce qui n'est pas reconnu comme champ de formulaire ou texte e-mail/téléphone peut passer inaperçu, et le texte de la page envoyé au modèle n'est pas flouté par ce réglage. Ce n'est PAS une garantie de sécurité. Pour une confidentialité totale, utilisez un modèle local/hors ligne (llama.cpp, Ollama) : les captures ne quittent alors jamais votre machine et le floutage devient inutile.",
+  "sp.slash.export_traces": "Exporter la chaîne d'outils (traces)",
+  "sp.export_traces.none": "Aucune trace pour cette conversation. Activez « Enregistrer les traces » dans les paramètres, puis relancez.",
+  "sp.export_traces.error": "Impossible d'exporter les traces.",
 };

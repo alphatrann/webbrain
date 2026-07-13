@@ -704,4 +704,7 @@ export default {
   "st.redaction.toggle.label": "Redactar contenido sensible en las capturas de pantalla",
   "st.redaction.toggle.desc": "Antes de enviar una captura de pantalla a un modelo de visión, difumina los campos de formulario y el texto que parezca un correo electrónico o un número de teléfono. La detección se ejecuta enteramente en tu dispositivo — no se transmite nada adicional.",
   "st.redaction.warning": "⚠️ Es una redacción best-effort y fail-open: si no se puede aplicar en una página (por ejemplo justo después de una navegación, en visores de PDF o en páginas restringidas del navegador), la captura se envía igualmente sin redactar. La detección usa solo heurísticas del DOM — texto dibujado en un canvas, datos personales dentro de imágenes, o cualquier cosa no reconocida como campo de formulario o texto de correo/teléfono puede pasar desapercibida, y el texto de la página enviado al modelo no se redacta con este ajuste. No es una garantía de seguridad. Para privacidad total, usa un modelo local/sin conexión (llama.cpp, Ollama): las capturas nunca saldrán de tu equipo y la redacción deja de ser necesaria.",
+  "sp.slash.export_traces": "Exportar la cadena de herramientas (trazas)",
+  "sp.export_traces.none": "No hay trazas para esta conversación. Activa «Registrar trazas» en Ajustes y vuelve a ejecutar.",
+  "sp.export_traces.error": "No se pudieron exportar las trazas.",
 };

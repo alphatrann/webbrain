@@ -704,4 +704,7 @@ export default {
   "st.redaction.toggle.label": "Burahin ang sensitibong nilalaman sa mga screenshot",
   "st.redaction.toggle.desc": "Bago ipadala ang isang screenshot sa isang vision model, binuburahin nito ang mga form field at tekstong mukhang email o numero ng telepono. Tumatakbo ang detection nang buo sa iyong device — walang karagdagang ipinapadala.",
   "st.redaction.warning": "⚠️ Best-effort at fail-open ito: kung hindi matakbo ang pagbura sa isang page (halimbawa, agad pagkatapos mag-navigate, sa mga PDF viewer, o sa mga restricted browser page), ipapadala pa rin ang screenshot nang hindi nabura. Gumagamit lang ang detection ng DOM heuristics — puwedeng makalusot ang tekstong iginuhit sa canvas, personal na impormasyon sa loob ng mga larawan, o anumang hindi nakikilalang form field o email/phone text, at hindi binubura ng setting na ito ang text ng page na ipinapadala sa model. Hindi ito garantiya ng seguridad. Para sa ganap na privacy, gumamit ng local/offline model (llama.cpp, Ollama): hindi na aalis sa iyong device ang mga screenshot at hindi na kailangan ang pagbura.",
+  "sp.slash.export_traces": "I-export ang tool chain (mga trace)",
+  "sp.export_traces.none": "Walang trace para sa usapang ito. I-on ang Record traces sa Settings, pagkatapos ay patakbuhin muli.",
+  "sp.export_traces.error": "Hindi ma-export ang mga trace.",
 };

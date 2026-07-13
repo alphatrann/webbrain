@@ -704,4 +704,7 @@ export default {
   "st.redaction.toggle.label": "Samarkan kandungan sensitif dalam tangkapan skrin",
   "st.redaction.toggle.desc": "Sebelum tangkapan skrin dihantar ke model visi, medan borang dan teks yang kelihatan seperti e-mel atau nombor telefon akan dikaburkan. Pengesanan berjalan sepenuhnya pada peranti anda — tiada apa-apa tambahan dihantar.",
   "st.redaction.warning": "⚠️ Ini bersifat usaha terbaik (best-effort) dan fail-open: jika penyamaran tidak dapat berjalan pada sesuatu halaman (contohnya sejurus selepas navigasi, dalam pemapar PDF, atau pada halaman pelayar yang dihadkan), tangkapan skrin tetap dihantar tanpa disamarkan. Pengesanan hanya menggunakan heuristik DOM — teks yang dilukis pada canvas, maklumat peribadi dalam imej, atau apa-apa yang tidak dikenali sebagai medan borang atau teks e-mel/telefon mungkin terlepas, dan teks halaman yang dihantar kepada model tidak disamarkan oleh tetapan ini. Ini BUKAN jaminan keselamatan. Untuk privasi sepenuhnya, gunakan model tempatan/luar talian (llama.cpp, Ollama): tangkapan skrin tidak akan meninggalkan peranti anda dan penyamaran menjadi tidak diperlukan.",
+  "sp.slash.export_traces": "Eksport rantaian alat (jejak)",
+  "sp.export_traces.none": "Tiada jejak untuk perbualan ini. Hidupkan Rakam jejak dalam Tetapan, kemudian jalankan semula.",
+  "sp.export_traces.error": "Tidak dapat mengeksport jejak.",
 };

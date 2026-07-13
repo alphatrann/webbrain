@@ -711,4 +711,7 @@ export default {
   "sp.upload_picker.cancelled": "Unggahan dibatalkan",
   "sp.upload_picker.too_large": "File yang dipilih melebihi batas 25MB (maks 25MB)",
   "sp.upload_picker.read_failed": "Gagal membaca file yang dipilih",
+  "sp.slash.export_traces": "Ekspor rantai alat (jejak)",
+  "sp.export_traces.none": "Tidak ada jejak untuk percakapan ini. Aktifkan Rekam jejak di Pengaturan, lalu jalankan lagi.",
+  "sp.export_traces.error": "Tidak dapat mengekspor jejak.",
 };

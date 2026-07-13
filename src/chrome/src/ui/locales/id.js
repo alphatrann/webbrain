@@ -704,4 +704,7 @@ export default {
   "st.redaction.toggle.label": "Samarkan konten sensitif pada tangkapan layar",
   "st.redaction.toggle.desc": "Sebelum tangkapan layar dikirim ke model visi, WebBrain mengaburkan kolom formulir dan teks yang terlihat seperti email atau nomor telepon. Pendeteksian berjalan sepenuhnya di perangkat Anda — tidak ada yang dikirim ekstra.",
   "st.redaction.warning": "⚠️ Ini bersifat best-effort dan fail-open: jika penyamaran tidak bisa berjalan di suatu halaman (misalnya tepat setelah navigasi, di penampil PDF, atau di halaman browser yang dibatasi), tangkapan layar tetap dikirim tanpa disamarkan. Pendeteksian hanya menggunakan heuristik DOM — teks yang digambar di canvas, informasi pribadi di dalam gambar, atau apa pun yang tidak dikenali sebagai kolom formulir atau teks email/telepon bisa saja lolos, dan teks halaman yang dikirim ke model tidak disamarkan oleh pengaturan ini. Ini BUKAN jaminan keamanan. Untuk privasi penuh, gunakan model lokal/offline (llama.cpp, Ollama): tangkapan layar tidak akan pernah meninggalkan perangkat Anda dan penyamaran pun jadi tidak diperlukan.",
+  "sp.slash.export_traces": "Ekspor rantai alat (jejak)",
+  "sp.export_traces.none": "Tidak ada jejak untuk percakapan ini. Aktifkan Rekam jejak di Pengaturan, lalu jalankan lagi.",
+  "sp.export_traces.error": "Tidak dapat mengekspor jejak.",
 };

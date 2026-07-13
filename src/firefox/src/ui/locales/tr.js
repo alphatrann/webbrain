@@ -710,4 +710,7 @@ export default {
   "sp.upload_picker.cancelled": "Yükleme iptal edildi",
   "sp.upload_picker.too_large": "Seçilen dosya 25MB sınırını aşıyor (maks. 25MB)",
   "sp.upload_picker.read_failed": "Seçilen dosya okunamadı",
+  "sp.slash.export_traces": "Araç zincirini dışa aktar (izler)",
+  "sp.export_traces.none": "Bu konuşma için iz yok. Ayarlar'da İzleri kaydet seçeneğini açıp yeniden çalıştırın.",
+  "sp.export_traces.error": "İzler dışa aktarılamadı.",
 };

@@ -711,4 +711,7 @@ export default {
   "sp.upload_picker.cancelled": "上传已取消",
   "sp.upload_picker.too_large": "所选文件超过 25MB 限制（最大 25MB）",
   "sp.upload_picker.read_failed": "读取所选文件失败",
+  "sp.slash.export_traces": "导出工具链（跟踪）",
+  "sp.export_traces.none": "此对话没有跟踪记录。请在设置中开启「记录跟踪」，然后重新运行。",
+  "sp.export_traces.error": "无法导出跟踪。",
 };

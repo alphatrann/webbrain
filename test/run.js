@@ -77,6 +77,14 @@ const { getActiveAdapter: getActiveAdapterFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/adapters.js').replace(/\\/g, '/')
 );
 
+// trace-export.js is pure ESM — the /export-with-traces serializer, tested here.
+const { tracesToMarkdown } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/agent/trace-export.js').replace(/\\/g, '/')
+);
+const { tracesToMarkdown: tracesToMarkdownFx } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/trace-export.js').replace(/\\/g, '/')
+);
+
 // network-tools.js references chrome.* inside a try/catch at module load, so
 // it imports cleanly under Node — the storage init silently no-ops and
 // validateFetchUrl / registrableDomain are pure functions.
@@ -1631,6 +1639,65 @@ test('GitHub Enterprise does not match github adapter (strict)', () => {
   // accidentally apply github.com selectors to GHES.
   const a = getActiveAdapter('https://github.example-corp.com/foo/bar');
   assert.equal(a, null);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// /export-with-traces serializer tests
+// ────────────────────────────────────────────────────────────────────────
+
+console.log('\ntrace export');
+
+// Fixture uses the REAL trace-event shape (trace/recorder.js): raw structured tool
+// results (NOT <untrusted_page_content>-wrapped), the recorder's { _truncated }
+// marker for a large result, an error event, and a screenshot event that must NOT
+// render. This is the Galaxus run whose messages-only /export (#348) looked clean.
+const TRACE_RUNS = [
+  {
+    run: { runId: 'r1', userMessage: 'Find the cheapest Sony WH-1000XM5', model: 'haiku', status: 'stopped' },
+    events: [
+      { runId: 'r1', seq: 0, kind: 'llm_response', data: { step: 0, phase: 'planner', content: '```json\n{"summary":"find cheapest Sony","steps":["search","filter"]}\n```' } },
+      { runId: 'r1', seq: 1, kind: 'llm_response', data: { step: 1, content: '', toolCalls: [{ id: 'c1', name: 'fetch_url' }] } },
+      { runId: 'r1', seq: 2, kind: 'tool', data: { step: 1, name: 'fetch_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'Blocked (403): Akamai challenge page' } } },
+      { runId: 'r1', seq: 3, kind: 'tool', data: { step: 2, name: 'research_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'challenge' } } },
+      { runId: 'r1', seq: 4, kind: 'tool', data: { step: 3, name: 'research_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'challenge' } } },
+      { runId: 'r1', seq: 5, kind: 'tool', data: { step: 4, name: 'get_accessibility_tree', args: { filter: 'visible' }, result: { _truncated: true, length: 41000, head: 'role heading '.repeat(80) } } },
+      { runId: 'r1', seq: 6, kind: 'error', data: { step: 5, phase: 'loop', message: 'stopped by user' } },
+      { runId: 'r1', seq: 7, kind: 'llm_response', data: { step: 5, content: 'Cheapest option: CHF 203.' } },
+      { runId: 'r1', seq: 8, kind: 'screenshot', data: { step: 2, caption: 'viewport' } },
+    ],
+  },
+];
+
+test('trace export: renders the full tool chain from trace events, in order', () => {
+  const { markdown, turnCount, toolCount } = tracesToMarkdown(TRACE_RUNS);
+  assert.equal(turnCount, 1);
+  assert.equal(toolCount, 4);
+  assert.match(markdown, /# WebBrain Conversation — tool chain/);
+  assert.match(markdown, /## Turn 1 — Find the cheapest Sony WH-1000XM5/);
+  assert.match(markdown, /\*\*Planner:\*\*\n```json\n\{"summary"/);   // planner labelled + fenced, model's ```json language preserved
+  assert.ok(!/```\n```/.test(markdown), 'planner content must not be double-fenced');
+  assert.match(markdown, /Screenshots, notes and vision sub-calls are recorded but not rendered here/);   // honest footer
+  // order preserved, retries kept distinct (no aggregation)
+  assert.ok(markdown.indexOf('fetch_url') < markdown.indexOf('research_url'), 'order preserved');
+  assert.equal((markdown.match(/research_url/g) || []).length, 2, 'each retry emitted, not aggregated');
+  // failure marker works on the RAW structured result (the #348 wrapping bug can't occur here)
+  assert.match(markdown, /fetch_url[^\n]*✗[^\n]*Akamai/);
+  // recorder's large-result marker rendered, not dumped
+  assert.match(markdown, /recorder-truncated, 40\.0kb total/);
+  assert.ok(!markdown.includes('role heading '.repeat(60)), 'huge result body must not be dumped');
+  assert.match(markdown, /⚠️ error \(loop\): stopped by user/);
+  assert.match(markdown, /Cheapest option: CHF 203/);
+  assert.ok(!markdown.includes('viewport'), 'screenshot events omitted');
+});
+
+test('trace export: empty input → empty transcript, zero counts', () => {
+  const r = tracesToMarkdown([]);
+  assert.equal(r.turnCount, 0);
+  assert.equal(r.toolCount, 0);
+});
+
+test('trace export: chrome and firefox serializers are identical', () => {
+  assert.equal(tracesToMarkdownFx(TRACE_RUNS).markdown, tracesToMarkdown(TRACE_RUNS).markdown);
 });
 
 // ────────────────────────────────────────────────────────────────────────

@@ -711,4 +711,7 @@ export default {
   "sp.upload_picker.cancelled": "アップロードをキャンセルしました",
   "sp.upload_picker.too_large": "選択したファイルが 25MB の上限を超えています（最大 25MB）",
   "sp.upload_picker.read_failed": "選択したファイルの読み取りに失敗しました",
+  "sp.slash.export_traces": "ツールチェーンをエクスポート（トレース）",
+  "sp.export_traces.none": "この会話のトレースがありません。設定で「トレースを記録」をオンにして、もう一度実行してください。",
+  "sp.export_traces.error": "トレースをエクスポートできませんでした。",
 };

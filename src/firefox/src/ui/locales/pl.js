@@ -671,4 +671,7 @@ export default {
   "sp.upload_picker.cancelled": "Przesyłanie anulowane",
   "sp.upload_picker.too_large": "Wybrany plik przekracza limit 25 MB (maks. 25 MB)",
   "sp.upload_picker.read_failed": "Nie udało się odczytać wybranego pliku",
+  "sp.slash.export_traces": "Eksportuj łańcuch narzędzi (ślady)",
+  "sp.export_traces.none": "Brak śladów dla tej rozmowy. Włącz „Rejestruj ślady\" w Ustawieniach i uruchom ponownie.",
+  "sp.export_traces.error": "Nie udało się wyeksportować śladów.",
 };
