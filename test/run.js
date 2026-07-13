@@ -77,6 +77,14 @@ const { getActiveAdapter: getActiveAdapterFx } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/agent/adapters.js').replace(/\\/g, '/')
 );
 
+// trace-export.js is pure ESM — the /export-with-traces serializer, tested here.
+const { tracesToMarkdown } = await import(
+  'file://' + path.join(ROOT, 'src/chrome/src/agent/trace-export.js').replace(/\\/g, '/')
+);
+const { tracesToMarkdown: tracesToMarkdownFx } = await import(
+  'file://' + path.join(ROOT, 'src/firefox/src/agent/trace-export.js').replace(/\\/g, '/')
+);
+
 // network-tools.js references chrome.* inside a try/catch at module load, so
 // it imports cleanly under Node — the storage init silently no-ops and
 // validateFetchUrl / registrableDomain are pure functions.
@@ -1631,6 +1639,134 @@ test('GitHub Enterprise does not match github adapter (strict)', () => {
   // accidentally apply github.com selectors to GHES.
   const a = getActiveAdapter('https://github.example-corp.com/foo/bar');
   assert.equal(a, null);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// /export-with-traces serializer tests
+// ────────────────────────────────────────────────────────────────────────
+
+console.log('\ntrace export');
+
+// Fixture uses the REAL trace-event shape (trace/recorder.js): raw structured tool
+// results (NOT <untrusted_page_content>-wrapped), the recorder's { _truncated }
+// marker for a large result, an error event, and a screenshot event that must NOT
+// render. This is the Galaxus run whose messages-only /export (#348) looked clean.
+const TRACE_RUNS = [
+  {
+    run: { runId: 'r1', userMessage: 'Find the cheapest Sony WH-1000XM5', model: 'haiku', status: 'stopped' },
+    events: [
+      { runId: 'r1', seq: 0, kind: 'llm_response', data: { step: 0, phase: 'planner', content: '```json\n{"summary":"find cheapest Sony","steps":["search","filter"]}\n```' } },
+      { runId: 'r1', seq: 1, kind: 'llm_response', data: { step: 1, content: '', toolCalls: [{ id: 'c1', name: 'fetch_url' }] } },
+      { runId: 'r1', seq: 2, kind: 'tool', data: { step: 1, name: 'fetch_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'Blocked (403): Akamai challenge page' } } },
+      { runId: 'r1', seq: 3, kind: 'tool', data: { step: 2, name: 'research_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'challenge' } } },
+      { runId: 'r1', seq: 4, kind: 'tool', data: { step: 3, name: 'research_url', args: { url: 'https://www.galaxus.ch/de/search?q=Sony' }, result: { success: false, error: 'challenge' } } },
+      { runId: 'r1', seq: 5, kind: 'tool', data: { step: 4, name: 'get_accessibility_tree', args: { filter: 'visible' }, result: { _truncated: true, length: 41000, head: 'role heading '.repeat(80) } } },
+      { runId: 'r1', seq: 6, kind: 'error', data: { step: 5, phase: 'loop', message: 'stopped by user' } },
+      { runId: 'r1', seq: 7, kind: 'llm_response', data: { step: 5, content: 'Cheapest option: CHF 203.' } },
+      { runId: 'r1', seq: 8, kind: 'screenshot', data: { step: 2, caption: 'viewport' } },
+    ],
+  },
+];
+
+test('trace export: renders the full tool chain from trace events, in order', () => {
+  const { markdown, turnCount, toolCount } = tracesToMarkdown(TRACE_RUNS);
+  assert.equal(turnCount, 1);
+  assert.equal(toolCount, 4);
+  assert.match(markdown, /# WebBrain Conversation — tool chain/);
+  assert.match(markdown, /## Turn 1 — Find the cheapest Sony WH-1000XM5/);
+  assert.match(markdown, /\*\*Planner:\*\*\n```json\n\{"summary"/);   // planner labelled + fenced, model's ```json language preserved
+  assert.ok(!/```\n```/.test(markdown), 'planner content must not be double-fenced');
+  assert.match(markdown, /Screenshots, notes and vision sub-calls are recorded but not rendered here/);   // honest footer
+  // order preserved, retries kept distinct (no aggregation)
+  assert.ok(markdown.indexOf('fetch_url') < markdown.indexOf('research_url'), 'order preserved');
+  assert.equal((markdown.match(/research_url/g) || []).length, 2, 'each retry emitted, not aggregated');
+  // failure marker works on the RAW structured result (the #348 wrapping bug can't occur here)
+  assert.match(markdown, /fetch_url[^\n]*✗[^\n]*Akamai/);
+  // recorder's large-result marker rendered, not dumped
+  assert.match(markdown, /recorder-truncated, 40\.0kb total/);
+  assert.ok(!markdown.includes('role heading '.repeat(60)), 'huge result body must not be dumped');
+  assert.match(markdown, /⚠️ error \(loop\): stopped by user/);
+  assert.match(markdown, /Cheapest option: CHF 203/);
+  assert.ok(!markdown.includes('viewport'), 'screenshot events omitted');
+});
+
+test('trace export: empty input → empty transcript, zero counts', () => {
+  const r = tracesToMarkdown([]);
+  assert.equal(r.turnCount, 0);
+  assert.equal(r.toolCount, 0);
+});
+
+test('trace export: unserializable tool results do not throw', () => {
+  const circular = { ok: true };
+  circular.self = circular;
+  const { markdown, toolCount } = tracesToMarkdown([{
+    run: { runId: 'r-circ', userMessage: 'circ', model: 'test', status: 'completed' },
+    events: [
+      { runId: 'r-circ', seq: 0, kind: 'tool', data: { name: 'weird', args: circular, result: circular } },
+    ],
+  }]);
+  assert.equal(toolCount, 1);
+  assert.match(markdown, /weird/);
+  assert.match(markdown, /\[object Object\]|unserializable/);
+});
+
+test('trace export: notes appear before the footer', () => {
+  const { markdown } = tracesToMarkdown(TRACE_RUNS, { notes: ['2 of 3 turn(s) could not load their event log.'] });
+  assert.match(markdown, /_Note: 2 of 3 turn\(s\) could not load their event log\._/);
+  assert.ok(
+    markdown.indexOf('_Note:') < markdown.indexOf('Screenshots, notes and vision sub-calls'),
+    'notes should come before the screenshot footer',
+  );
+});
+
+test('trace export: chrome and firefox serializers are identical', () => {
+  assert.equal(tracesToMarkdownFx(TRACE_RUNS).markdown, tracesToMarkdown(TRACE_RUNS).markdown);
+});
+
+test('export-with-traces is wired in both side panels and backgrounds', () => {
+  for (const [label, panelRel, bgRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/src/background.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js', 'src/firefox/src/background.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    const bg = fs.readFileSync(path.join(ROOT, bgRel), 'utf8');
+    assert.match(
+      panel,
+      /\{ value: '\/export-with-traces', descriptionKey: 'sp\.slash\.export_traces' \}/,
+      `${label}: slash autocomplete should list /export-with-traces`,
+    );
+    assert.match(
+      panel,
+      /const OUT_OF_BAND_SLASH_COMMANDS = new Set\(\[[\s\S]*?'\/export-with-traces'[\s\S]*?\]\);/,
+      `${label}: /export-with-traces should be runnable while busy`,
+    );
+    const exportWithIdx = panel.indexOf('// /export-with-traces');
+    const exportIdx = panel.indexOf('// /export — export conversation as markdown');
+    assert.notEqual(exportWithIdx, -1, `${label}: /export-with-traces handler missing`);
+    assert.notEqual(exportIdx, -1, `${label}: /export handler missing`);
+    assert.ok(exportWithIdx < exportIdx, `${label}: /export-with-traces must be parsed before /export`);
+    assert.match(
+      panel,
+      /if \(\/\^\\\/export-with-traces\\b\\s\*\/i\.test\(text\)\) \{[\s\S]*?sendToBackground\('export_traces', \{ tabId \}\)/,
+      `${label}: /export-with-traces should call export_traces on the background`,
+    );
+    assert.match(
+      panel,
+      /res\.reason === 'no-conversation'[\s\S]*?sp\.export_traces\.no_conversation[\s\S]*?sp\.export_traces\.none/,
+      `${label}: empty export should distinguish no-conversation from no-traces`,
+    );
+    assert.match(
+      panel,
+      /sp\.export_traces\.done/,
+      `${label}: success path should use the traces-specific done string`,
+    );
+    assert.match(bg, /case 'export_traces':/, `${label}: background should handle export_traces`);
+    assert.match(
+      bg,
+      /case 'export_traces': \{[\s\S]*?agent\.exportTraces\(tabId\)/,
+      `${label}: export_traces should call agent.exportTraces`,
+    );
+  }
 });
 
 // ────────────────────────────────────────────────────────────────────────
@@ -7475,7 +7611,7 @@ test('trace viewer drops stale async render completions', () => {
     const runRequestIdx = renderRunBody.indexOf('const requestId = ++traceRenderRequestId;');
     const getRunIdx = renderRunBody.indexOf('const run = await getRun(runId);');
     const firstRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) return;', getRunIdx);
-    const getEventsIdx = renderRunBody.indexOf('const events = await getRunEvents(runId);');
+    const getEventsIdx = renderRunBody.indexOf('const events = await getRunEvents(runId).catch(() => []);');
     const secondRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) return;', getEventsIdx);
     const buildRunIdx = renderRunBody.indexOf('const html = await buildRunView(run, events, false, objectUrls);');
     const thirdRunGuardIdx = renderRunBody.indexOf('if (!isCurrentRunRender(requestId, runId)) {', buildRunIdx);
@@ -7579,7 +7715,7 @@ test('trace viewer toolbar actions use a captured run selection across awaits', 
     const exportCaptureIdx = exportBody.indexOf('const runId = selectedRunId;');
     const getRunIdx = exportBody.indexOf('const run = await getRun(runId);');
     const missingRunGuardIdx = exportBody.indexOf("if (!run) return alert(t('tr.select_first'));");
-    const eventsIdx = exportBody.indexOf('const events = await getRunEvents(runId);');
+    const eventsIdx = exportBody.indexOf('const events = await getRunEvents(runId).catch(() => []);');
     const screenshotIdx = exportBody.indexOf('const shot = await getScreenshot(runId, ev.seq);');
     assert.notEqual(exportCaptureIdx, -1, `${label}: trace export should capture selectedRunId once`);
     assert.notEqual(getRunIdx, -1, `${label}: trace export should load the captured run`);
@@ -9513,7 +9649,7 @@ test('sidepanel allows safe slash commands and queues normal messages while busy
     assert.notEqual(oobStart, -1, `${label}: out-of-band slash command set missing`);
     assert.notEqual(oobEnd, -1, `${label}: out-of-band slash command set should close`);
     const oobBlock = panel.slice(oobStart, oobEnd);
-    const allowed = ['/help', '/check-progress', '/show-scratchpad', '/show-memory', '/list-schedules', '/screenshot', '/export', '/verbose'];
+    const allowed = ['/help', '/check-progress', '/show-scratchpad', '/show-memory', '/list-schedules', '/screenshot', '/export', '/export-with-traces', '/verbose'];
     for (const command of allowed) {
       assert.match(
         oobBlock,
@@ -9544,7 +9680,7 @@ test('sidepanel allows safe slash commands and queues normal messages while busy
     );
     assert.match(
       locale,
-      /'sp\.slash\.busy_only_oob': 'Messages are queued while WebBrain is busy\. Only \/help, \/check-progress, \/show-scratchpad, \/show-memory, \/list-schedules, \/dangerously-skip-permissions, \/screenshot, \/export, and \/verbose can run immediately as slash commands\./,
+      /'sp\.slash\.busy_only_oob': 'Messages are queued while WebBrain is busy\. Only \/help, \/check-progress, \/show-scratchpad, \/show-memory, \/list-schedules, \/dangerously-skip-permissions, \/screenshot, \/export, \/export-with-traces, and \/verbose can run immediately as slash commands\./,
       `${label}: busy slash notice should explain queued messages and safe slash commands`,
     );
   }
@@ -9601,21 +9737,21 @@ test('sidepanel queued composer messages expose edit and delete controls', () =>
 
 test('sidepanel busy slash notice is updated in every locale', () => {
   const expected = {
-    en: 'Messages are queued while WebBrain is busy. Only /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, and /verbose can run immediately as slash commands.',
-    es: 'Los mensajes se ponen en cola mientras WebBrain está ocupado. Solo /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export y /verbose pueden ejecutarse de inmediato como comandos slash.',
-    fr: "Les messages sont mis en file d'attente pendant que WebBrain est occupé. Seuls /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export et /verbose peuvent s'exécuter immédiatement comme commandes slash.",
-    tr: 'WebBrain meşgulken mesajlar kuyruğa alınır. Yalnızca /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export ve /verbose slash komutları olarak hemen çalışabilir.',
-    zh: 'WebBrain 忙碌时，消息会排队。只有 /help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export 和 /verbose 可以作为斜杠命令立即运行。',
-    ru: 'Пока WebBrain занят, сообщения ставятся в очередь. Только /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export и /verbose могут запускаться сразу как slash-команды.',
-    uk: 'Поки WebBrain зайнятий, повідомлення ставляться в чергу. Лише /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export та /verbose можуть запускатися одразу як slash-команди.',
-    ar: 'تُضاف الرسائل إلى قائمة الانتظار بينما يكون WebBrain مشغولًا. يمكن فقط لـ /help و /check-progress و /show-scratchpad و /show-memory و /list-schedules و /dangerously-skip-permissions و /screenshot و /export و /verbose العمل فورًا كأوامر slash.',
-    ja: 'WebBrain がビジーの間、メッセージはキューに入ります。/help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export、/verbose だけがスラッシュコマンドとしてすぐに実行できます。',
-    ko: 'WebBrain이 사용 중일 때 메시지는 대기열에 추가됩니다. /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /verbose만 슬래시 명령으로 즉시 실행할 수 있습니다.',
-    id: 'Pesan dimasukkan ke antrean saat WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, dan /verbose yang dapat langsung berjalan sebagai perintah slash.',
-    th: 'ข้อความจะถูกเข้าคิวขณะที่ WebBrain ไม่ว่าง เฉพาะ /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export และ /verbose เท่านั้นที่เรียกใช้ได้ทันทีในฐานะคำสั่ง slash',
-    ms: 'Mesej dimasukkan ke giliran semasa WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, dan /verbose boleh berjalan serta-merta sebagai arahan slash.',
-    tl: 'Nakapila ang mga mensahe habang abala ang WebBrain. Tanging /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, at /verbose ang maaaring tumakbo agad bilang mga slash command.',
-    pl: 'Wiadomości są kolejkowane, gdy WebBrain jest zajęty. Tylko /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export i /verbose mogą uruchamiać się od razu jako polecenia slash.',
+    en: 'Messages are queued while WebBrain is busy. Only /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, and /verbose can run immediately as slash commands.',
+    es: 'Los mensajes se ponen en cola mientras WebBrain está ocupado. Solo /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces y /verbose pueden ejecutarse de inmediato como comandos slash.',
+    fr: "Les messages sont mis en file d'attente pendant que WebBrain est occupé. Seuls /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces et /verbose peuvent s'exécuter immédiatement comme commandes slash.",
+    tr: 'WebBrain meşgulken mesajlar kuyruğa alınır. Yalnızca /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces ve /verbose slash komutları olarak hemen çalışabilir.',
+    zh: 'WebBrain 忙碌时，消息会排队。只有 /help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export、/export-with-traces 和 /verbose 可以作为斜杠命令立即运行。',
+    ru: 'Пока WebBrain занят, сообщения ставятся в очередь. Только /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces и /verbose могут запускаться сразу как slash-команды.',
+    uk: 'Поки WebBrain зайнятий, повідомлення ставляться в чергу. Лише /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces та /verbose можуть запускатися одразу як slash-команди.',
+    ar: 'تُضاف الرسائل إلى قائمة الانتظار بينما يكون WebBrain مشغولًا. يمكن فقط لـ /help و /check-progress و /show-scratchpad و /show-memory و /list-schedules و /dangerously-skip-permissions و /screenshot و /export و /export-with-traces و /verbose العمل فورًا كأوامر slash.',
+    ja: 'WebBrain がビジーの間、メッセージはキューに入ります。/help、/check-progress、/show-scratchpad、/show-memory、/list-schedules、/dangerously-skip-permissions、/screenshot、/export、/export-with-traces、/verbose だけがスラッシュコマンドとしてすぐに実行できます。',
+    ko: 'WebBrain이 사용 중일 때 메시지는 대기열에 추가됩니다. /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, /verbose만 슬래시 명령으로 즉시 실행할 수 있습니다.',
+    id: 'Pesan dimasukkan ke antrean saat WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, dan /verbose yang dapat langsung berjalan sebagai perintah slash.',
+    th: 'ข้อความจะถูกเข้าคิวขณะที่ WebBrain ไม่ว่าง เฉพาะ /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces และ /verbose เท่านั้นที่เรียกใช้ได้ทันทีในฐานะคำสั่ง slash',
+    ms: 'Mesej dimasukkan ke giliran semasa WebBrain sibuk. Hanya /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, dan /verbose boleh berjalan serta-merta sebagai arahan slash.',
+    tl: 'Nakapila ang mga mensahe habang abala ang WebBrain. Tanging /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces, at /verbose ang maaaring tumakbo agad bilang mga slash command.',
+    pl: 'Wiadomości są kolejkowane, gdy WebBrain jest zajęty. Tylko /help, /check-progress, /show-scratchpad, /show-memory, /list-schedules, /dangerously-skip-permissions, /screenshot, /export, /export-with-traces i /verbose mogą uruchamiać się od razu jako polecenia slash.',
   };
 
   for (const [label, localeDir] of [

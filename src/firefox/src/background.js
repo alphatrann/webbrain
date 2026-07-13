@@ -1612,6 +1612,12 @@ async function handleMessage(msg, sender) {
       return { ok: true, ...(await agent.getScratchpad(tabId)) };
     }
 
+    case 'export_traces': {
+      const tabId = msg.tabId || sender.tab?.id;
+      if (!tabId) return { ok: false, error: 'No tab ID' };
+      return { ok: true, ...(await agent.exportTraces(tabId)) };
+    }
+
     case 'get_progress': {
       const tabId = msg.tabId || sender.tab?.id;
       if (!tabId) return { ok: false, error: 'No tab ID' };

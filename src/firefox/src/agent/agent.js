@@ -28,6 +28,7 @@ import {
   PDF_PASSTHROUGH_MAX_BYTES,
 } from './pdf-tools.js';
 import * as trace from '../trace/recorder.js';
+import { tracesToMarkdown } from './trace-export.js';
 import { solveCaptcha, detectCaptcha, injectToken } from './captcha-solver.js';
 import { Capability, CAPABILITY_LABEL, capabilitiesFor, requiredHosts, frameHostMatches, isNetworkMutation, normalizeHost, PermissionManager, UNTRUSTED_CONTENT_TOOLS } from './permission-gate.js';
 import {
@@ -5451,6 +5452,72 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     const messages = this.conversations.get(tabId) || [];
     const idx = this._findOriginalTaskIndex(messages);
     return idx >= 0 ? this._messageText(messages[idx]?.content) : '';
+  }
+
+  /**
+   * Serialize a tab's conversation to Markdown for /export-with-traces, sourced
+   * from the trace store (compaction-immune, raw structured results) — NOT from
+   * this.conversations. Hydrates first so it works across background restarts.
+   * Returns { ok, markdown|null, turnCount, reason }: reason 'no-conversation', or
+   * 'no-traces' (tracing off / nothing recorded) so the UI can say so instead of
+   * downloading an empty-but-official-looking file.
+   */
+  async exportTraces(tabId) {
+    await this._hydrate(tabId);
+    const conversationId = this.conversationIds.get(tabId);
+    if (!conversationId) return { ok: true, markdown: null, turnCount: 0, reason: 'no-conversation' };
+    // Cap matching runs for this conversation only (not a global newest-N).
+    const RUN_LIMIT = 500;
+    let runs;
+    let truncated = false;
+    try {
+      const matched = await trace.listRuns({ limit: RUN_LIMIT, conversationId });
+      truncated = matched.length >= RUN_LIMIT;
+      runs = matched
+        .filter((r) => r && r.conversationId === conversationId)
+        .sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    if (runs.length === 0) return { ok: true, markdown: null, turnCount: 0, reason: 'no-traces' };
+    const withEvents = [];
+    let failedEventLoads = 0;
+    for (const run of runs) {
+      let events = [];
+      try {
+        events = await trace.getRunEvents(run.runId);
+      } catch (e) {
+        events = [];
+        failedEventLoads += 1;
+      }
+      withEvents.push({ run, events });
+    }
+    if (failedEventLoads === runs.length) {
+      return { ok: false, error: 'Could not read any trace events for this conversation.' };
+    }
+    const notes = [];
+    if (failedEventLoads > 0) {
+      notes.push(`${failedEventLoads} of ${runs.length} turn(s) could not load their event log.`);
+    }
+    if (truncated) {
+      notes.push(`Export limited to the ${RUN_LIMIT} most recent traced turns for this conversation.`);
+    }
+    let markdown;
+    let turnCount;
+    let toolCount;
+    try {
+      ({ markdown, turnCount, toolCount } = tracesToMarkdown(withEvents, { notes }));
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    return {
+      ok: true,
+      markdown,
+      turnCount,
+      toolCount,
+      partial: failedEventLoads > 0,
+      truncated,
+    };
   }
 
   _isAgentInjectedUserContent(content) {
