@@ -80,23 +80,63 @@ function publicMediaKind(pageInfo = {}, path = '/') {
   return 'auto';
 }
 
-function publicMediaDownloadPrompt(kind = 'auto') {
-  const args = kind === 'auto' ? '{ "kind": "auto" }' : `{ "kind": "${kind}" }`;
-  return `Download this public media from the current page. Call download_public_media first with ${args} and omit url so it uses the active tab. Do not make a separate plan or inspect the DOM first. Only call download_social_media if download_public_media fails, then report the saved downloadId/result.`;
+function isDirectPublicMediaPage(host = '', path = '/', url = '') {
+  const h = String(host || '').toLowerCase().replace(/^www\./, '');
+  if (h === 'youtu.be') return /^\/[^/?#]+/.test(path);
+  if (h === 'youtube.com' || h.endsWith('.youtube.com')) return isYouTubeVideoPage(h, path, url);
+  if (h === 'instagram.com') return /^\/(?:p|reel|tv)\/[^/?#]+/i.test(path);
+  if (h === 'tiktok.com' || h.endsWith('.tiktok.com')) return /^\/@[^/]+\/video\/[^/?#]+/i.test(path);
+  if (h === 'x.com' || h === 'twitter.com') return /^\/[^/]+\/status\/[^/?#]+/i.test(path);
+  if (h === 'reddit.com' || h.endsWith('.reddit.com')) return /^\/r\/[^/]+\/comments\/[^/?#]+/i.test(path);
+  if (h === 'redd.it' || h === 'fb.watch' || h === 'pin.it') return /^\/[^/?#]+/.test(path);
+  if (h === 'pinterest.com' || h.endsWith('.pinterest.com')) return /^\/pin\/[^/?#]+/i.test(path);
+  if (h === 'linkedin.com' || h.endsWith('.linkedin.com')) return /^\/(?:posts\/|feed\/update\/)/i.test(path);
+  if (h === 'threads.net' || h.endsWith('.threads.net')) return /^\/@[^/]+\/post\/[^/?#]+/i.test(path);
+  if (h === 'facebook.com' || h === 'fb.com' || h.endsWith('.facebook.com')) {
+    if (/^\/(?:reel\/|watch\/|videos\/)/i.test(path)) return true;
+    try {
+      const parsed = new URL(url);
+      return !!(parsed.searchParams.get('story_fbid') || parsed.searchParams.get('v'));
+    } catch {
+      return false;
+    }
+  }
+  return path !== '/';
 }
 
-function publicMediaDownloadRunOptions(kind = 'auto') {
+function publicMediaDownloadPrompt(kind = 'auto', needsExplicitUrl = false) {
+  const args = kind === 'auto' ? '{ "kind": "auto" }' : `{ "kind": "${kind}" }`;
+  if (needsExplicitUrl) {
+    return `Download the single public media item currently visible in this feed. First use the attached screenshot to identify the intended post/video, then inspect visible links with get_accessibility_tree and obtain that item's exact public post/reel URL. Call download_public_media with ${args} and that explicit url. Never send the feed/profile URL to download_public_media. FreeSkillz must return one final file; do not report separate video/audio tracks or tell the user to merge them with ffmpeg. Do not make a separate plan.`;
+  }
+  return `Download this public media from the current page. Call download_public_media first with ${args} and omit url so it uses the active media page. Do not make a separate plan. FreeSkillz must return one final file; do not report separate video/audio tracks or tell the user to merge them with ffmpeg. Only call download_social_media if download_public_media fails, then report the saved downloadId/result.`;
+}
+
+function publicMediaDownloadRunOptions(kind = 'auto', needsExplicitUrl = false) {
   const args = kind === 'auto' ? 'kind:"auto"' : `kind:"${kind}"`;
-  return {
+  const options = {
     id: 'download-media',
     skipPlanner: true,
     tool: 'download_public_media',
     summary: 'Download the public media from the current page.',
-    steps: [
-      `Call download_public_media with ${args} and no url so it uses the active tab.`,
-      'Report the saved downloadId/result. Use download_social_media only if download_public_media fails.',
-    ],
+    steps: needsExplicitUrl
+      ? [
+        'Inspect the preflight screenshot to identify the single visible media item.',
+        'Read the visible accessibility tree and obtain the exact post/reel permalink for that item.',
+        `Call download_public_media with ${args} and the explicit permalink; never pass the feed URL.`,
+        'Report the one completed file and downloadId; never hand separate tracks or ffmpeg work to the user.',
+      ]
+      : [
+        `Call download_public_media with ${args} and no url so it uses the active media page.`,
+        'Report the one completed file and downloadId. Use download_social_media only if download_public_media fails.',
+      ],
   };
+  if (needsExplicitUrl) {
+    options.autoExecute = true;
+    options.firstTool = 'screenshot';
+    options.args = { save: false };
+  }
+  return options;
 }
 
 function firstToolRunOptions(id, tool, args = {}, summary = '', steps = []) {
@@ -313,12 +353,13 @@ export function buildRecommendedActions(pageInfo = {}, options = {}) {
   const publicMediaHost = PUBLIC_MEDIA_HOST_RE.test(host);
   if ((publicMediaHost || SOCIAL_HOST_RE.test(host) || /\b(post|status|reel|shorts|watch|pin)\b/i.test(path)) && hasMedia(pageInfo)) {
     const kind = publicMediaKind(pageInfo, path);
+    const needsExplicitUrl = publicMediaHost && !isDirectPublicMediaPage(host, path, pageInfo.url || '');
     addUnique(actions, {
       id: 'download-media',
       label: 'Download this video/photo',
-      prompt: publicMediaHost ? publicMediaDownloadPrompt(kind) : 'Download the video or photo from this post.',
+      prompt: publicMediaHost ? publicMediaDownloadPrompt(kind, needsExplicitUrl) : 'Download the video or photo from this post.',
       mode: 'act',
-      ...(publicMediaHost ? { runOptions: publicMediaDownloadRunOptions(kind) } : {}),
+      ...(publicMediaHost ? { runOptions: publicMediaDownloadRunOptions(kind, needsExplicitUrl) } : {}),
     });
   }
 

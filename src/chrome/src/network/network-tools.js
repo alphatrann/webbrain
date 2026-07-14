@@ -534,8 +534,10 @@ function skillDownloadTooLargeError(size) {
 async function readSkillDownloadBuffer(res) {
   const expectedSize = parseContentLength(res.headers?.get?.('content-length'));
   if (expectedSize != null && expectedSize > SKILL_DOWNLOAD_DATA_URL_MAX_BYTES) {
+    try { await res.body?.cancel?.(); } catch (_) {}
     return {
       success: false,
+      tooLarge: true,
       bytesExpected: expectedSize,
       error: skillDownloadTooLargeError(expectedSize),
     };
@@ -554,6 +556,7 @@ async function readSkillDownloadBuffer(res) {
         try { await reader.cancel(); } catch (_) {}
         return {
           success: false,
+          tooLarge: true,
           bytesReceived,
           error: skillDownloadTooLargeError(bytesReceived),
         };
@@ -574,6 +577,7 @@ async function readSkillDownloadBuffer(res) {
   if (buffer.byteLength > SKILL_DOWNLOAD_DATA_URL_MAX_BYTES) {
     return {
       success: false,
+      tooLarge: true,
       bytesReceived: buffer.byteLength,
       error: skillDownloadTooLargeError(buffer.byteLength),
     };
@@ -629,6 +633,7 @@ async function fetchSkillDownloadData(url, expectedUrl) {
         finalUrl: responseUrl,
         ...(file.bytesExpected != null ? { bytesExpected: file.bytesExpected } : {}),
         ...(file.bytesReceived != null ? { bytesReceived: file.bytesReceived } : {}),
+        ...(file.tooLarge ? { tooLarge: true } : {}),
         error: file.error,
       };
     }
@@ -717,7 +722,8 @@ function scheduleSkillDownloadCleanup(downloadId, cleanupUrl, endpoint, tool, ex
 
 async function downloadSkillFile(url, filename, waitMs = 60000) {
   const file = await fetchSkillDownloadData(url, url);
-  if (!file.success) {
+  const directDownload = file.tooLarge === true;
+  if (!file.success && !directDownload) {
     return {
       success: false,
       ...(file.blocked ? { blocked: true } : {}),
@@ -728,7 +734,7 @@ async function downloadSkillFile(url, filename, waitMs = 60000) {
       error: file.error,
     };
   }
-  const opts = { url: file.dataUrl, conflictAction: 'uniquify' };
+  const opts = { url: directDownload ? url : file.dataUrl, conflictAction: 'uniquify' };
   const safeName = safeDownloadFilename(filename);
   if (safeName) opts.filename = safeName;
   const downloadId = await new Promise((resolve, reject) => {
@@ -737,13 +743,15 @@ async function downloadSkillFile(url, filename, waitMs = 60000) {
       else resolve(id);
     });
   });
-  const info = await resolveDownloadInfo(downloadId, waitMs);
+  const info = await resolveDownloadInfo(downloadId, waitMs, directDownload ? { expectedUrl: url } : {});
   const result = {
     downloadId,
     success: false,
     url,
     finalUrl: file.finalUrl || url,
+    ...(directDownload ? { directDownload: true } : {}),
     ...(file.status != null ? { status: file.status } : {}),
+    ...(file.bytesExpected != null ? { bytesExpected: file.bytesExpected } : {}),
     ...(file.bytesReceived != null ? { bytesReceived: file.bytesReceived, totalBytes: file.bytesReceived } : {}),
   };
   if (info) {
@@ -838,7 +846,13 @@ async function executeHttpDownloadJobSkillTool(tool, payload, endpoint) {
     const download = await downloadSkillFile(fileEndpoint.url, payload.filename, Math.min(tool.job?.timeoutMs || 90000, 120000));
     const cleanupDeferred = cleanupEndpoint.ok && download.pending === true;
     const cleanupScheduled = cleanupDeferred
-      ? scheduleSkillDownloadCleanup(download.downloadId, cleanupEndpoint.url, endpoint, tool)
+      ? scheduleSkillDownloadCleanup(
+        download.downloadId,
+        cleanupEndpoint.url,
+        endpoint,
+        tool,
+        download.directDownload ? fileEndpoint.url : undefined,
+      )
       : false;
     if (cleanupEndpoint.ok && !cleanupDeferred) cleanup = await cleanupSkillDownloadJob(cleanupEndpoint.url, endpoint, tool);
     if (!download.success) {
@@ -866,6 +880,7 @@ async function executeHttpDownloadJobSkillTool(tool, payload, endpoint) {
       jobStatus: finalStatus,
       fileUrl: fileEndpoint.url,
       cleanup,
+      ...(lastStatus?.metadata ? { metadata: lastStatus.metadata } : {}),
       ...download,
     };
   } catch (e) {

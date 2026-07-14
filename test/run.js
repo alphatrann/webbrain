@@ -4054,6 +4054,7 @@ test('public media recommendations carry immediate download_public_media fast pa
       assert.match(action?.prompt || '', /Do not make a separate plan/, `download prompt should avoid planner work for ${pageInfo.url}`);
       assert.equal(action?.runOptions?.skipPlanner, true, `download action should skip planner for ${pageInfo.url}`);
       assert.equal(action?.runOptions?.tool, 'download_public_media', `download action should pin the intended tool for ${pageInfo.url}`);
+      assert.equal(action?.runOptions?.firstTool, undefined, `direct media page should not need feed-target preflight for ${pageInfo.url}`);
       assert.ok(
         action?.runOptions?.steps?.some((step) => step.includes(`kind:"${pageInfo.expectedKind}"`)),
         `download action should carry ${pageInfo.expectedKind} args for ${pageInfo.url}`,
@@ -4068,6 +4069,22 @@ test('public media recommendations carry immediate download_public_media fast pa
     assert.equal(unsupported?.mode, 'act', 'unsupported social media still gets a generic download action');
     assert.equal(unsupported?.runOptions, undefined, 'unsupported public-media host should not get the skill fast path');
     assert.doesNotMatch(unsupported?.prompt || '', /download_public_media/, 'unsupported public-media host should not force the skill tool');
+
+    const feedAction = buildRecommendedActions({
+      url: 'https://www.instagram.com/',
+      title: 'Instagram',
+      media: { videoCount: 1, imageCount: 4 },
+    }).find((a) => a.id === 'download-media');
+    assert.match(feedAction?.prompt || '', /attached screenshot/i, 'feed download should inspect a screenshot first');
+    assert.match(feedAction?.prompt || '', /exact public post\/reel URL/i, 'feed download should resolve the visible permalink');
+    assert.match(feedAction?.prompt || '', /Never send the feed\/profile URL/i, 'feed download should reject the generic feed URL');
+    assert.match(feedAction?.prompt || '', /do not report separate video\/audio tracks/i, 'feed download should require one final file');
+    assert.equal(feedAction?.runOptions?.skipPlanner, true, 'feed download should still skip a separate planner call');
+    assert.equal(feedAction?.runOptions?.tool, 'download_public_media', 'feed download should keep FreeSkillz as the intended tool');
+    assert.equal(feedAction?.runOptions?.autoExecute, true, 'feed download should auto-run its screenshot preflight');
+    assert.equal(feedAction?.runOptions?.firstTool, 'screenshot', 'feed download should take a screenshot before the first model call');
+    assert.deepEqual(feedAction?.runOptions?.args, { save: false }, 'feed screenshot should not save an extra file');
+    assert.ok(feedAction?.runOptions?.steps?.some((step) => /explicit permalink/.test(step)), 'feed plan should pin explicit permalink resolution');
   }
 });
 
@@ -6338,7 +6355,7 @@ test('executeHttpSkillTool rejects failed skill download file requests before br
   }
 });
 
-test('executeHttpSkillTool rejects oversized skill download files before buffering', async () => {
+test('executeHttpSkillTool streams oversized skill downloads through the browser after safe preflight', async () => {
   const originalFetch = globalThis.fetch;
   const originalChrome = globalThis.chrome;
   const originalBrowser = globalThis.browser;
@@ -6401,6 +6418,17 @@ test('executeHttpSkillTool rejects oversized skill download files before bufferi
               downloadCalls.push(opts);
               cb(7801);
             },
+            search(_query, cb) {
+              cb([{
+                id: 7801,
+                filename: '/Users/x/Downloads/large.mp4',
+                state: 'complete',
+                bytesReceived: tooLargeBytes,
+                totalBytes: tooLargeBytes,
+                url: 'https://freeskillz.xyz/v1/media/jobs/job_oversized/file',
+                finalUrl: 'https://freeskillz.xyz/v1/media/jobs/job_oversized/file',
+              }]);
+            },
           },
         };
       } else {
@@ -6411,18 +6439,30 @@ test('executeHttpSkillTool rejects oversized skill download files before bufferi
               downloadCalls.push(opts);
               return 8801;
             },
+            async search() {
+              return [{
+                id: 8801,
+                filename: '/Users/x/Downloads/large.mp4',
+                state: 'complete',
+                bytesReceived: tooLargeBytes,
+                totalBytes: tooLargeBytes,
+                url: 'https://freeskillz.xyz/v1/media/jobs/job_oversized/file',
+                finalUrl: 'https://freeskillz.xyz/v1/media/jobs/job_oversized/file',
+              }];
+            },
           },
         };
       }
 
       const result = await executeTool(tool, { url: 'https://www.instagram.com/reel/abc/' });
-      assert.equal(result.success, false, `${label}: oversized file should fail`);
+      assert.equal(result.success, true, `${label}: oversized file should use the safe direct browser path`);
       assert.equal(result.status, 200, `${label}: oversized file status missing`);
       assert.equal(result.bytesExpected, tooLargeBytes, `${label}: oversized file length should be reported`);
-      assert.match(result.error, /too large for cookie-free saving/i, `${label}: oversized file error missing`);
+      assert.equal(result.directDownload, true, `${label}: oversized file should identify the direct path`);
       assert.equal(result.finalUrl, 'https://freeskillz.xyz/v1/media/jobs/job_oversized/file', `${label}: oversized file URL should be reported`);
       assert.equal(result.cleanup?.success, true, `${label}: provider job should be cleaned up after oversized file`);
-      assert.equal(downloadCalls.length, 0, `${label}: browser download must not start for oversized file`);
+      assert.equal(downloadCalls.length, 1, `${label}: browser download should start for oversized file`);
+      assert.equal(downloadCalls[0].url, 'https://freeskillz.xyz/v1/media/jobs/job_oversized/file', `${label}: large file should bypass data-URL buffering`);
       assert.deepEqual(
         providerCalls.map(call => `${call.opts.method || 'GET'} ${call.url}`),
         [
@@ -16536,6 +16576,35 @@ test('agent prefers download_public_media before download_social_media when avai
   }
 });
 
+test('agent blocks generic feed URLs until the visible media permalink is resolved', async () => {
+  for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
+    const agent = new AgentClass({});
+    agent._currentUrl = async () => 'https://www.instagram.com/';
+
+    assert.equal(agent._publicMediaUrlNeedsExplicitTarget('https://www.instagram.com/'), true, `${label}: Instagram feed should require a permalink`);
+    assert.equal(agent._publicMediaUrlNeedsExplicitTarget('https://www.instagram.com/reel/abc/'), false, `${label}: Instagram reel should be a direct target`);
+    assert.equal(agent._publicMediaUrlNeedsExplicitTarget('https://x.com/home'), true, `${label}: X feed should require a permalink`);
+    assert.equal(agent._publicMediaUrlNeedsExplicitTarget('https://x.com/user/status/123'), false, `${label}: X status should be a direct target`);
+
+    const implicit = await agent._downloadPublicMediaExplicitUrlGuard(1, 'download_public_media', { kind: 'video' });
+    assert.equal(implicit.needsExplicitMediaUrl, true, `${label}: generic active URL should be blocked`);
+    assert.deepEqual(implicit.suggestedTools, ['screenshot', 'get_accessibility_tree', 'download_public_media'], `${label}: guard should prescribe visual target resolution`);
+    assert.match(implicit.error, /do not export separate video\/audio tracks/i, `${label}: guard should not hand merging back to the user`);
+
+    const explicitFeed = await agent._downloadPublicMediaExplicitUrlGuard(1, 'download_public_media', {
+      url: 'https://www.instagram.com/',
+      kind: 'video',
+    });
+    assert.equal(explicitFeed.needsExplicitMediaUrl, true, `${label}: explicitly passing the feed URL should still be blocked`);
+
+    const direct = await agent._downloadPublicMediaExplicitUrlGuard(1, 'download_public_media', {
+      url: 'https://www.instagram.com/reel/abc/',
+      kind: 'video',
+    });
+    assert.equal(direct, null, `${label}: explicit reel permalink should pass`);
+  }
+});
+
 test('agent gates download-job skill tools with download permission', async () => {
   for (const [label, prefix, AgentClass] of [
     ['chrome', 'src/chrome', AgentCh],
@@ -22821,7 +22890,21 @@ test('planner gate: trusted recommended media action skips planner and pins read
 test('recommended action first tools are allowlisted and sanitized', () => {
   for (const [label, AgentClass, prefix] of [['chrome', AgentCh, 'src/chrome'], ['firefox', AgentFx, 'src/firefox']]) {
     const agent = new AgentClass({ getActive: () => ({}) });
-    const allowed = new Set(['read_page', 'get_accessibility_tree', 'read_youtube_transcript', 'click_ax']);
+    const allowed = new Set(['screenshot', 'read_page', 'get_accessibility_tree', 'read_youtube_transcript', 'click_ax']);
+
+    assert.deepEqual(
+      agent._recommendedActionFirstTool({
+        recommendedAction: {
+          id: 'download-media',
+          autoExecute: true,
+          tool: 'download_public_media',
+          firstTool: 'screenshot',
+          args: { save: true, fullPage: true },
+        },
+      }, allowed),
+      { id: 'download-media', tool: 'screenshot', args: { save: false } },
+      `${label}: feed media preflight should force a non-saving screenshot`,
+    );
 
     assert.deepEqual(
       agent._recommendedActionFirstTool({
