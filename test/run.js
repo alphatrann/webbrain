@@ -22112,10 +22112,31 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(html, /id="skill-url"/, `${label}: URL skill input missing`);
     assert.match(html, /id="skill-text"/, `${label}: raw skill textarea missing`);
     assert.match(html, /id="packaged-skills-list"/, `${label}: available packaged skills list missing`);
+    assert.match(html, /id="skill-preview-dialog"/, `${label}: skill content preview dialog missing`);
+    assert.match(html, /id="skill-preview-rendered"[^>]*tabindex="0"/, `${label}: rendered skill preview should be keyboard-scrollable`);
+    assert.match(html, /id="skill-preview-raw"[^>]*tabindex="0"[^>]*hidden/, `${label}: raw skill preview should be available but hidden by default`);
+    assert.match(html, /data-skill-preview-view="rendered"[^>]*aria-pressed="true"/, `${label}: rendered skill preview should be the default view`);
+    assert.match(html, /data-skill-preview-view="raw"[^>]*aria-pressed="false"/, `${label}: raw skill source toggle missing`);
+    assert.match(html, /\.skill-name-button:focus-visible/, `${label}: skill preview names should have a visible keyboard focus state`);
     assert.match(settingsJs, /CUSTOM_SKILLS_STORAGE_KEY/, `${label}: settings JS should persist custom skills`);
     assert.match(settingsJs, /PACKAGED_SKILL_SOURCES/, `${label}: settings JS should expose the packaged skill catalog`);
     assert.match(settingsJs, /function renderPackagedSkills\(\)/, `${label}: packaged skill renderer missing`);
     assert.match(settingsJs, /async function addPackagedSkill\(/, `${label}: packaged skill enable flow missing`);
+    assert.match(settingsJs, /data-packaged-skill-preview-id=/, `${label}: packaged skill names should open a preview`);
+    assert.match(settingsJs, /data-skill-preview-id=/, `${label}: enabled skill names should open a preview`);
+    assert.match(settingsJs, /async function previewPackagedSkill\(/, `${label}: packaged skill preview loader missing`);
+    assert.match(settingsJs, /openSkillPreview\(skill\.name, source, skill\.content\)/, `${label}: enabled skill preview should use stored content`);
+    assert.match(settingsJs, /function renderSkillMarkdown\(/, `${label}: skill Markdown renderer missing`);
+    assert.match(settingsJs, /renderMarkdownHeadings\(escapeHtml\(text\)\)/, `${label}: skill Markdown must escape HTML before rendering`);
+    assert.match(settingsJs, /sanitizeMarkdownLinks\(text\)/, `${label}: rendered skill links should use the shared URL sanitizer`);
+    assert.match(settingsJs, /skillPreviewRaw\.textContent = text/, `${label}: raw skill view should preserve source as inert text`);
+    assert.match(settingsJs, /setSkillPreviewView\('rendered'\)/, `${label}: opening a skill should reset to rendered preview`);
+    const previewPackagedBody = settingsJs.slice(
+      settingsJs.indexOf('async function previewPackagedSkill('),
+      settingsJs.indexOf('function previewEnabledSkill('),
+    );
+    assert.match(previewPackagedBody, /loadPackagedSkillContent\(source\)/, `${label}: packaged preview should read the packaged resource`);
+    assert.doesNotMatch(previewPackagedBody, /saveCustomSkills|addCustomSkill|storage\.local\.set/, `${label}: previewing a packaged skill must not enable it`);
     assert.match(settingsJs, /runtime\.getURL\(source\.path\)/, `${label}: packaged skill should load from the extension resource`);
     assert.match(settingsJs, /DEFAULT_SKILLS_REMOVED_STORAGE_KEY/, `${label}: settings JS should remember removed default skills`);
     assert.match(settingsJs, /removedSkill\?\.sourceType === 'built-in'/, `${label}: only built-in defaults should be marked removed`);
