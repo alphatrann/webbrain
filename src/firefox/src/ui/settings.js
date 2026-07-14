@@ -4,8 +4,7 @@
 
 import { t, getLocale, setLocale, LANGUAGES } from './i18n.js';
 import { THEME_MODES, applyMode, loadMode, watch } from './theme.js';
-import { renderMarkdownHeadings } from './markdown-render.js';
-import { sanitizeMarkdownLinks } from './markdown-link.js';
+import { renderSkillMarkdown } from './skill-markdown.js';
 import { CAPABILITY_LABEL } from '../agent/permission-gate.js';
 import {
   CUSTOM_SKILLS_STORAGE_KEY,
@@ -607,54 +606,6 @@ function extractSkillText(raw, contentType = '') {
     return [title ? `# ${title}` : '', body].filter(Boolean).join('\n\n').trim();
   }
   return text.trim();
-}
-
-function renderSkillMarkdown(content) {
-  let text = String(content || '');
-  const codeBlocks = [];
-  text = text.replace(/```[ \t]*([^`\r\n]*)\r?\n([\s\S]*?)```/g, (_match, _info, code) => {
-    const placeholder = `__SKILL_CODE_BLOCK_${codeBlocks.length}__`;
-    codeBlocks.push(code);
-    return placeholder;
-  });
-  const inlineCodes = [];
-  text = text.replace(/`([^`\n]+)`/g, (_match, code) => {
-    const placeholder = `__SKILL_INLINE_CODE_${inlineCodes.length}__`;
-    inlineCodes.push(code);
-    return placeholder;
-  });
-
-  text = renderMarkdownHeadings(escapeHtml(text));
-  text = text
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>');
-  text = sanitizeMarkdownLinks(text);
-
-  const listBlocks = [];
-  const extractLists = (input, pattern, tag, markerPattern) => input.replace(pattern, (block) => {
-    const placeholder = `__SKILL_LIST_BLOCK_${listBlocks.length}__`;
-    const items = block.trimEnd().split(/\r?\n/)
-      .map((line) => line.replace(markerPattern, '').trim())
-      .map((item) => `<li>${item}</li>`)
-      .join('');
-    listBlocks.push(`<${tag}>${items}</${tag}>`);
-    return `${placeholder}\n`;
-  });
-  text = extractLists(text, /(?:^[ \t]*[-+*][ \t]+[^\r\n]*(?:\r?\n|$))+/gm, 'ul', /^[ \t]*[-+*][ \t]+/);
-  text = extractLists(text, /(?:^[ \t]*\d+\.[ \t]+[^\r\n]*(?:\r?\n|$))+/gm, 'ol', /^[ \t]*\d+\.[ \t]+/);
-  text = text.replace(/\n/g, '<br>');
-
-  listBlocks.forEach((block, index) => {
-    text = text.replace(`__SKILL_LIST_BLOCK_${index}__`, () => block);
-  });
-
-  inlineCodes.forEach((code, index) => {
-    text = text.replace(`__SKILL_INLINE_CODE_${index}__`, () => `<code>${escapeHtml(code)}</code>`);
-  });
-  codeBlocks.forEach((code, index) => {
-    text = text.replace(`__SKILL_CODE_BLOCK_${index}__`, () => `<pre><code>${escapeHtml(code)}</code></pre>`);
-  });
-  return text;
 }
 
 function setSkillPreviewView(view) {
