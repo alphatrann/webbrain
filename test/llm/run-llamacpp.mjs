@@ -13,6 +13,7 @@
 //   node test/llm/run-llamacpp.mjs --base https://openrouter.ai/api/v1 --model openai/gpt-oss-20b --api-key $OPENROUTER_API_KEY
 //   node test/llm/run-llamacpp.mjs --url https://openrouter.ai/api/v1/chat/completions --model openai/gpt-oss-20b --api-key $OPENROUTER_API_KEY
 //   node test/llm/run-llamacpp.mjs --no-save-request                 # omit request from result files
+//   node test/llm/run-llamacpp.mjs --resume --retry-statuses 429 --retry-max 20 --retry-delay-ms 600000
 //
 // Prompt + tool tier:
 //   --mode act|ask|dev   # override case mode; Dev requires --tier mid|full
@@ -104,6 +105,11 @@ Run:
   --concurrency N                    Parallel requests (default: 2)
   --timeout MS                       Per-request timeout (default: 60000)
   --no-save-request                  Do not write request payloads into result files
+  --resume                           Skip existing non-error case files in the run dir
+  --delay-ms MS                      Wait after each case before starting another
+  --retry-statuses LIST              Comma-separated HTTP statuses to retry, e.g. 429,500,503
+  --retry-max N                      Retries per case for retry-statuses (default: 0)
+  --retry-delay-ms MS                Fallback delay between retries (default: 60000)
 
 Local chat-template compatibility:
   --chat-template-compat off
@@ -140,6 +146,14 @@ const BROWSER = normalizeBrowser(args.browser);
 const SAVE_REQUEST = !args['no-save-request'];
 const CONCURRENCY = Math.max(1, parseInt(args.concurrency || '2', 10));
 const TIMEOUT_MS = parseInt(args.timeout || '60000', 10);
+const RESUME = !!args.resume;
+const DELAY_MS = Math.max(0, parseInt(args['delay-ms'] || '0', 10));
+const RETRY_MAX = Math.max(0, parseInt(args['retry-max'] || '0', 10));
+const RETRY_DELAY_MS = Math.max(0, parseInt(args['retry-delay-ms'] || '60000', 10));
+const RETRY_STATUSES = new Set(String(args['retry-statuses'] || '')
+  .split(',')
+  .map(s => parseInt(s.trim(), 10))
+  .filter(Number.isFinite));
 const CHAT_TEMPLATE_COMPAT = getChatTemplateCompat({
   model: MODEL,
   value: args['chat-template-compat'],
@@ -171,11 +185,26 @@ const tagSuffix = isFrozen()
 const runDir = join(RESULTS_DIR, `${runTag}_${BROWSER}_${MODEL.replace(/[^\w.-]+/g, '_')}${tagSuffix}`);
 mkdirSync(runDir, { recursive: true });
 
-const ids = readdirSync(Q_DIR)
+const allIds = readdirSync(Q_DIR)
   .filter(f => /^\d{3}\.json$/.test(f))
   .map(f => f.replace(/\.json$/, ''))
   .filter(id => !onlySet || onlySet.has(id))
   .sort();
+
+function readExistingResult(id) {
+  try {
+    return JSON.parse(readFileSync(join(runDir, `${id}.json`), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const ids = RESUME
+  ? [
+      ...allIds.filter(id => readExistingResult(id)?.error),
+      ...allIds.filter(id => !readExistingResult(id)),
+    ]
+  : allIds;
 
 const promptMode = isFrozen()
   ? `frozen (${getFrozenMeta()?.sourceRun || 'unknown source'} @ ${getFrozenMeta()?.runTag || ''})`
@@ -201,6 +230,59 @@ function requestHeaders() {
     headers.authorization = `Bearer ${API_KEY}`;
   }
   return headers;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function retryAfterMs(headerValue) {
+  if (!headerValue) return null;
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const dateMs = Date.parse(headerValue);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return null;
+}
+
+async function fetchChatWithRetries(body) {
+  const retryErrors = [];
+  for (let attempt = 1; attempt <= RETRY_MAX + 1; attempt++) {
+    const attemptT0 = Date.now();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    let response = null, error = null, retryable = false, waitMs = 0;
+    try {
+      const res = await fetch(CHAT_URL, {
+        method: 'POST',
+        headers: requestHeaders(),
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) {
+        const text = (await res.text()).slice(0, 500);
+        error = `HTTP ${res.status}: ${text}`;
+        retryable = RETRY_STATUSES.has(res.status) && attempt <= RETRY_MAX;
+        waitMs = retryAfterMs(res.headers.get('retry-after')) ?? RETRY_DELAY_MS;
+      } else {
+        response = await res.json();
+      }
+    } catch (e) {
+      error = e.name === 'AbortError' ? `timeout after ${TIMEOUT_MS}ms` : e.message;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const latencyMs = Date.now() - attemptT0;
+    if (!retryable || !error) {
+      return { response, error, latencyMs, attempts: attempt, retryErrors };
+    }
+
+    retryErrors.push({ attempt, error, latencyMs, waitMs });
+    console.error(`  retryable ${error.slice(0, 80)}; waiting ${waitMs}ms before attempt ${attempt + 1}`);
+    await sleep(waitMs);
+  }
+  return { response: null, error: 'retry loop exhausted', latencyMs: 0, attempts: RETRY_MAX + 1, retryErrors };
 }
 
 // Some local models (e.g. browser-use/bu-30b-a3b-preview) emit their tool call
@@ -287,29 +369,7 @@ async function runOne(id) {
   };
   if (tools) body.tools = tools;
 
-  const t0 = Date.now();
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  let response = null, error = null;
-  try {
-    const res = await fetch(CHAT_URL, {
-      method: 'POST',
-      headers: requestHeaders(),
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      error = `HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`;
-    } else {
-      response = await res.json();
-    }
-  } catch (e) {
-    error = e.name === 'AbortError' ? `timeout after ${TIMEOUT_MS}ms` : e.message;
-  } finally {
-    clearTimeout(timer);
-  }
-
-  const latencyMs = Date.now() - t0;
+  const { response, error, latencyMs, attempts, retryErrors } = await fetchChatWithRetries(body);
   const msg = response?.choices?.[0]?.message;
   const tc = msg?.tool_calls?.[0];
   let firstToolCall = null;
@@ -339,6 +399,8 @@ async function runOne(id) {
     finishReason: response?.choices?.[0]?.finish_reason || null,
     content: msg?.content || null,
     usage: response?.usage || null,
+    attempts,
+    retryErrors,
   };
   if (SAVE_REQUEST) {
     out.request = body;
@@ -370,8 +432,12 @@ async function runAll() {
           })
           .finally(() => {
             inFlight--;
-            if (queue.length === 0 && inFlight === 0) resolve(results);
-            else tick();
+            const continueAfterDelay = () => {
+              if (queue.length === 0 && inFlight === 0) resolve(results);
+              else tick();
+            };
+            if (DELAY_MS) setTimeout(continueAfterDelay, DELAY_MS);
+            else continueAfterDelay();
           });
       }
     };
@@ -382,6 +448,9 @@ async function runAll() {
 const t0 = Date.now();
 const results = await runAll();
 const elapsed = Date.now() - t0;
+const summaryResults = RESUME
+  ? allIds.map(readExistingResult).filter(Boolean)
+  : results;
 
 const summary = {
   runTag,
@@ -400,12 +469,12 @@ const summary = {
     systemHash: getFrozenMeta()?.systemHash || null,
     toolCount: getFrozenMeta()?.toolCount || null,
   } : null,
-  cases: results.length,
+  cases: summaryResults.length,
   totalLatencyMs: elapsed,
-  errors: results.filter(r => r.error).length,
-  withToolCall: results.filter(r => r.firstToolCall).length,
-  withToolCallFromContent: results.filter(r => r.toolCallSource === 'content_fallback').length,
-  byTool: results.reduce((acc, r) => {
+  errors: summaryResults.filter(r => r.error).length,
+  withToolCall: summaryResults.filter(r => r.firstToolCall).length,
+  withToolCallFromContent: summaryResults.filter(r => r.toolCallSource === 'content_fallback').length,
+  byTool: summaryResults.reduce((acc, r) => {
     const k = r.firstToolCall?.name || (r.error ? '(error)' : '(no_tool_call)');
     acc[k] = (acc[k] || 0) + 1;
     return acc;
