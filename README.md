@@ -257,7 +257,15 @@ WebBrain separates model tier from conversation mode:
 | `get_shadow_dom` | No | No | No | Yes | Yes |
 | `shadow_dom_query` | No | No | No | Chrome | Chrome |
 | `get_frames` | No | No | No | Yes | Yes |
-| `execute_js` | No | No | No | No | Firefox |
+| `inject_css` | No | No | No | No | Chrome |
+| `remove_injected_css` | No | No | No | No | Chrome |
+| `patch_element` | No | No | No | No | Chrome |
+| `revert_patch` | No | No | No | No | Chrome |
+| `execute_js` | No | No | No | No | Chrome / Firefox |
+| `read_console` | No | No | No | No | Chrome |
+| `inspect_network_requests` | No | No | No | No | Chrome |
+| `inspect_event_listeners` | No | No | No | No | Chrome |
+| `highlight_element` | No | No | No | No | Chrome |
 
 Enabled skills can append additional tool schemas at runtime. For example,
 the bundled FreeSkillz.xyz skill exposes `read_youtube_transcript` for YouTube
@@ -266,7 +274,14 @@ media URLs. These skill tools are not hard-coded in the static table above:
 if the skill is removed or renamed, the tool disappears or appears under the
 manifest's declared name.
 
-Dev Add-on tools are only exposed in Dev mode, and Dev mode is blocked for Compact-tier providers.
+Dev Add-on tools are only exposed in Dev mode, and Dev mode is blocked for Compact-tier providers. Chrome's reversible editing tools return patch IDs: `inject_css` pairs with `remove_injected_css`, and `patch_element` pairs with `revert_patch`.
+
+### Dev-mode page editing and diagnostics
+
+- `inject_css` / `remove_injected_css` apply and undo temporary CSS by `patchId`. Each patch is unique and bound to the exact page document, and its metadata is kept in session storage so a service-worker restart does not lose the undo handle. Navigating invalidates the old handle instead of letting it affect a replacement page.
+- `patch_element` / `revert_patch` make structured inline-style, class, and attribute changes with exact before/after values. Browser-equivalent style and HTML attribute names are canonicalized before the undo record is created, contradictory set/remove operations are rejected, and executable URL attributes reject `javascript:` values (including form `action`). `highlight_element` provides a temporary pointer-transparent target overlay; because it inserts live DOM, it uses the temporary Dev-patch permission.
+- `execute_js` runs an async JavaScript function body in the page main world. Chrome uses CDP `Runtime.evaluate` with a 15-second execution limit; Firefox uses its MV2 content-script evaluator. The tool is host-permission gated and receives a fresh submit confirmation.
+- `read_console`, `inspect_network_requests`, and `inspect_event_listeners` provide bounded diagnostics on Chrome. Capture starts before either streaming or non-streaming Dev runs and stops when the tab leaves Dev mode or its conversation is cleared; leaving Dev drains every tab with active capture even if the panel switched tabs, removes handlers and buffers, and disables the matching CDP domains. Listener inspection briefly adds and restores an internal target attribute, follows open-shadow hosts when collecting ancestors, and therefore uses the same host permission as temporary Dev patches. Network headers and bodies are omitted by default, sensitive header names (including common API/subscription-key variants) are redacted before buffering, and page-derived diagnostic output is treated as untrusted content.
 
 **Compact tier** is a reduced normal-tool set + shorter system prompt designed for smaller local models. **Mid tier** keeps common task tools, iframe support, downloads, scheduling, and form verification while avoiding advanced DOM/UI fallbacks. **Full tier** adds advanced browser-operation tools such as hover, drag-drop, frames, and shadow DOM. Enable the tier per provider in Settings.
 

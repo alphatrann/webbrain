@@ -8,9 +8,19 @@ This changelog was generated from the repository Git history and release tags. V
 
 ### Added
 - Added an opt-in packaged Mail.tm disposable email skill for Chrome and Firefox, available from Settings with explicit confirmation, honest session-retention guidance, automatic account cleanup, and visible provider attribution.
+- Added nine Chrome Dev-mode tools for reversible CSS/DOM experiments and page diagnosis: `inject_css`, `remove_injected_css`, `patch_element`, `revert_patch`, CDP-backed `execute_js`, `read_console`, `inspect_network_requests`, `inspect_event_listeners`, and `highlight_element`.
+
+### Fixed
+- Stopped Chrome Dev diagnostic handlers, buffers, and their Runtime/Log/Network CDP domains when leaving Dev mode, and enabled the same capture lifecycle for streaming runs.
+- Bounded Chrome `execute_js` evaluation to 15 seconds, made CSS undo handles unique and document-bound, and canonicalized structured element patch names before recording reversible state.
+- Propagated Chrome CDP callback failures from `chrome.runtime.lastError`, so timed-out or rejected `execute_js` evaluations report failure instead of an empty successful result.
+- Redacted common API, subscription, access, auth, and client key header-name variants before Dev network diagnostics enter the in-memory buffer.
+- Blocked `javascript:` form actions in structured element patches and permission-gated event-listener inspection and element highlighting because both briefly mutate live DOM.
+- Disabled diagnostics on every tracked Dev tab when leaving panel-wide Dev mode, cleaned up exact injected CSS across navigation races, and followed open-shadow hosts when inspecting ancestor event listeners.
 
 ### Tests
 - Added packaged-skill catalog, opt-in Settings, and Mail.tm safety/API cleanup coverage.
+- Added Dev-only exposure, bounded CDP execution, diagnostic lifecycle, sensitive-header redaction, document-safe CSS undo, canonical element patching, permission classification, and state-change coverage for the new Chrome Dev toolkit.
 
 ## [23.0.2] - 2026-07-13
 

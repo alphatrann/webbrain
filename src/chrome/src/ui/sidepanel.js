@@ -1570,6 +1570,15 @@ const TOOL_KEYS = {
   extract_data: 'tool.extract_data',
   inspect_element_styles: 'tool.inspect_element_styles',
   read_page_source: 'tool.read_page_source',
+  inject_css: 'tool.inject_css',
+  remove_injected_css: 'tool.remove_injected_css',
+  patch_element: 'tool.patch_element',
+  revert_patch: 'tool.revert_patch',
+  execute_js: 'tool.execute_js',
+  read_console: 'tool.read_console',
+  inspect_network_requests: 'tool.inspect_network_requests',
+  inspect_event_listeners: 'tool.inspect_event_listeners',
+  highlight_element: 'tool.highlight_element',
   wait_for_element: 'tool.wait_for_element',
   get_selection: 'tool.get_selection',
   new_tab: 'tool.new_tab',
@@ -5644,7 +5653,7 @@ chrome.storage.onChanged.addListener((changes) => {
 });
 
 // Page inspection banner — shown when agent starts interacting with the page
-const PAGE_TOOLS = new Set(['read_page', 'read_page_source', 'get_interactive_elements', 'click', 'type_text', 'scroll', 'extract_data', 'inspect_element_styles', 'wait_for_element', 'get_selection']);
+const PAGE_TOOLS = new Set(['read_page', 'read_page_source', 'get_interactive_elements', 'click', 'type_text', 'scroll', 'extract_data', 'inspect_element_styles', 'inject_css', 'remove_injected_css', 'patch_element', 'revert_patch', 'execute_js', 'read_console', 'inspect_network_requests', 'inspect_event_listeners', 'highlight_element', 'wait_for_element', 'get_selection']);
 let inspectionBannerShown = false;
 
 function showInspectionBanner(toolName) {
@@ -6033,7 +6042,14 @@ async function handleGlobalKeydown(e) {
 
 function setMode(mode) {
   if (mode !== 'ask' && mode !== 'act' && mode !== 'dev') mode = 'ask';
+  const previousMode = agentMode;
   agentMode = mode;
+  if (previousMode === 'dev' && mode !== 'dev') {
+    // Dev mode is panel-wide, while diagnostics may be active on a tab the
+    // user switched away from. Ask the background to drain its tracked set
+    // instead of assuming currentTabId is the tab that started capture.
+    sendToBackground('disable_dev_diagnostics', { all: true }).catch(() => {});
+  }
 
   modeAskBtn.classList.toggle('active', mode === 'ask');
   modeAskBtn.classList.remove('act');
