@@ -41,6 +41,13 @@ Add a fenced `webbrain-tools` JSON block to the skill markdown:
 
 Use this skill when...
 
+```webbrain-skill
+{
+  "summary": "Read public metadata from Example when the user requests it.",
+  "modes": ["ask", "act"]
+}
+```
+
 ```webbrain-tools
 {
   "tools": [
@@ -74,6 +81,15 @@ Use this skill when...
 }
 ```
 ````
+
+`webbrain-skill` is optional and is stripped from the loaded prompt. Its
+single-line `summary` is capped at 200 characters and appears with the skill ID
+and name in the Mid/Full `load_skill` catalog. `modes` controls catalog
+eligibility; Ask must be listed explicitly, while Dev inherits Act eligibility.
+Without metadata, WebBrain infers the first prose paragraph as the summary and
+defaults the skill to Act/Dev. Compact exposes no skills. Full skill prose and
+declared tools remain absent until `load_skill` activates the skill for the
+current run.
 
 A download-job skill uses the same manifest fence, but declares the job
 endpoints. The endpoint origin must stay the same across create, status, file,

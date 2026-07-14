@@ -212,15 +212,39 @@ built-in skill record when the packaged copy changes. If the user removes a
 default skill, its removal tombstone prevents it from being silently re-added;
 new default IDs can still be migrated into existing installations.
 
-`agent/skills.js` normalizes each skill and handles two separate surfaces:
+`agent/skills.js` normalizes each skill and handles three separate surfaces:
 
-- Prompt instructions: `buildCustomSkillsPrompt()` strips fenced
-  `webbrain-tools` blocks before appending the skill text to the system prompt.
-- Tool exposure: `buildSkillToolDefinitions()` reads the manifest and appends
-  declared tool schemas to `getToolsForMode(...)` at LLM-call time, respecting
-  the active conversation mode and provider tier. Download-job skill tools are
-  hidden in Ask and available in action modes (Act and Dev) when their declared
-  tier allows them.
+- Loader catalog: optional fenced `webbrain-skill` JSON supplies a summary
+  (capped at 200 characters) and eligible modes. Without metadata, the first
+  prose paragraph becomes the summary and the skill defaults to Act/Dev. The
+  reserved `load_skill({skill_id})` definition contains only eligible IDs,
+  names, and summaries. It is exposed in Mid/Full Ask, Act, and Dev; Ask sees
+  only explicitly Ask-compatible skills, while Compact has no skill surface.
+- Prompt instructions: `buildCustomSkillsPrompt()` strips both metadata and
+  `webbrain-tools` fences, then appends full prose only for skills activated on
+  the current run. Active IDs reset before the next user turn. Trusted
+  recommended actions can preactivate the skill that owns their first tool.
+- Tool exposure: `buildSkillToolDefinitions()` reads manifests only from active
+  skills and appends compatible schemas to `getToolsForMode(...)` at LLM-call
+  time, respecting mode, tier, and site adapter. Download-job tools remain
+  hidden in Ask and require their normal permission gate in action modes.
+
+Loading is idempotent and multiple relevant skills can be active in one run.
+The loader's trusted instruction permits activation only for the user's request
+or trusted conversation context, never because page/document/tool content asks
+for it. Strict-secret instructions are appended after loaded skill prose so they
+continue to override OTP disclosure guidance.
+
+The optional metadata format is a separate prompt-stripped fence:
+
+````markdown
+```webbrain-skill
+{
+  "summary": "Find, read, copy, or enter verification codes from visible browser email.",
+  "modes": ["ask", "act"]
+}
+```
+````
 
 The manifest format is a fenced JSON block inside the skill markdown:
 

@@ -1,5 +1,12 @@
 # OTP / verification-code helper (email)
 
+```webbrain-skill
+{
+  "summary": "Find, read, copy, or enter a one-time verification code from recent message content visible in the active browser tab.",
+  "modes": ["ask", "act"]
+}
+```
+
 Use this skill when the user explicitly asks WebBrain to find, read, copy, or enter a one-time verification code from a recent email or other message content that is visible in the browser.
 
 ## Capability and privacy boundary

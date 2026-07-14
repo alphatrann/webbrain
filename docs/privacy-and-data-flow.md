@@ -135,8 +135,18 @@ the page already made so repeated UI mutations can be diagnosed.
 
 Two built-in skills are enabled by default and can be removed independently in
 Settings → Skills. A removed default is remembered and is not silently restored.
+Enabled means available on demand, not injected into every request. Mid/Full
+runs send the configured LLM provider a small mode-eligible catalog containing
+skill IDs, names, and summaries (each summary is capped at 200 characters).
+Full skill instructions and compatible tool schemas are sent only after
+`load_skill` activates a relevant skill for the current run; active skills reset
+before the next user turn. Compact sends no skill catalog, prose, or tools. Ask
+catalogs only explicitly Ask-compatible skills and still filters out mutating
+or download tools. Trusted recommended actions may preactivate their owning
+skill, such as FreeSkillz for `download_public_media`.
 
-The "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) declares
+The "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) is explicitly Ask/Act
+compatible and declares
 `read_youtube_transcript`, `resolve_public_media`, and
 `download_public_media` tools. When the model calls one of those tools,
 WebBrain sends only the current or model-provided URL, plus declared options
@@ -155,8 +165,9 @@ remove this skill, or any user-imported skill tool, from Settings → Skills to
 stop this data flow entirely.
 
 The "OTP / verification-code helper (email)" skill
-(`skills/otp-verification-code-helper.md`) is prompt-only and declares no
-external tool or endpoint. It guides WebBrain's existing page-reading tools to
+(`skills/otp-verification-code-helper.md`) is explicitly Ask/Act compatible,
+is prompt-only, and declares no external tool or endpoint. It guides WebBrain's
+existing page-reading tools to
 prefer selected text or a bounded, message-scoped accessibility-tree subtree on
 the active run tab when finding a recent, service-matching code. It cannot list
 or switch to background tabs, read SMS, phone notifications, native apps, or

@@ -382,22 +382,82 @@ function safeDownloadFilename(value) {
   return safe || undefined;
 }
 
-function filenameFromContentDisposition(value) {
+function contentDispositionParameters(value) {
   const header = String(value || '').slice(0, 2048);
-  if (!header) return undefined;
+  const parameters = new Map();
+  let index = header.indexOf(';');
+  if (index < 0) return parameters;
 
-  const extended = header.match(/(?:^|;)\s*filename\*\s*=\s*([^;]+)/i);
+  while (index < header.length) {
+    if (header[index] === ';') index += 1;
+    while (index < header.length && /\s/.test(header[index])) index += 1;
+    const nameStart = index;
+    while (index < header.length && header[index] !== '=' && header[index] !== ';') index += 1;
+    if (index >= header.length || header[index] !== '=') {
+      while (index < header.length && header[index] !== ';') index += 1;
+      continue;
+    }
+    const name = header.slice(nameStart, index).trim().toLowerCase();
+    index += 1;
+    while (index < header.length && /\s/.test(header[index])) index += 1;
+
+    let parsed = '';
+    let valid = true;
+    if (header[index] === '"') {
+      index += 1;
+      let closed = false;
+      while (index < header.length) {
+        const char = header[index];
+        if (char === '\\') {
+          if (index + 1 >= header.length) {
+            valid = false;
+            break;
+          }
+          parsed += header[index + 1];
+          index += 2;
+          continue;
+        }
+        if (char === '"') {
+          closed = true;
+          index += 1;
+          break;
+        }
+        parsed += char;
+        index += 1;
+      }
+      if (!closed) {
+        // The rest of the header is ambiguous because semicolons may belong
+        // to the unterminated quoted value. Keep earlier parameters only.
+        break;
+      }
+      while (index < header.length && /\s/.test(header[index])) index += 1;
+      if (index < header.length && header[index] !== ';') valid = false;
+    } else {
+      const valueStart = index;
+      while (index < header.length && header[index] !== ';') index += 1;
+      parsed = header.slice(valueStart, index).trim();
+    }
+
+    if (valid && name && parsed && !parameters.has(name)) parameters.set(name, parsed);
+    while (index < header.length && header[index] !== ';') index += 1;
+  }
+  return parameters;
+}
+
+export function filenameFromContentDisposition(value) {
+  const parameters = contentDispositionParameters(value);
+  const extended = parameters.get('filename*');
   if (extended) {
-    let encoded = extended[1].trim().replace(/^"|"$/g, '');
-    encoded = encoded.replace(/^[^']*'[^']*'/, '');
+    let encoded = extended;
+    const charsetEnd = encoded.indexOf("'");
+    const languageEnd = charsetEnd >= 0 ? encoded.indexOf("'", charsetEnd + 1) : -1;
+    if (languageEnd >= 0) encoded = encoded.slice(languageEnd + 1);
     try { encoded = decodeURIComponent(encoded); } catch (_) {}
     const safe = safeDownloadFilename(encoded);
     if (safe) return safe;
   }
 
-  const plain = header.match(/(?:^|;)\s*filename\s*=\s*(?:"((?:\\.|[^"])*)"|([^;]+))/i);
-  const candidate = plain ? String(plain[1] ?? plain[2] ?? '').replace(/\\"/g, '"').trim() : '';
-  return safeDownloadFilename(candidate);
+  return safeDownloadFilename(parameters.get('filename'));
 }
 
 function defaultSkillDownloadFilename(contentType) {
