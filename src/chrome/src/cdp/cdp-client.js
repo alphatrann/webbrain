@@ -147,7 +147,7 @@ export class CDPClient {
   _redactedHeaders(headers) {
     const out = {};
     const sensitive = /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|x-csrf-token|x-xsrf-token)$/i;
-    const secretish = /(secret|token|session|credential|password|passwd|private[-_]?key)/i;
+    const secretish = /(secret|token|session|credential|password|passwd|(?:private|api|subscription|access|auth|consumer|functions|signing|client|application)[-_]?key)/i;
     for (const [rawName, rawValue] of Object.entries(headers || {})) {
       const name = String(rawName).slice(0, 200);
       out[name] = (sensitive.test(name) || secretish.test(name))

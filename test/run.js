@@ -12219,7 +12219,18 @@ test('CDP Dev diagnostics buffer console/network data and redact sensitive heade
       request: {
         url: 'https://example.com/api/items',
         method: 'POST',
-        headers: { Authorization: 'Bearer secret', Cookie: 'sid=secret', Accept: 'application/json', 'X-Trace': 'abc' },
+        headers: {
+          Authorization: 'Bearer secret',
+          Cookie: 'sid=secret',
+          'X-Goog-Api-Key': 'goog-secret',
+          'X-ApiKey': 'compact-secret',
+          'X-RapidAPI-Key': 'rapid-secret',
+          'Ocp-Apim-Subscription-Key': 'azure-secret',
+          'X-Functions-Key': 'function-secret',
+          'X-Client-Key': 'client-secret',
+          Accept: 'application/json',
+          'X-Trace': 'abc',
+        },
       },
     });
   }
@@ -12254,6 +12265,9 @@ test('CDP Dev diagnostics buffer console/network data and redact sensitive heade
 
   const withHeaders = await cdp.inspectNetworkRequests(88, { includeHeaders: true });
   assert.equal(withHeaders.requests[0].requestHeaders.Authorization, '[REDACTED]');
+  for (const name of ['X-Goog-Api-Key', 'X-ApiKey', 'X-RapidAPI-Key', 'Ocp-Apim-Subscription-Key', 'X-Functions-Key', 'X-Client-Key']) {
+    assert.equal(withHeaders.requests[0].requestHeaders[name], '[REDACTED]', `${name} should be redacted`);
+  }
   assert.equal(withHeaders.requests[0].requestHeaders.Cookie, '[REDACTED]');
   assert.equal(withHeaders.requests[0].requestHeaders.Accept, 'application/json');
   assert.equal(withHeaders.requests[0].responseHeaders['Set-Cookie'], '[REDACTED]');
