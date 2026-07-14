@@ -49,7 +49,7 @@
 - **Smart Context** — Token-aware auto-compaction (summarizes older turns once the conversation nears the model's context window, with a visible "Context automatically compacted" notice), tool result limits, and emergency overflow recovery
 - **Browser History Control** — Act mode can use native `go_back` / `go_forward` history tools instead of CSP-sensitive page JavaScript
 - **API Shortcut Hints** — Repeated clicks that fire the same XHR/fetch request can surface a matching `fetch_url` suggestion while preserving the UI-first and `/allow-api` mutation policy
-- **Custom Skills and Skill Tools** — Settings → Skills can import trusted skill text or URLs; skills may also expose HTTP or download-job tools through a `webbrain-tools` manifest. FreeSkillz.xyz is enabled by default for YouTube transcripts and public media downloads, and can be removed.
+- **Custom Skills and Skill Tools** — Settings → Skills can import trusted skill text or URLs; skills may also expose HTTP or download-job tools through a `webbrain-tools` manifest. FreeSkillz.xyz and the browser-only email verification-code helper are enabled by default, and either can be removed.
 - **Copy Support** — Copy buttons on code blocks and full messages
 - **Page Inspection Banner** — Visual indicator when the agent is interacting with the page
 - **Stop Button** — Abort the agent mid-execution at any time
@@ -145,6 +145,7 @@ Click the gear icon or go to the extension's Options page to configure:
 
 **Skills:**
 - FreeSkillz.xyz ships enabled by default and exposes `read_youtube_transcript`, `resolve_public_media`, and `download_public_media` through its skill manifest; remove it from Settings → Skills if you do not want those tools available.
+- The OTP / verification-code helper also ships enabled by default. It declares no network tool: it guides the existing page-reading tools to inspect only browser-visible email/message content, match the newest relevant service code, exclude SMS/native-app access, and avoid retaining the code. When used, the page content and code are included in the normal request to your configured LLM provider; remove the skill from Settings → Skills if you do not want this guidance active.
 - Imported skills are copied into browser local storage and appended to the agent's system prompt when enabled.
 - A skill can expose read-only HTTP tools or short-lived download-job tools with a fenced `webbrain-tools` JSON manifest. Importing a skill is the trust boundary for its declared HTTPS endpoint; download-job skill tools still run in Act mode and use the normal Downloads permission gate before saving files.
 - Tool results from third-party content should be marked `resultPolicy: "untrusted"` so they are wrapped as data, not instructions.

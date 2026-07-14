@@ -19,6 +19,11 @@ export const PACKAGED_SKILL_SOURCES = Object.freeze([
     path: 'skills/disposable-email-mailtm.md',
   }),
   Object.freeze({
+    id: 'otp-verification-code-helper',
+    name: 'OTP / verification-code helper (email)',
+    path: 'skills/otp-verification-code-helper.md',
+  }),
+  Object.freeze({
     id: 'temporary-file-share-litterbox',
     name: 'Temporary file share (Litterbox)',
     path: 'skills/temporary-file-share-litterbox.md',
@@ -35,7 +40,10 @@ export const PACKAGED_SKILL_SOURCES = Object.freeze([
   }),
 ]);
 export const DEFAULT_SKILL_SOURCES = Object.freeze(
-  PACKAGED_SKILL_SOURCES.filter((source) => source.id === 'freeskillz-xyz')
+  PACKAGED_SKILL_SOURCES.filter((source) => [
+    'freeskillz-xyz',
+    'otp-verification-code-helper',
+  ].includes(source.id))
 );
 
 function cleanText(value) {

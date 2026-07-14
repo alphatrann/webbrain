@@ -122,7 +122,7 @@ The only outbound HTTP requests are:
 1. **LLM provider API calls** (to URLs the user configured)
 2. **CapSolver API calls** (if the user enables CAPTCHA solving)
 3. **Content fetches** via `fetch_url` / `research_url` tools (to URLs the agent is asked to fetch)
-4. **Skill tool calls** (to the HTTPS endpoint(s) declared by enabled skills — see "Bundled Skills" below for the one enabled by default)
+4. **Skill tool calls** (to the HTTPS endpoint(s) declared by network-capable enabled skills — see "Bundled Skills" below; the default email verification-code helper declares no endpoint)
 5. **User memory extraction calls** (only if auto-learn is enabled; sent to the configured LLM provider after a completed turn)
 6. **Encrypted Cloud Sync calls** to `https://api.webbrain.one/v1/sync` (only after a subscriber explicitly enables sync; vault content is encrypted before upload)
 7. **Slash-driven tab/screen recording** creates no outbound traffic (the .webm is saved to the Downloads folder via `chrome.downloads.download`)
@@ -133,9 +133,11 @@ the page already made so repeated UI mutations can be diagnosed.
 
 ### Bundled Skills
 
-A built-in "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) is seeded into
-Settings → Skills on first run, enabled by default, and can be removed there.
-It declares `read_youtube_transcript`, `resolve_public_media`, and
+Two built-in skills are enabled by default and can be removed independently in
+Settings → Skills. A removed default is remembered and is not silently restored.
+
+The "FreeSkillz.xyz" skill (`skills/freeskillz-xyz.md`) declares
+`read_youtube_transcript`, `resolve_public_media`, and
 `download_public_media` tools. When the model calls one of those tools,
 WebBrain sends only the current or model-provided URL, plus declared options
 such as transcript language, media kind, maximum height, or filename hint, to
@@ -151,6 +153,19 @@ provider to delete the job. These calls do not send page content, chat history,
 or browsing history beyond the URL and declared tool arguments. Users can
 remove this skill, or any user-imported skill tool, from Settings → Skills to
 stop this data flow entirely.
+
+The "OTP / verification-code helper (email)" skill
+(`skills/otp-verification-code-helper.md`) is prompt-only and declares no
+external tool or endpoint. It guides WebBrain's existing page-reading tools to
+inspect the minimum browser-visible email/message content needed to find a
+recent, service-matching code. It cannot read SMS, phone notifications, native
+apps, or another device, and it forbids private mailbox APIs or sign-in
+bypasses. The skill itself creates no additional network request. When the user
+asks WebBrain to read a code, however, the inspected page content and extracted
+code are included in the normal request to the user's configured LLM provider
+as part of the current conversation. The instructions treat message content as
+untrusted, reject ambiguous numeric strings and recovery tokens, and prohibit
+storing the code in scratchpad or user memory.
 
 ---
 
