@@ -6911,6 +6911,7 @@ test('packaged Mail.tm skill is opt-in before prompt injection', () => {
 
 test('packaged Open-Meteo and Open Library skills are opt-in with read-only HTTP tools', () => {
   for (const [label, prefix, normalizeSkills, buildPrompt, buildDefs] of [
+    ['chrome', 'src/chrome', normalizeCustomSkillsCh, buildCustomSkillsPromptCh, buildSkillToolDefinitionsCh],
     ['firefox', 'src/firefox', normalizeCustomSkillsFx, buildCustomSkillsPromptFx, buildSkillToolDefinitionsFx],
   ]) {
     const defaults = normalizeSkills([packagedFreeSkillzRecord(prefix)]);
@@ -22338,7 +22339,13 @@ test('settings exposes custom skills tab and packaged skills resource directory'
   assert.equal(DEFAULT_SKILLS_SEEDED_STORAGE_KEY_FX, 'defaultSkillsSeeded');
   assert.equal(DEFAULT_SKILLS_REMOVED_STORAGE_KEY_CH, 'defaultSkillsRemoved');
   assert.equal(DEFAULT_SKILLS_REMOVED_STORAGE_KEY_FX, 'defaultSkillsRemoved');
-  assert.deepEqual(PACKAGED_SKILL_SOURCES_CH.map((skill) => skill.id), ['freeskillz-xyz', 'disposable-email-mailtm', 'temporary-file-share-litterbox']);
+  assert.deepEqual(PACKAGED_SKILL_SOURCES_CH.map((skill) => skill.id), [
+    'freeskillz-xyz',
+    'disposable-email-mailtm',
+    'temporary-file-share-litterbox',
+    'open-meteo-weather',
+    'open-library-books',
+  ]);
   assert.deepEqual(PACKAGED_SKILL_SOURCES_FX.map((skill) => skill.id), [
     'freeskillz-xyz',
     'disposable-email-mailtm',
@@ -22450,20 +22457,18 @@ test('settings exposes custom skills tab and packaged skills resource directory'
     assert.match(disposable, /accounts\/REPLACE_ACCOUNT_ID/, `${label}: disposable email skill should document account deletion`);
     assert.match(disposable, /"method": "DELETE"/, `${label}: disposable email skill should use DELETE for cleanup`);
     assert.match(disposable, /Powered by \[Mail\.tm\]\(https:\/\/mail\.tm\)/, `${label}: disposable email skill should include visible attribution`);
-    if (label === 'firefox') {
-      const weather = fs.readFileSync(path.join(ROOT, prefix, 'skills/open-meteo-weather.md'), 'utf8');
-      assert.match(weather, /open-meteo\.com/i, `${label}: Open-Meteo skill should reference the provider`);
-      assert.match(weather, /"name": "search_weather_location"/, `${label}: Open-Meteo geocoding tool missing`);
-      assert.match(weather, /"endpoint": "https:\/\/geocoding-api\.open-meteo\.com\/v1\/search"/, `${label}: Open-Meteo geocoding endpoint missing`);
-      assert.match(weather, /"name": "get_weather_forecast"/, `${label}: Open-Meteo forecast tool missing`);
-      assert.match(weather, /"endpoint": "https:\/\/api\.open-meteo\.com\/v1\/forecast"/, `${label}: Open-Meteo forecast endpoint missing`);
-      assert.match(weather, /Powered by \[Open-Meteo\]\(https:\/\/open-meteo\.com\)/, `${label}: Open-Meteo skill should include visible attribution`);
-      const library = fs.readFileSync(path.join(ROOT, prefix, 'skills/open-library-books.md'), 'utf8');
-      assert.match(library, /openlibrary\.org/i, `${label}: Open Library skill should reference the provider`);
-      assert.match(library, /"name": "search_open_library_books"/, `${label}: Open Library search tool missing`);
-      assert.match(library, /"endpoint": "https:\/\/openlibrary\.org\/search\.json"/, `${label}: Open Library search endpoint missing`);
-      assert.match(library, /Powered by \[Open Library\]\(https:\/\/openlibrary\.org\)/, `${label}: Open Library skill should include visible attribution`);
-    }
+    const weather = fs.readFileSync(path.join(ROOT, prefix, 'skills/open-meteo-weather.md'), 'utf8');
+    assert.match(weather, /open-meteo\.com/i, `${label}: Open-Meteo skill should reference the provider`);
+    assert.match(weather, /"name": "search_weather_location"/, `${label}: Open-Meteo geocoding tool missing`);
+    assert.match(weather, /"endpoint": "https:\/\/geocoding-api\.open-meteo\.com\/v1\/search"/, `${label}: Open-Meteo geocoding endpoint missing`);
+    assert.match(weather, /"name": "get_weather_forecast"/, `${label}: Open-Meteo forecast tool missing`);
+    assert.match(weather, /"endpoint": "https:\/\/api\.open-meteo\.com\/v1\/forecast"/, `${label}: Open-Meteo forecast endpoint missing`);
+    assert.match(weather, /Powered by \[Open-Meteo\]\(https:\/\/open-meteo\.com\)/, `${label}: Open-Meteo skill should include visible attribution`);
+    const library = fs.readFileSync(path.join(ROOT, prefix, 'skills/open-library-books.md'), 'utf8');
+    assert.match(library, /openlibrary\.org/i, `${label}: Open Library skill should reference the provider`);
+    assert.match(library, /"name": "search_open_library_books"/, `${label}: Open Library search tool missing`);
+    assert.match(library, /"endpoint": "https:\/\/openlibrary\.org\/search\.json"/, `${label}: Open Library search endpoint missing`);
+    assert.match(library, /Powered by \[Open Library\]\(https:\/\/openlibrary\.org\)/, `${label}: Open Library skill should include visible attribution`);
     const fileShare = fs.readFileSync(path.join(ROOT, prefix, 'skills/temporary-file-share-litterbox.md'), 'utf8');
     assert.match(fileShare, /https:\/\/litterbox\.catbox\.moe/, `${label}: file-share skill should use Litterbox by default`);
     assert.match(fileShare, /No account, no API key, and no sign-in are required/i, `${label}: file-share skill should document the no-auth provider requirement`);
