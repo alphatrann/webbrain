@@ -8164,6 +8164,39 @@ test('sidepanel escapes dynamic system-message interpolation before raw HTML ins
   }
 });
 
+test('composer toasts render markup only for explicitly trusted localized HTML', () => {
+  for (const [label, panelRel] of [
+    ['chrome', 'src/chrome/src/ui/sidepanel.js'],
+    ['firefox', 'src/firefox/src/ui/sidepanel.js'],
+  ]) {
+    const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
+    assert.match(
+      panel,
+      /function showComposerToast\(message,[\s\S]*?if \(isSystemHtml\(message\)\) toast\.innerHTML = message\.__systemHtml;[\s\S]*?else toast\.textContent = message;/,
+      `${label}: composer toasts should default to text and render only trusted HTML wrappers`,
+    );
+    for (const key of [
+      'sp.compact.verbose_on',
+      'sp.compact.verbose_off',
+      'sp.profile.on',
+      'sp.profile.off',
+      'sp.vision.on',
+      'sp.vision.off',
+    ]) {
+      assert.match(
+        panel,
+        new RegExp(`showComposerToast\\(systemHtml\\([\\s\\S]{0,120}?t\\('${key.replace(/\./g, '\\.')}'\\)`),
+        `${label}: ${key} toast should opt in to trusted localized markup`,
+      );
+    }
+    assert.match(
+      panel,
+      /showComposerToast\(systemHtml\(tSystemHtml\('sp\.vision\.error', \{ msg: e\.message \}\)\), \{ duration: 5000 \}\);/,
+      `${label}: /vision errors should escape dynamic text before trusted toast rendering`,
+    );
+  }
+});
+
 test('sidepanel subscribe error card clears DOM without HTML reinterpretation', () => {
   for (const [label, panelRel, styleRel] of [
     ['chrome', 'src/chrome/src/ui/sidepanel.js', 'src/chrome/styles/sidepanel.css'],
@@ -9709,7 +9742,7 @@ test('sidepanel awaits immediate verbose preference writes', () => {
     );
     assert.match(
       panel,
-      /if \(command\.value === '\/verbose'\) \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode \}\)\.catch\(\(\) => \{\}\);[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?showComposerToast\(verboseMode/,
+      /if \(command\.value === '\/verbose'\) \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ verboseMode \}\)\.catch\(\(\) => \{\}\);[\s\S]*?if \(currentTabId !== tabId\) return '';[\s\S]*?showComposerToast\(systemHtml\(verboseMode/,
       `${label}: /verbose should guard against stale tabs after persisting the mode change`,
     );
   }

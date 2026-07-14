@@ -3597,7 +3597,8 @@ function showComposerToast(message, { duration = 2600 } = {}) {
     toast.setAttribute('aria-live', 'polite');
     inputArea?.parentNode?.insertBefore(toast, inputArea);
   }
-  toast.textContent = message;
+  if (isSystemHtml(message)) toast.innerHTML = message.__systemHtml;
+  else toast.textContent = message;
   toast.classList.remove('hidden');
   clearTimeout(composerToastTimer);
   composerToastTimer = setTimeout(() => {
@@ -3726,9 +3727,9 @@ async function parseSlashCommands(text, tabId = currentTabId) {
     if (verboseBtn) verboseBtn.classList.toggle('active', verboseMode);
     await browser.storage.local.set({ verboseMode }).catch(() => {});
     if (currentTabId !== tabId) return '';
-    showComposerToast(verboseMode
+    showComposerToast(systemHtml(verboseMode
       ? t('sp.compact.verbose_on')
-      : t('sp.compact.verbose_off'));
+      : t('sp.compact.verbose_off')));
     return '';
   }
 
@@ -3832,9 +3833,9 @@ async function parseSlashCommands(text, tabId = currentTabId) {
     const newState = !stored.profileEnabled;
     await browser.storage.local.set({ profileEnabled: newState });
     if (currentTabId !== tabId) return '';
-    showComposerToast(newState
+    showComposerToast(systemHtml(newState
       ? t('sp.profile.on')
-      : t('sp.profile.off'));
+      : t('sp.profile.off')));
     return '';
   }
 
@@ -3869,13 +3870,13 @@ async function parseSlashCommands(text, tabId = currentTabId) {
           config: { ...config, supportsVision: newVision },
         });
         if (currentTabId !== tabId) return '';
-        showComposerToast(newVision
+        showComposerToast(systemHtml(newVision
           ? t('sp.vision.on')
-          : t('sp.vision.off'));
+          : t('sp.vision.off')));
       }
     } catch (e) {
       if (currentTabId !== tabId) return '';
-      showComposerToast(tSystemHtml('sp.vision.error', { msg: e.message }), { duration: 5000 });
+      showComposerToast(systemHtml(tSystemHtml('sp.vision.error', { msg: e.message })), { duration: 5000 });
     }
     return '';
   }
