@@ -4,6 +4,7 @@ import {
   deleteChatHistoryRecord,
   clearChatHistoryRecords,
 } from './chat-history-store.js';
+import { formatSelectionPromptForDisplay } from '../context-menu-storage.js';
 import { listRuns } from '../trace/recorder.js';
 import { t } from './i18n.js';
 
@@ -219,12 +220,18 @@ function renderTraceBlock(traces) {
   `;
 }
 
+function displayMessageText(message) {
+  const text = message?.text || '';
+  if (message?.role === 'user') return formatSelectionPromptForDisplay(text);
+  return text;
+}
+
 function renderMessage(message) {
   const role = ['user', 'assistant', 'system', 'error'].includes(message?.role) ? message.role : 'unknown';
   return `
     <article class="message ${escapeAttr(role)}">
       <div class="message-role">${escapeHtml(t(`hist.role.${role}`))}</div>
-      <div class="message-text">${escapeHtml(message?.text || '')}</div>
+      <div class="message-text">${escapeHtml(displayMessageText(message))}</div>
     </article>
   `;
 }
@@ -247,7 +254,7 @@ function recordToMarkdown(record) {
   for (const message of record.messages || []) {
     lines.push(`## ${t(`hist.role.${message.role}`)}`);
     lines.push('');
-    lines.push(message.text || '');
+    lines.push(displayMessageText(message));
     lines.push('');
   }
   return lines.join('\n');

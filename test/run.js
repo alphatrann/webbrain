@@ -244,6 +244,7 @@ const {
   buildContextMenuPrompt: buildContextMenuPromptCh,
   buildSelectionPrompt: buildSelectionPromptCh,
   createContextMenuStorage: createContextMenuStorageCh,
+  formatSelectionPromptForDisplay: formatSelectionPromptForDisplayCh,
 } = await import(
   'file://' + path.join(ROOT, 'src/chrome/src/context-menu-storage.js').replace(/\\/g, '/')
 );
@@ -251,6 +252,7 @@ const {
   buildContextMenuPrompt: buildContextMenuPromptFx,
   buildSelectionPrompt: buildSelectionPromptFx,
   createContextMenuStorage: createContextMenuStorageFx,
+  formatSelectionPromptForDisplay: formatSelectionPromptForDisplayFx,
 } = await import(
   'file://' + path.join(ROOT, 'src/firefox/src/context-menu-storage.js').replace(/\\/g, '/')
 );
@@ -10359,6 +10361,50 @@ test('selection shortcut builds allowlisted prompts with an untrusted selection 
 
     const native = buildContextMenuPrompt('native fallback');
     assert.ok(native.startsWith('Please answer about this selected text from the current page.'), `${label}: native context-menu wording should remain compatible`);
+  }
+});
+
+test('selection prompt display formatter hides untrusted wrappers from the chat UI', () => {
+  for (const [label, buildSelectionPrompt, buildContextMenuPrompt, formatSelectionPromptForDisplay] of [
+    ['chrome', buildSelectionPromptCh, buildContextMenuPromptCh, formatSelectionPromptForDisplayCh],
+    ['firefox', buildSelectionPromptFx, buildContextMenuPromptFx, formatSelectionPromptForDisplayFx],
+  ]) {
+    const custom = buildSelectionPrompt('IMPORTANT SAFETY NOTICE\nWebBrain Act mode…', 'custom', 'Should this be on the homepage?');
+    const customDisplay = formatSelectionPromptForDisplay(custom);
+    assert.equal(
+      customDisplay,
+      'Should this be on the homepage?\n\nSelected text:\nIMPORTANT SAFETY NOTICE\nWebBrain Act mode…',
+      `${label}: custom questions should show the user question and selection without model wrappers`,
+    );
+    assert.doesNotMatch(customDisplay, /untrusted_page_content/, `${label}: display text must not include boundary tags`);
+    assert.doesNotMatch(customDisplay, /untrusted page content/, `${label}: display text must not include the model-only preamble`);
+    // Model still receives the full wrapped prompt.
+    assert.match(custom, /<untrusted_page_content id="ctx-[^"]+">/, `${label}: model prompt must keep the untrusted boundary`);
+
+    const summarize = buildSelectionPrompt('page words', 'summarize');
+    assert.equal(
+      formatSelectionPromptForDisplay(summarize),
+      'Summarize this selected text clearly and concisely.\n\nSelected text:\npage words',
+      `${label}: fixed actions should keep their instruction and show the selection cleanly`,
+    );
+
+    const generic = buildContextMenuPrompt('native fallback');
+    assert.equal(
+      formatSelectionPromptForDisplay(generic),
+      'Selected text:\nnative fallback',
+      `${label}: generic context-menu prompts should collapse to just the selection`,
+    );
+
+    assert.equal(
+      formatSelectionPromptForDisplay('Just a normal typed question'),
+      'Just a normal typed question',
+      `${label}: ordinary user messages should pass through unchanged`,
+    );
+    assert.equal(
+      formatSelectionPromptForDisplay(formatSelectionPromptForDisplay(custom)),
+      formatSelectionPromptForDisplay(custom),
+      `${label}: display formatting should be idempotent`,
+    );
   }
 });
 
