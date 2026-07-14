@@ -10467,6 +10467,11 @@ test('selection shortcut is shipped, enabled by default, and keeps browser-speci
     assert.match(content, /border:1px solid rgba\(108,99,255,\.34\);[\s\S]*?color:var\(--accent\);/, `${label}: shortcut should use the WebBrain purple treatment`);
     assert.doesNotMatch(content, /M6\.8 8\.5 9\.2 14l2\.8-3\.4 2\.8 3\.4 2\.4-5\.5/, `${label}: discarded WebBrain W outline should be removed`);
     assert.doesNotMatch(content, /M12 2\.8c\.65 3\.78/, `${label}: Claude-like sparkle icon should be removed`);
+    assert.match(content, /rects: \(rects\.length \? rects : \[rect\]\)\.map\(serializeRect\)/, `${label}: selection snapshots should retain every visual line of the selected range`);
+    assert.match(content, /function showSelectionHighlight\(\)[\s\S]*?highlightLayer\.appendChild\(highlight\);/, `${label}: opening the dialog should render a sticky selection highlight`);
+    assert.match(content, /shadow\.addEventListener\('keydown', \(event\) => \{\s*event\.stopPropagation\(\);/, `${label}: selection dialog keydown events should not reach page shortcuts`);
+    assert.match(content, /shadow\.addEventListener\('keypress', \(event\) => event\.stopPropagation\(\)\);\s*shadow\.addEventListener\('keyup', \(event\) => event\.stopPropagation\(\)\);/, `${label}: selection dialog keypress and keyup events should not reach the page`);
+    assert.match(content, /function dismissSurface\(\) \{\s*clearSelectionHighlight\(\);/, `${label}: dismissing the selection surface should clear the sticky highlight`);
     assert.match(content, /message\?\.type === 'WB_HIDE_FOR_TOOL_USE'[\s\S]*?suppressed = true;[\s\S]*?message\?\.type === 'WB_SHOW_AFTER_TOOL_USE'[\s\S]*?suppressed = false;/, `${label}: screenshot capture should suppress and restore future shortcut detection`);
     assert.match(content, /submitting = true;\s*dismissSurface\(\);\s*try \{\s*const response = await api\.runtime\.sendMessage\(request\);/, `${label}: submission should dismiss before sending to prevent duplicates`);
 

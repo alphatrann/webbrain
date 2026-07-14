@@ -29,6 +29,7 @@
   let snapshot = null;
   let host = null;
   let shadow = null;
+  let highlightLayer = null;
   let shortcut = null;
   let popup = null;
   let question = null;
@@ -48,6 +49,17 @@
 
   function isSupportedTranslationLanguage(value) {
     return TRANSLATION_LANGUAGES.includes(value);
+  }
+
+  function serializeRect(rect) {
+    return {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    };
   }
 
   function resolveInterfaceLanguage(value) {
@@ -75,14 +87,8 @@
     if (!rect || (!rect.width && !rect.height)) return null;
     return {
       text,
-      rect: {
-        left: rect.left,
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-        width: rect.width,
-        height: rect.height,
-      },
+      rect: serializeRect(rect),
+      rects: (rects.length ? rects : [rect]).map(serializeRect),
     };
   }
 
@@ -103,6 +109,10 @@
         * { box-sizing:border-box; }
         button,textarea { font:inherit; }
         [hidden] { display:none !important; }
+        .selection-highlight {
+          position:fixed; border-radius:3px; pointer-events:none;
+          background:rgba(108,99,255,.3); box-shadow:inset 0 0 0 1px rgba(85,76,242,.18);
+        }
         .shortcut {
           position:fixed; width:${BUTTON_SIZE}px; height:${BUTTON_SIZE}px; display:grid;
           place-items:center; padding:0; border:1px solid rgba(108,99,255,.34);
@@ -164,6 +174,7 @@
         }
         @media (prefers-reduced-motion:reduce) { .shortcut { transition:none; } }
       </style>
+      <div class="selection-highlights" aria-hidden="true"></div>
       <button class="shortcut" type="button" aria-label="Ask WebBrain about selected text" title="Ask WebBrain" hidden>
         <span class="shortcut-icon" aria-hidden="true">?</span>
       </button>
@@ -189,6 +200,7 @@
       <div class="toast" role="status" aria-live="polite" hidden></div>
     `;
 
+    highlightLayer = shadow.querySelector('.selection-highlights');
     shortcut = shadow.querySelector('.shortcut');
     popup = shadow.querySelector('.popup');
     question = shadow.querySelector('textarea');
@@ -221,11 +233,14 @@
       if (event.isTrusted) disableShortcut();
     });
     shadow.addEventListener('keydown', (event) => {
+      event.stopPropagation();
       if (event.key !== 'Escape') return;
       event.preventDefault();
       if (!popup.hidden) closePopup(true);
       else dismissSurface();
     });
+    shadow.addEventListener('keypress', (event) => event.stopPropagation());
+    shadow.addEventListener('keyup', (event) => event.stopPropagation());
     host.addEventListener('pointerdown', () => { interacting = true; }, true);
     host.addEventListener('pointerup', () => {
       setTimeout(() => { interacting = false; }, 0);
@@ -258,8 +273,28 @@
     popup.style.top = `${Math.round(top)}px`;
   }
 
+  function clearSelectionHighlight() {
+    highlightLayer?.replaceChildren();
+  }
+
+  function showSelectionHighlight() {
+    clearSelectionHighlight();
+    if (!highlightLayer || !snapshot) return;
+    const rects = snapshot.rects?.length ? snapshot.rects : [snapshot.rect];
+    for (const rect of rects) {
+      const highlight = document.createElement('span');
+      highlight.className = 'selection-highlight';
+      highlight.style.left = `${rect.left}px`;
+      highlight.style.top = `${rect.top}px`;
+      highlight.style.width = `${rect.width}px`;
+      highlight.style.height = `${rect.height}px`;
+      highlightLayer.appendChild(highlight);
+    }
+  }
+
   function showShortcut(nextSnapshot) {
     ensureSurface();
+    clearSelectionHighlight();
     snapshot = nextSnapshot;
     popup.hidden = true;
     question.value = '';
@@ -275,6 +310,7 @@
     popup.style.visibility = 'hidden';
     positionPopup();
     popup.style.visibility = '';
+    showSelectionHighlight();
     shadow.querySelector('[data-action="summarize"]')?.focus();
   }
 
@@ -283,10 +319,12 @@
     popup.hidden = true;
     question.value = '';
     sendButton.disabled = true;
+    clearSelectionHighlight();
     if (restoreFocus && shortcut && !shortcut.hidden) shortcut.focus();
   }
 
   function dismissSurface() {
+    clearSelectionHighlight();
     snapshot = null;
     if (shortcut) shortcut.hidden = true;
     if (popup) popup.hidden = true;
@@ -297,7 +335,7 @@
   function destroySurface() {
     hideToast();
     host?.remove();
-    host = shadow = shortcut = popup = question = sendButton = toast = null;
+    host = shadow = highlightLayer = shortcut = popup = question = sendButton = toast = null;
     snapshot = null;
   }
 
@@ -417,6 +455,7 @@
       hasSelection: !!snapshot?.text,
       shortcutVisible: !!shortcut && !shortcut.hidden,
       popupVisible: !!popup && !popup.hidden,
+      highlightRectCount: highlightLayer?.childElementCount || 0,
       toastVisible: !!toast && !toast.hidden,
       shortcutRect: shortcut && !shortcut.hidden ? shortcut.getBoundingClientRect().toJSON() : null,
       summarizeRect: popup && !popup.hidden
@@ -425,6 +464,8 @@
       translateRect: popup && !popup.hidden
         ? shadow.querySelector('[data-action="translate"]')?.getBoundingClientRect().toJSON() || null
         : null,
+      questionRect: popup && !popup.hidden ? question?.getBoundingClientRect().toJSON() || null : null,
+      questionValue: question?.value || '',
     }),
   };
 })();

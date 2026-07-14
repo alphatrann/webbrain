@@ -201,6 +201,45 @@ for (const [label, sourcePath, manualOpen] of [
     }
   });
 
+  test(`${label}: selection dialog contains page shortcuts and keeps the selected text highlighted`, async (page) => {
+    await setupSelectionShortcut(page, sourcePath, { requiresManualOpen: manualOpen });
+    await page.evaluate(() => {
+      window.__selectionPageKeys = [];
+      document.addEventListener('keydown', (event) => window.__selectionPageKeys.push(`down:${event.key}`));
+      document.addEventListener('keypress', (event) => window.__selectionPageKeys.push(`press:${event.key}`));
+      document.addEventListener('keyup', (event) => window.__selectionPageKeys.push(`up:${event.key}`));
+    });
+    const selectedState = await selectFixtureText(page);
+    await page.mouse.click(
+      selectedState.shortcutRect.left + selectedState.shortcutRect.width / 2,
+      selectedState.shortcutRect.top + selectedState.shortcutRect.height / 2,
+    );
+    const openState = await page.evaluate(() => window.__webbrainSelectionShortcut.getState());
+    if (!openState.questionRect || openState.highlightRectCount < 1) {
+      throw new Error(`popup should preserve a visual marker for the selected text: ${JSON.stringify(openState)}`);
+    }
+    await page.mouse.click(
+      openState.questionRect.left + openState.questionRect.width / 2,
+      openState.questionRect.top + openState.questionRect.height / 2,
+    );
+    await page.keyboard.type('j');
+    const typedState = await page.evaluate(() => ({
+      surface: window.__webbrainSelectionShortcut.getState(),
+      pageKeys: window.__selectionPageKeys,
+    }));
+    if (typedState.surface.questionValue !== 'j' || typedState.surface.highlightRectCount < 1) {
+      throw new Error(`typing should keep the custom question and sticky highlight: ${JSON.stringify(typedState)}`);
+    }
+    if (typedState.pageKeys.length) {
+      throw new Error(`dialog keystrokes leaked to the page: ${JSON.stringify(typedState.pageKeys)}`);
+    }
+    await page.keyboard.press('Escape');
+    const closedState = await page.evaluate(() => window.__webbrainSelectionShortcut.getState());
+    if (closedState.popupVisible || closedState.highlightRectCount !== 0) {
+      throw new Error(`closing the popup should remove the sticky highlight: ${JSON.stringify(closedState)}`);
+    }
+  });
+
   test(`${label}: selection shortcut submits once and dismisses before delivery`, async (page) => {
     await setupSelectionShortcut(page, sourcePath, { requiresManualOpen: manualOpen });
     const selectedState = await selectFixtureText(page, '#editor');
