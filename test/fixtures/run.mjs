@@ -267,6 +267,23 @@ for (const [label, browserKind] of [['Chrome', 'chrome'], ['Firefox', 'firefox']
       throw new Error(`readable article body missing: ${JSON.stringify({ textSource: result.textSource, text: result.text })}`);
     }
   });
+
+  test(`${label}: non-article signup dialog preserves form controls`, async (page) => {
+    await setupContentFixture(page, 'non-article-signup-dialog.html', browserKind);
+    const result = await call(page, 'get_page_info_cdp', {});
+    if (result.pageGate) throw new Error(`non-article dialog became a page gate: ${JSON.stringify(result.pageGate)}`);
+    if (result.forms?.length !== 1 || result.forms[0]?.inputs?.[0]?.name !== 'email') {
+      throw new Error(`signup form was stripped from page info: ${JSON.stringify(result.forms)}`);
+    }
+    const basicResult = await call(page, 'get_page_info', {});
+    if (basicResult.pageGate || basicResult.forms?.length !== 1) {
+      throw new Error(`basic page info stripped the signup form: ${JSON.stringify(basicResult)}`);
+    }
+    const tree = await call(page, 'get_accessibility_tree', { filter: 'visible', maxDepth: 6 });
+    if (tree.pageGate || !/Work email/.test(tree.pageContent || '')) {
+      throw new Error(`signup accessibility tree was stripped: ${JSON.stringify(tree)}`);
+    }
+  });
 }
 
 test('Chrome CDP mirror suppresses a blocking Athletic article body', async (page) => {
@@ -288,6 +305,14 @@ test('Chrome CDP mirror preserves a readable article across an inline upsell', a
   const result = await readThroughCdpMirror(page);
   if (result.pageGate || !/READABLE_ARTICLE_BODY/.test(result.text || '') || !/READABLE_ARTICLE_AFTER_UPSELL/.test(result.text || '')) {
     throw new Error(`CDP readable article mismatch: ${JSON.stringify({ pageGate: result.pageGate, text: result.text })}`);
+  }
+});
+
+test('Chrome CDP mirror preserves a non-article signup dialog', async (page) => {
+  await page.goto(fixtureUrl('non-article-signup-dialog.html'));
+  const result = await readThroughCdpMirror(page);
+  if (result.pageGate || result.forms?.length !== 1 || result.forms[0]?.inputs?.[0]?.name !== 'email') {
+    throw new Error(`CDP non-article signup mismatch: ${JSON.stringify(result)}`);
   }
 });
 

@@ -1614,6 +1614,19 @@
     return /(?:to continue reading|continue reading (?:with|by)|subscriber[- ]only|(?:subscribe|subscription required|register|sign up|log in|sign in|create (?:a )?(?:free )?account).{0,64}(?:continue reading|read (?:this |the )?(?:full )?(?:article|story)|unlock (?:this|the) (?:article|story)|access (?:this|the) (?:article|story)))/.test(value);
   }
 
+  function pageHasArticleContext() {
+    try {
+      return !!(
+        document.querySelector('meta[property="og:type"][content="article"]') ||
+        document.querySelector('meta[name="article:published_time"]') ||
+        document.querySelector('[itemtype*="Article" i]') ||
+        document.querySelector('article, [role="article"]')
+      );
+    } catch {
+      return false;
+    }
+  }
+
   function boundedPageGateLabel(el, rawLabel) {
     const options = [];
     let boundaryElement = null;
@@ -1655,6 +1668,7 @@
   function detectPageGate() {
     const seen = new Set();
     const candidates = [];
+    const articleContext = pageHasArticleContext();
     for (const selector of PAGE_GATE_SELECTORS) {
       let matches = [];
       try { matches = document.querySelectorAll(selector); } catch { continue; }
@@ -1681,7 +1695,7 @@
         } catch { /* rendered check already supplied safe defaults */ }
         if (coveringOverlay) surface = 'dialog';
         if (surface === 'dialog') {
-          if (!pageGateHasAccessLanguage(rawLabel)) continue;
+          if (!articleContext || !pageGateHasAccessLanguage(rawLabel)) continue;
         } else {
           if (!inArticle || !pageGateHasInlineBlockingLanguage(rawLabel)) continue;
         }

@@ -1219,6 +1219,16 @@ export class CDPClient {
         };
         const gateHasAccessLanguage = (text) => /(?:(?:subscribe|subscription).{0,48}(?:continue|read|access|article|options|required|unlock)|subscriber[- ]only|unlimited access|unlock (?:this|the) article|start (?:your )?(?:free )?trial|create (?:a )?(?:free )?account|register to (?:continue|read)|sign up to (?:continue|read)|(?:log|sign) in to (?:continue|read)|continue reading (?:with|by)|to continue reading|already have an account)/.test(String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase());
         const gateHasInlineBlockingLanguage = (text) => /(?:to continue reading|continue reading (?:with|by)|subscriber[- ]only|(?:subscribe|subscription required|register|sign up|log in|sign in|create (?:a )?(?:free )?account).{0,64}(?:continue reading|read (?:this |the )?(?:full )?(?:article|story)|unlock (?:this|the) (?:article|story)|access (?:this|the) (?:article|story)))/.test(String(text || '').replace(/\\s+/g, ' ').trim().toLowerCase());
+        const pageHasArticleContext = () => {
+          try {
+            return !!(
+              document.querySelector('meta[property="og:type"][content="article"]') ||
+              document.querySelector('meta[name="article:published_time"]') ||
+              document.querySelector('[itemtype*="Article" i]') ||
+              document.querySelector('article, [role="article"]')
+            );
+          } catch (e) { return false; }
+        };
         const boundedGateLabel = (el, rawLabel) => {
           const options = [];
           let boundaryElement = null;
@@ -1254,6 +1264,7 @@ export class CDPClient {
         const detectPageGate = () => {
           const seen = new Set();
           const candidates = [];
+          const articleContext = pageHasArticleContext();
           for (const selector of PAGE_GATE_SELECTORS) {
             let matches = [];
             try { matches = document.querySelectorAll(selector); } catch (e) { continue; }
@@ -1275,7 +1286,7 @@ export class CDPClient {
               } catch (e) {}
               if (coveringOverlay) surface = 'dialog';
               if (surface === 'dialog') {
-                if (!gateHasAccessLanguage(rawLabel)) continue;
+                if (!articleContext || !gateHasAccessLanguage(rawLabel)) continue;
               } else {
                 if (!inArticle || !gateHasInlineBlockingLanguage(rawLabel)) continue;
               }
