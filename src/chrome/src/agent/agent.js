@@ -7557,6 +7557,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         totalChars += JSON.stringify(msg.content || '').length;
       }
       if (msg.tool_calls) totalChars += JSON.stringify(msg.tool_calls).length;
+      if (msg.response_items) totalChars += JSON.stringify(msg.response_items).length;
     }
     if (hasImage) totalChars += Agent.IMAGE_CHAR_COST;
     return totalChars;
@@ -12909,6 +12910,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           role: 'assistant',
           content: result.content || null,
           tool_calls: result.toolCalls,
+          ...(Array.isArray(result.responseItems) && result.responseItems.length
+            ? { response_items: result.responseItems }
+            : {}),
         });
 
         const batchResult = await this._executeToolBatch(
@@ -13196,6 +13200,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         let fullText = '';
         let toolCallsAccumulator = {};
         let hasToolCalls = false;
+        let responseItems = null;
 
         const streamOpts = this._cloudGenerationOptions(provider, {
           tools: provider.supportsTools ? tools : undefined,
@@ -13244,6 +13249,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               toolCallsAccumulator[idx].function.arguments += String(chunk.content ?? '');
             }
           } else if (chunk.type === 'done') {
+            if (Array.isArray(chunk.responseItems) && chunk.responseItems.length) {
+              responseItems = chunk.responseItems;
+            }
             break;
           }
         }
@@ -13276,6 +13284,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
             role: 'assistant',
             content: fullText || null,
             tool_calls: toolCalls,
+            ...(responseItems ? { response_items: responseItems } : {}),
           });
 
           const batchResult = await this._executeToolBatch(
