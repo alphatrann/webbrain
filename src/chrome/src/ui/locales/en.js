@@ -396,6 +396,7 @@ export default {
   'st.display.advanced': 'Advanced',
   'st.display.clarify_timeout.label': 'Clarify timeout',
   'st.display.clarify_timeout.desc': 'How long to wait for a reply to a clarify prompt before auto-selecting the first option (or timing out if there are no options). Set to 0 to wait indefinitely. Default 60s. Does not apply to permission or form-submit confirmations.',
+  'st.display.clarify_timeout.off': 'Off',
   'st.display.verbose.label': 'Verbose Mode',
   'st.display.verbose.desc': 'Show full tool call details, arguments, and raw JSON results. Off by default for a cleaner chat experience.',
   'st.display.selection_shortcut.label': 'Selection shortcut',

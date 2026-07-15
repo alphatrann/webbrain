@@ -392,7 +392,7 @@ async function init() {
     const raw = Number(stored.clarifyTimeoutSec);
     const cSec = Number.isFinite(raw) && raw >= 0 ? Math.min(1200, Math.floor(raw)) : 60;
     clarifyTimeoutRange.value = cSec;
-    clarifyTimeoutValueLabel.textContent = cSec === 0 ? 'Off' : `${cSec}s`;
+    clarifyTimeoutValueLabel.textContent = formatClarifyTimeoutLabel(cSec);
   }
   if (autoScreenshotSelect) autoScreenshotSelect.value = stored.autoScreenshot || 'state_change';
   if (siteAdaptersToggle) siteAdaptersToggle.checked = stored.useSiteAdapters ?? true;
@@ -941,8 +941,14 @@ if (requestTimeoutRange) {
   });
 }
 
+function formatClarifyTimeoutLabel(sec) {
+  if (sec === 0) {
+    return (typeof t === 'function' ? t('st.display.clarify_timeout.off') : null) || 'Off';
+  }
+  return `${sec}s`;
+}
+
 if (clarifyTimeoutRange) {
-  const formatClarifyTimeoutLabel = (sec) => (sec === 0 ? 'Off' : `${sec}s`);
   clarifyTimeoutRange.addEventListener('input', () => {
     if (clarifyTimeoutValueLabel) {
       clarifyTimeoutValueLabel.textContent = formatClarifyTimeoutLabel(parseInt(clarifyTimeoutRange.value, 10) || 0);

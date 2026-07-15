@@ -77,6 +77,16 @@ function normalizePendingClarify(data, now = Date.now()) {
     reason: obj.reason ? String(obj.reason).slice(0, 400) : null,
     createdAt: iso(now),
   };
+  // Preserve clarify auto-timeout so rehydrated scheduled cards can restart
+  // the countdown (and UI backup submit) after panel close/reopen.
+  const timeoutSec = Number(obj.timeoutSec);
+  if (Number.isFinite(timeoutSec) && timeoutSec > 0) {
+    pending.timeoutSec = Math.min(1200, Math.floor(timeoutSec));
+  }
+  const deadlineTs = Number(obj.deadlineTs);
+  if (Number.isFinite(deadlineTs) && deadlineTs > 0) {
+    pending.deadlineTs = Math.floor(deadlineTs);
+  }
   const permission = asObject(obj.permission);
   if (permission.capability || permission.host) {
     pending.permission = {

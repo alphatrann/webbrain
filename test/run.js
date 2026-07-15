@@ -10165,27 +10165,36 @@ test('clarify tool auto-timeout is configurable and mirrored across browsers', (
   for (const [label, paths] of [
     ['chrome', {
       agent: 'src/chrome/src/agent/agent.js',
+      tools: 'src/chrome/src/agent/tools.js',
+      scheduler: 'src/chrome/src/agent/scheduler.js',
       bg: 'src/chrome/src/background.js',
       settings: 'src/chrome/src/ui/settings.js',
       settingsHtml: 'src/chrome/src/ui/settings.html',
       panel: 'src/chrome/src/ui/sidepanel.js',
       locale: 'src/chrome/src/ui/locales/en.js',
+      idLocale: 'src/chrome/src/ui/locales/id.js',
     }],
     ['firefox', {
       agent: 'src/firefox/src/agent/agent.js',
+      tools: 'src/firefox/src/agent/tools.js',
+      scheduler: 'src/firefox/src/agent/scheduler.js',
       bg: 'src/firefox/src/background.js',
       settings: 'src/firefox/src/ui/settings.js',
       settingsHtml: 'src/firefox/src/ui/settings.html',
       panel: 'src/firefox/src/ui/sidepanel.js',
       locale: 'src/firefox/src/ui/locales/en.js',
+      idLocale: 'src/firefox/src/ui/locales/id.js',
     }],
   ]) {
     const agent = fs.readFileSync(path.join(ROOT, paths.agent), 'utf8');
+    const tools = fs.readFileSync(path.join(ROOT, paths.tools), 'utf8');
+    const scheduler = fs.readFileSync(path.join(ROOT, paths.scheduler), 'utf8');
     const bg = fs.readFileSync(path.join(ROOT, paths.bg), 'utf8');
     const settings = fs.readFileSync(path.join(ROOT, paths.settings), 'utf8');
     const settingsHtml = fs.readFileSync(path.join(ROOT, paths.settingsHtml), 'utf8');
     const panel = fs.readFileSync(path.join(ROOT, paths.panel), 'utf8');
     const locale = fs.readFileSync(path.join(ROOT, paths.locale), 'utf8');
+    const idLocale = fs.readFileSync(path.join(ROOT, paths.idLocale), 'utf8');
 
     assert.match(agent, /this\.clarifyTimeoutSec = 60/, `${label}: agent default clarify timeout should be 60s`);
     assert.match(agent, /_normalizeClarifyTimeoutSec/, `${label}: agent should clamp clarify timeout to 0–1200`);
@@ -10193,6 +10202,7 @@ test('clarify tool auto-timeout is configurable and mirrored across browsers', (
     assert.match(agent, /source: 'timeout'/, `${label}: timed-out clarify should resolve with source timeout`);
     assert.match(agent, /onUpdate\('clarify_auto'/, `${label}: agent should emit clarify_auto for UI lock`);
     assert.match(agent, /timeoutSec > 0/, `${label}: timeout of 0 should wait indefinitely`);
+    assert.match(agent, /NOT a real user confirmation/, `${label}: timeout tool note should deny user-confirmation status`);
     // Permission / form confirm prompts reuse clarify plumbing but must not
     // arm the auto-timeout (first option would grant access).
     const permMatch = agent.match(/async _promptPermission\([\s\S]*?\n  \}/);
@@ -10202,17 +10212,29 @@ test('clarify tool auto-timeout is configurable and mirrored across browsers', (
     assert.ok(submitMatch, `${label}: _promptSubmitConfirmation body missing`);
     assert.doesNotMatch(submitMatch[0], /timeoutSec|setTimeout/, `${label}: form-submit prompts must not auto-timeout`);
 
+    assert.match(tools, /options\[0\] is auto-selected/, `${label}: clarify tool schema should document auto-select of first option`);
+    assert.match(tools, /source=timeout/, `${label}: system prompts should treat timeout answers as non-confirmations`);
+    assert.match(tools, /not a timeout auto-select|source is not timeout|source=timeout is not user approval/, `${label}: prompts should qualify real clarify answers vs timeouts`);
+
+    assert.match(scheduler, /pending\.timeoutSec/, `${label}: scheduled pendingClarify should persist timeoutSec`);
+    assert.match(scheduler, /pending\.deadlineTs/, `${label}: scheduled pendingClarify should persist deadlineTs`);
+
     assert.match(bg, /loadClarifyTimeout/, `${label}: background should load clarify timeout from storage`);
     assert.match(bg, /changes\.clarifyTimeoutSec/, `${label}: background should hot-reload clarify timeout`);
     assert.match(bg, /Math\.min\(1200, Math\.floor\(n\)\)/, `${label}: background should clamp clarify timeout to 1200s`);
 
     assert.match(settingsHtml, /id="range-clarify-timeout"[^>]*min="0"[^>]*max="1200"[^>]*value="60"/, `${label}: settings should expose 0–1200s clarify timeout slider`);
     assert.match(settings, /clarifyTimeoutSec/, `${label}: settings should persist clarifyTimeoutSec`);
+    assert.match(settings, /st\.display\.clarify_timeout\.off/, `${label}: settings Off label should be i18n-backed`);
     assert.match(panel, /startClarifyCountdown/, `${label}: sidepanel should show clarify countdown`);
     assert.match(panel, /case 'clarify_auto':/, `${label}: sidepanel should handle clarify_auto`);
     assert.match(panel, /lockClarifyCardFromAuto/, `${label}: sidepanel should lock cards on auto-select`);
+    assert.match(panel, /dataset\.deadlineTs/, `${label}: clarify cards should persist deadline for restore`);
+    assert.match(panel, /startClarifyCountdown\(card, \{ tabId, clarifyId, deadlineTs, firstOption \}\)/, `${label}: rebind should restart countdown from restored metadata`);
     assert.match(locale, /st\.display\.clarify_timeout\.label/, `${label}: English locale should include clarify timeout label`);
+    assert.match(locale, /st\.display\.clarify_timeout\.off/, `${label}: English locale should include Off label`);
     assert.match(locale, /sp\.clarify\.auto_timeout/, `${label}: English locale should include countdown string`);
+    assert.match(idLocale, /\{seconds\} dtk/, `${label}: Indonesian countdown should use seconds unit, not bare d`);
   }
 });
 

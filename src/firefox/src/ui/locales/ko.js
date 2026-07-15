@@ -570,6 +570,7 @@ export default {
   'st.display.advanced': '고급',
   'st.display.clarify_timeout.label': '명확화 제한 시간',
   'st.display.clarify_timeout.desc': '명확화 질문에 대한 답변 대기 시간입니다. 시간이 지나면 첫 번째 옵션을 자동 선택합니다(옵션이 없으면 시간 초과). 0은 무제한. 기본 60초. 권한 또는 양식 제출 확인에는 적용되지 않습니다.',
+  'st.display.clarify_timeout.off': '끔',
   'st.display.api_mutation_observer.label': 'API 변경 관찰자',
   'st.display.api_mutation_observer.desc': '동일한 탭의 XHR/fetch 요청 URL 및 메서드를 관찰하여 WebBrain이 반복되는 UI 작업을 감지하고 API 바로가기 패턴을 제안할 수 있도록 합니다. 기본적으로 꺼져 있습니다. 바로가기 동작이나 지연 시간을 조사할 때만 활성화하세요.',
   'st.display.plan_before_act.label': '실행 전 계획',

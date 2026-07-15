@@ -579,6 +579,7 @@ export default {
   'st.display.advanced': '高级',
   'st.display.clarify_timeout.label': '澄清超时',
   'st.display.clarify_timeout.desc': '等待澄清问题回复的时长；超时后自动选择第一个选项（若无选项则记为超时）。设为 0 表示无限等待。默认 60 秒。不适用于权限或表单提交确认。',
+  'st.display.clarify_timeout.off': '关闭',
   'st.display.api_mutation_observer.label': 'API 变更观察器',
   'st.display.api_mutation_observer.desc': '观察同标签页中的 XHR/fetch 请求 URL 和方法，以便 WebBrain 可以检测重复的界面操作并建议 API 快捷模式。默认关闭；仅在调查快捷行为或延迟时启用。',
   'st.display.plan_before_act.label': '在执行前规划',

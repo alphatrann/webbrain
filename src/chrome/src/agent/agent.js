@@ -8894,7 +8894,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         answer,
         source,
         note: timedOut
-          ? 'This answer was auto-selected because the clarify timeout elapsed with no user reply. Treat it as the default choice and continue; do not re-ask unless the result is clearly wrong.'
+          ? 'This answer was AUTO-SELECTED because the clarify timeout elapsed with no user reply (source=timeout). It is NOT a real user confirmation. Continue only with the safe default path; do NOT treat this as approval for irreversible, costly, or destructive actions — re-ask via clarify or stop if the next step is high-risk. Put the safe/default choice first in options next time.'
           : 'This is a direct reply from the user. Treat it as authoritative for the question you asked; do not re-ask. Continue the task with this answer in mind.',
       };
     }

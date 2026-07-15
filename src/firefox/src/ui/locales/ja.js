@@ -570,6 +570,7 @@ export default {
   'st.display.advanced': '詳細設定',
   'st.display.clarify_timeout.label': '確認のタイムアウト',
   'st.display.clarify_timeout.desc': 'clarify の返答を待つ時間。経過すると最初の選択肢を自動選択（選択肢がなければタイムアウト）。0 で無制限。既定 60 秒。権限やフォーム送信確認には適用されません。',
+  'st.display.clarify_timeout.off': 'オフ',
   'st.display.api_mutation_observer.label': 'API変更オブザーバー',
   'st.display.api_mutation_observer.desc': '同じタブの XHR/fetch リクエスト URL とメソッドを監視し、WebBrain が繰り返しの UI アクションを検出して API ショートカットパターンを提案できるようにします。デフォルトではオフ。ショートカット動作やレイテンシの調査中のみ有効にしてください。',
   'st.display.plan_before_act.label': '実行前に計画',

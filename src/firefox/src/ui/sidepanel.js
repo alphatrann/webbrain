@@ -2900,6 +2900,17 @@ function rebindClarifyCards() {
         if (value) submitClarify(card, tabId, clarifyId, value, 'text');
       });
     });
+
+    // Restart countdown after HTML restore when timeout metadata survived on
+    // the card. Skip permission/form-submit cards (they never auto-timeout).
+    if (card.dataset.permission === '1' || card.dataset.submitConfirmation === '1') return;
+    const deadlineTs = Number(card.dataset.deadlineTs);
+    if (!Number.isFinite(deadlineTs) || deadlineTs <= 0) return;
+    const firstOption = card.dataset.firstOption
+      || card.querySelector('.clarify-option')?.dataset?.value
+      || card.querySelector('.clarify-option')?.textContent
+      || '(no response — timed out)';
+    startClarifyCountdown(card, { tabId, clarifyId, deadlineTs, firstOption });
   });
 }
 
@@ -4510,6 +4521,14 @@ function renderClarifyCard(data) {
   if (data.scheduledTabId != null) {
     card.dataset.scheduledTabId = String(data.scheduledTabId);
   }
+  // Persist timeout metadata on the card so chat HTML restore / rebind can
+  // restart the countdown after the panel is closed and reopened.
+  const timeoutSec = Number(data.timeoutSec);
+  const deadlineTs = Number(data.deadlineTs);
+  if (Number.isFinite(timeoutSec) && timeoutSec > 0 && Number.isFinite(deadlineTs) && deadlineTs > 0) {
+    card.dataset.timeoutSec = String(Math.floor(timeoutSec));
+    card.dataset.deadlineTs = String(Math.floor(deadlineTs));
+  }
 
   const qEl = document.createElement('div');
   qEl.className = 'clarify-question';
@@ -4645,12 +4664,14 @@ function renderClarifyCard(data) {
   card.appendChild(row);
 
   // Countdown for auto-select (agent is authoritative; UI is display + backup).
+  const firstOption = options[0] || '(no response — timed out)';
+  if (firstOption) card.dataset.firstOption = String(firstOption).slice(0, 200);
   if (data.timeoutSec > 0 && data.deadlineTs) {
     startClarifyCountdown(card, {
       tabId,
       clarifyId,
       deadlineTs: Number(data.deadlineTs),
-      firstOption: options[0] || '(no response — timed out)',
+      firstOption,
     });
   }
 
