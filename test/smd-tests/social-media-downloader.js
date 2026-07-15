@@ -912,7 +912,7 @@ window.SocialMediaDownloader = (() => {
   const _mseEntryHasMuxedAudioVideo = entry => {
     const mime = String(entry && entry.mime || '');
     if (!/^video\//i.test(mime)) return false;
-    const hasVideoCodec = /(?:avc1|avc3|hvc1|hev1|vp08|vp09|av01|theora)/i.test(mime);
+    const hasVideoCodec = /\b(?:avc1|avc3|hvc1|hev1|vp0?[89]|av01|theora)\b/i.test(mime);
     const hasAudioCodec = /(?:mp4a|aac|ac-3|ec-3|opus|vorbis)/i.test(mime);
     return hasVideoCodec && hasAudioCodec;
   };

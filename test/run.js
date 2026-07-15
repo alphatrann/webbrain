@@ -12955,6 +12955,18 @@ test('social media MSE strict mode refuses split tracks and accepts verified mux
   assert.match(saved[0].filename, /^verified_video_01\.mp4$/);
   assert.deepEqual(muxed.clicks, ['verified_video_01.mp4']);
   assert.equal(muxed.smd._buildRecommendation({ mseBytes: 4, completedCount: 1 }), null, 'completed combined downloads should suppress MSE fallback advice');
+
+  for (const [codec, audioCodec] of [['vp9', 'opus'], ['vp8', 'vorbis']]) {
+    const webm = loadSocialMediaDownloaderRuntime();
+    assert.equal(webm.smd.armMseRecorder().armed, true);
+    const webmSource = new webm.MediaSource();
+    const webmAv = webmSource.addSourceBuffer(`video/webm; codecs="${codec}, ${audioCodec}"`);
+    webmAv.appendBuffer(new Uint8Array([1, 2, 3, 4]));
+    const webmSaved = await webm.smd.saveMse({ prefix: `verified_${codec}`, mode: 'auto', requireMuxedAudioVideo: true });
+    assert.equal(webmSaved.length, 1, `${codec}: common muxed WebM codec tokens should pass strict mode`);
+    assert.match(webmSaved[0].filename, new RegExp(`^verified_${codec}_video_01\\.webm$`));
+    assert.deepEqual(webm.clicks, [`verified_${codec}_video_01.webm`]);
+  }
 });
 
 test('social media YouTube fallback survives thumbnail-only completions', () => {
