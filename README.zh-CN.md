@@ -129,7 +129,7 @@ python -m sglang.launch_server --model-path your-model --port 30000
 | OpenAI | `https://api.openai.com/v1` | 必需 | gpt-5.5 |
 | Anthropic Claude | `https://api.anthropic.com` | 必需 | claude-sonnet-4-6 |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | 必需 | gemini-3.1-flash |
-| Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1` | 必需（另需 Account ID） | @cf/zai-org/glm-5.2 |
+| Cloudflare Workers AI | <code>https://api.cloudflare.com/<wbr>client/v4/accounts/<wbr>{account_id}/ai/v1</code> | 必需（另需 Account ID） | @cf/zai-org/glm-5.2 |
 | Mistral AI | `https://api.mistral.ai/v1` | 必需 | mistral-large-latest |
 | DeepSeek | `https://api.deepseek.com/v1` | 必需 | deepseek-v4-flash |
 | xAI Grok | `https://api.x.ai/v1` | 必需 | grok-4.3 |

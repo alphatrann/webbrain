@@ -129,7 +129,7 @@ Cliquez sur l'icône d'engrenage ou accédez à la page Options de l'extension p
 | OpenAI | `https://api.openai.com/v1` | Requise | gpt-5.5 |
 | Anthropic Claude | `https://api.anthropic.com` | Requise | claude-sonnet-4-6 |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Requise | gemini-3.1-flash |
-| Cloudflare Workers AI | `https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1` | Requise (plus Account ID) | @cf/zai-org/glm-5.2 |
+| Cloudflare Workers AI | <code>https://api.cloudflare.com/<wbr>client/v4/accounts/<wbr>{account_id}/ai/v1</code> | Requise (plus Account ID) | @cf/zai-org/glm-5.2 |
 | Mistral AI | `https://api.mistral.ai/v1` | Requise | mistral-large-latest |
 | DeepSeek | `https://api.deepseek.com/v1` | Requise | deepseek-v4-flash |
 | xAI Grok | `https://api.x.ai/v1` | Requise | grok-4.3 |
