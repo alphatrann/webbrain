@@ -58,11 +58,20 @@ sends the current preference, stable conversation id, and an allowlisted
 generation label with every WebBrain Cloud model request. It never attaches
 those collection fields to local or bring-your-own providers.
 
-Only an explicit `X-WebBrain-Help-Improve: 1` is consent. A missing header,
-legacy client, or `0` is treated as opted out. Once any request opts a
-conversation out, the Cloud service permanently marks that opaque session
-ineligible. Turning the setting back on applies to the next new conversation;
-it cannot make the current conversation eligible again.
+Current clients explicitly send `X-WebBrain-Help-Improve: 1` or `0`. Older
+WebBrain Cloud clients that send neither the preference header nor a session id
+are treated as using the default-on setting. The Cloud service derives a
+best-effort opaque legacy session from the device and the first user message;
+the raw device and prompt-derived fingerprint are not stored or sent upstream.
+Repeated identical opening messages can be grouped together, and compaction can
+split a legacy conversation, so current clients' explicit conversation ids are
+authoritative. Users of older clients must install the latest client to disable
+future collection under Settings -> General -> Advanced.
+
+An explicit `0` is always opted out. Once any explicit opt-out reaches a
+derived or client-provided session, the Cloud service permanently marks that
+opaque session ineligible. Turning the setting back on applies to the next new
+conversation; it cannot make the current conversation eligible again.
 
 Help Improve-off content is not retained in the improvement database and is
 routed through an OpenRouter workspace where content logging is disabled. This
