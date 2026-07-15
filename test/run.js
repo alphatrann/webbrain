@@ -9282,6 +9282,7 @@ test('settings moves profile and memory controls into Memory while CAPTCHA stays
 
     for (const id of [
       'toggle-screenshot-fallback',
+      'range-clarify-timeout',
       'toggle-site-adapters',
       'toggle-api-mutation-observer',
       'select-auto-screenshot',
@@ -10444,6 +10445,132 @@ test('settings page awaits immediate preference writes before moving on', () => 
       /requestTimeoutRange\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ requestTimeoutMs: sec \* 1000 \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
       `${label}: request timeout changes should await persistence`,
     );
+    assert.match(
+      settings,
+      /clarifyTimeoutRange\.addEventListener\('change', async \(\) => \{[\s\S]*?await (chrome|browser)\.storage\.local\.set\(\{ clarifyTimeoutSec: sec, clarifyTimeoutSemanticsV2: true \}\)\.catch\(\(\) => \{\}\);[\s\S]*?\}\);/,
+      `${label}: clarify timeout changes should await persistence`,
+    );
+  }
+});
+
+test('clarify tool auto-timeout is configurable and mirrored across browsers', () => {
+  for (const [label, paths] of [
+    ['chrome', {
+      agent: 'src/chrome/src/agent/agent.js',
+      tools: 'src/chrome/src/agent/tools.js',
+      scheduler: 'src/chrome/src/agent/scheduler.js',
+      bg: 'src/chrome/src/background.js',
+      settings: 'src/chrome/src/ui/settings.js',
+      settingsHtml: 'src/chrome/src/ui/settings.html',
+      panel: 'src/chrome/src/ui/sidepanel.js',
+      locale: 'src/chrome/src/ui/locales/en.js',
+      idLocale: 'src/chrome/src/ui/locales/id.js',
+    }],
+    ['firefox', {
+      agent: 'src/firefox/src/agent/agent.js',
+      tools: 'src/firefox/src/agent/tools.js',
+      scheduler: 'src/firefox/src/agent/scheduler.js',
+      bg: 'src/firefox/src/background.js',
+      settings: 'src/firefox/src/ui/settings.js',
+      settingsHtml: 'src/firefox/src/ui/settings.html',
+      panel: 'src/firefox/src/ui/sidepanel.js',
+      locale: 'src/firefox/src/ui/locales/en.js',
+      idLocale: 'src/firefox/src/ui/locales/id.js',
+    }],
+  ]) {
+    const agent = fs.readFileSync(path.join(ROOT, paths.agent), 'utf8');
+    const tools = fs.readFileSync(path.join(ROOT, paths.tools), 'utf8');
+    const scheduler = fs.readFileSync(path.join(ROOT, paths.scheduler), 'utf8');
+    const bg = fs.readFileSync(path.join(ROOT, paths.bg), 'utf8');
+    const settings = fs.readFileSync(path.join(ROOT, paths.settings), 'utf8');
+    const settingsHtml = fs.readFileSync(path.join(ROOT, paths.settingsHtml), 'utf8');
+    const panel = fs.readFileSync(path.join(ROOT, paths.panel), 'utf8');
+    const locale = fs.readFileSync(path.join(ROOT, paths.locale), 'utf8');
+    const idLocale = fs.readFileSync(path.join(ROOT, paths.idLocale), 'utf8');
+
+    assert.match(agent, /this\.clarifyTimeoutSec = 60/, `${label}: agent default clarify timeout should be 60s`);
+    assert.match(agent, /_normalizeClarifyTimeoutSec/, `${label}: agent should normalize clarify timeout (instant / wait / off)`);
+    assert.match(agent, /if \(sec > 1200\) return -1/, `${label}: stored values above 1200 should normalize to Off (-1)`);
+    assert.match(agent, /_settleClarification/, `${label}: clarify responses should settle once and clear timers`);
+    assert.match(agent, /timeoutSec === 0 \? 'auto' : 'timeout'/, `${label}: Instant should use source=auto; waited timeout uses source=timeout`);
+    assert.match(agent, /source: autoSource/, `${label}: clarify_auto / settle should pass auto or timeout via autoSource`);
+    assert.match(agent, /source === 'timeout'/, `${label}: waited timeout should keep the non-confirmation tool note`);
+    assert.match(agent, /source === 'auto'/, `${label}: Instant auto-approve should get a non-warning tool note`);
+    assert.match(agent, /intentionally configured unattended auto-approve/, `${label}: Instant note should treat auto-approve as intentional`);
+    assert.match(agent, /onUpdate\('clarify_auto'/, `${label}: agent should emit clarify_auto for UI lock`);
+    assert.match(agent, /timeoutSec >= 0/, `${label}: Instant (0) and positive waits should arm auto-select; Off (-1) waits forever`);
+    assert.match(agent, /NOT a real user confirmation/, `${label}: timeout tool note should deny user-confirmation status`);
+    // Permission / form confirm prompts reuse clarify plumbing but must not
+    // arm the auto-timeout (first option would grant access).
+    const permMatch = agent.match(/async _promptPermission\([\s\S]*?\n  \}/);
+    assert.ok(permMatch, `${label}: _promptPermission body missing`);
+    assert.doesNotMatch(permMatch[0], /timeoutSec|setTimeout/, `${label}: permission prompts must not auto-timeout`);
+    const submitMatch = agent.match(/async _promptSubmitConfirmation\([\s\S]*?\n  \}/);
+    assert.ok(submitMatch, `${label}: _promptSubmitConfirmation body missing`);
+    assert.doesNotMatch(submitMatch[0], /timeoutSec|setTimeout/, `${label}: form-submit prompts must not auto-timeout`);
+
+    assert.match(tools, /options\[0\] is auto-selected|options\[0\] is selected/, `${label}: clarify tool schema should document auto-select of first option`);
+    assert.match(tools, /source=timeout/, `${label}: system prompts should treat timeout answers as non-confirmations`);
+    assert.match(tools, /source=auto/, `${label}: system prompts should document Instant source=auto`);
+    assert.match(tools, /source=timeout is not user approval|source=timeout \(waited timeout|not source=timeout waited/, `${label}: prompts should qualify real clarify answers vs waited timeouts`);
+
+    assert.match(scheduler, /pending\.timeoutSec/, `${label}: scheduled pendingClarify should persist timeoutSec`);
+    assert.match(scheduler, /pending\.deadlineTs/, `${label}: scheduled pendingClarify should persist deadlineTs`);
+    assert.match(
+      scheduler,
+      /type === 'clarify_auto'[\s\S]*?_waitingForInput\.delete\(job\.id\)[\s\S]*?status: 'running'[\s\S]*?pendingClarify: null/,
+      `${label}: scheduled clarify_auto should clear wait state and restore running`,
+    );
+    assert.match(
+      scheduler,
+      /type === 'clarify_auto'[\s\S]*?_emit\(resumed, 'updated'\)/,
+      `${label}: scheduled clarify_auto must not re-emit running (would spawn a new assistant bubble)`,
+    );
+    assert.doesNotMatch(
+      scheduler,
+      /type === 'clarify_auto'[\s\S]*?_emit\(resumed, 'running'\)/,
+      `${label}: scheduled clarify_auto must not emit running after timeout`,
+    );
+    assert.match(
+      scheduler,
+      /type === 'clarify' \|\| type === 'clarify_auto'/,
+      `${label}: scheduled clarify_auto updates should carry scheduledJobId`,
+    );
+    assert.match(
+      panel,
+      /isAutoClarify = source === 'timeout' \|\| source === 'auto'/,
+      `${label}: sidepanel should not attach memorySource for timeout or Instant auto-selects`,
+    );
+    assert.match(
+      bg,
+      /isAutoClarify = source === 'timeout' \|\| source === 'auto'/,
+      `${label}: background should not learn timeout or Instant clarify answers as user memory`,
+    );
+
+    assert.match(bg, /loadClarifyTimeout/, `${label}: background should load clarify timeout from storage`);
+    assert.match(bg, /changes\.clarifyTimeoutSec/, `${label}: background should hot-reload clarify timeout`);
+    assert.match(bg, /if \(sec > 1200\) return -1/, `${label}: background should treat >1200 as Off`);
+    assert.match(bg, /clarifyTimeoutSemanticsV2/, `${label}: background should migrate old 0=Off semantics once`);
+    assert.match(bg, /CLARIFY_TIMEOUT_OFF_SLIDER = 1205/, `${label}: Off slider sentinel should be 1205`);
+
+    assert.match(settingsHtml, /id="range-clarify-timeout"[^>]*min="0"[^>]*max="1205"[^>]*value="60"/, `${label}: settings should expose 0–1205 clarify timeout slider (1205=Off)`);
+    assert.match(settings, /clarifyTimeoutSec/, `${label}: settings should persist clarifyTimeoutSec`);
+    assert.match(settings, /st\.display\.clarify_timeout\.off/, `${label}: settings Off label should be i18n-backed`);
+    assert.match(settings, /st\.display\.clarify_timeout\.instant/, `${label}: settings Instant label should be i18n-backed`);
+    assert.match(settings, /sec === 0/, `${label}: settings should label 0 as Instant`);
+    assert.match(settings, /sec > 1200/, `${label}: settings should label >1200 as Off`);
+    assert.match(panel, /startClarifyCountdown/, `${label}: sidepanel should show clarify countdown`);
+    assert.match(panel, /case 'clarify_auto':/, `${label}: sidepanel should handle clarify_auto`);
+    assert.match(panel, /lockClarifyCardFromAuto/, `${label}: sidepanel should lock cards on auto-select`);
+    assert.match(panel, /dataset\.deadlineTs/, `${label}: clarify cards should persist deadline for restore`);
+    assert.match(panel, /startClarifyCountdown\(card, \{ tabId, clarifyId, deadlineTs, firstOption \}\)/, `${label}: rebind should restart countdown from restored metadata`);
+    assert.match(locale, /st\.display\.clarify_timeout\.label/, `${label}: English locale should include clarify timeout label`);
+    assert.match(locale, /st\.display\.clarify_timeout\.off/, `${label}: English locale should include Off label`);
+    assert.match(locale, /st\.display\.clarify_timeout\.instant/, `${label}: English locale should include Instant label`);
+    assert.match(locale, /0 = Instant/, `${label}: English locale should document Instant at 0`);
+    assert.match(locale, /above 1200s/, `${label}: English locale should document Off above 1200s`);
+    assert.match(locale, /sp\.clarify\.auto_timeout/, `${label}: English locale should include countdown string`);
+    assert.match(idLocale, /\{seconds\} dtk/, `${label}: Indonesian countdown should use seconds unit, not bare d`);
   }
 });
 
@@ -10655,7 +10782,7 @@ test('sidepanel preserves stale residual slash-command prompts without hidden ru
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     assert.match(
       panel,
-      /function autoResizeInput\(\) \{\s*inputEl\.style\.height = 'auto';\s*if \(!inputEl\.value\) \{\s*inputEl\.style\.height = '';\s*updateSlashCommandHighlight\(\);\s*return;\s*\}\s*inputEl\.style\.height = Math\.min\(inputEl\.scrollHeight, 120\) \+ 'px';\s*updateSlashCommandHighlight\(\);\s*\}/,
+      /function autoResizeInput\(\) \{\s*const maxHeight = 120;\s*inputEl\.style\.height = 'auto';\s*if \(!inputEl\.value\) \{\s*inputEl\.style\.height = '';\s*inputEl\.style\.overflowY = 'hidden';\s*updateSlashCommandHighlight\(\);\s*return;\s*\}\s*(?:\/\/[^\n]*\n\s*)*const contentHeight = inputEl\.scrollHeight;\s*inputEl\.style\.height = Math\.min\(contentHeight, maxHeight\) \+ 'px';\s*inputEl\.style\.overflowY = contentHeight > maxHeight \? 'auto' : 'hidden';\s*updateSlashCommandHighlight\(\);\s*\}/,
       `${label}: empty composer should reset to its rows=1 height instead of autosizing to placeholder scrollHeight`,
     );
     assert.match(panel, /const tabInputDrafts = new Map\(\);/, `${label}: sidepanel should track per-tab composer drafts`);

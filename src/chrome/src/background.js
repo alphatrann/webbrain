@@ -170,6 +170,35 @@ async function loadMaxSteps() {
 }
 loadMaxSteps();
 
+// Stored slider: 0 = Instant, 1–1200 = wait N s, >1200 (1205) = Off.
+// Runtime agent value: 0 = Instant, 1–1200 = wait, -1 = Off.
+const CLARIFY_TIMEOUT_OFF_SLIDER = 1205;
+
+function normalizeClarifyTimeoutSec(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 60;
+  const sec = Math.floor(n);
+  if (sec > 1200) return -1;
+  return Math.min(1200, sec);
+}
+
+async function loadClarifyTimeout() {
+  const stored = await chrome.storage.local.get(['clarifyTimeoutSec', 'clarifyTimeoutSemanticsV2']);
+  // One-shot: old 0 meant Off; new 0 means Instant and Off is >1200.
+  if (!stored.clarifyTimeoutSemanticsV2) {
+    const updates = { clarifyTimeoutSemanticsV2: true };
+    if (Number(stored.clarifyTimeoutSec) === 0) {
+      updates.clarifyTimeoutSec = CLARIFY_TIMEOUT_OFF_SLIDER;
+      stored.clarifyTimeoutSec = CLARIFY_TIMEOUT_OFF_SLIDER;
+    }
+    await chrome.storage.local.set(updates).catch(() => {});
+  }
+  agent.clarifyTimeoutSec = normalizeClarifyTimeoutSec(
+    stored.clarifyTimeoutSec != null ? stored.clarifyTimeoutSec : 60,
+  );
+}
+loadClarifyTimeout();
+
 async function loadAutoScreenshot() {
   const stored = await chrome.storage.local.get('autoScreenshot');
   if (stored.autoScreenshot != null) agent.autoScreenshot = stored.autoScreenshot;
@@ -691,6 +720,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   createContextMenus();
   await providerManager.load();
   await loadMaxSteps();
+  await loadClarifyTimeout();
   await syncAgentUserMemoryFromStorage().catch(() => {});
   await cloudRunController.syncBridge().catch(() => {});
   scheduleUserMemoryExtractionDrain(5000);
@@ -702,6 +732,7 @@ chrome.runtime.onStartup?.addListener(async () => {
   createContextMenus();
   await providerManager.load();
   await loadMaxSteps();
+  await loadClarifyTimeout();
   await syncAgentUserMemoryFromStorage().catch(() => {});
   await cloudRunController.syncBridge().catch(() => {});
   scheduleUserMemoryExtractionDrain(5000);
@@ -716,6 +747,9 @@ chrome.storage.onChanged.addListener((changes) => {
   }
   if (changes.maxAgentSteps) {
     agent.maxSteps = normalizeMaxAgentSteps(changes.maxAgentSteps.newValue);
+  }
+  if (changes.clarifyTimeoutSec) {
+    agent.clarifyTimeoutSec = normalizeClarifyTimeoutSec(changes.clarifyTimeoutSec.newValue);
   }
   if (changes.autoScreenshot) {
     agent.autoScreenshot = changes.autoScreenshot.newValue;
@@ -1963,10 +1997,13 @@ async function handleMessage(msg, sender) {
       const answer = String(msg.answer || '').trim();
       if (!clarifyId) return { ok: false, error: 'clarifyId required' };
       if (!answer) return { ok: false, error: 'answer required' };
-      const matched = agent.submitClarifyResponse(tabId, clarifyId, answer, msg.source || 'user');
-      if (matched && msg.memorySource === 'clarification_response') {
+      const source = String(msg.source || 'user');
+      const matched = agent.submitClarifyResponse(tabId, clarifyId, answer, source);
+      // Waited-timeout and Instant auto-selects are not user-authored preferences.
+      const isAutoClarify = source === 'timeout' || source === 'auto';
+      if (matched && !isAutoClarify && msg.memorySource === 'clarification_response') {
         recordClarificationMemoryCandidate(tabId, msg.question, answer);
-      } else if (matched && msg.memorySource === 'form_confirmation') {
+      } else if (matched && !isAutoClarify && msg.memorySource === 'form_confirmation') {
         recordFormCompletionMemoryCandidate(tabId, answer);
       }
       return { ok: matched, matched };
