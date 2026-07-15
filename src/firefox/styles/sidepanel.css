@@ -1651,7 +1651,8 @@ body {
   caret-color: var(--text-primary);
   resize: none;
   outline: none;
-  overflow-y: auto;
+  /* autoResizeInput flips to auto only when content exceeds max-height */
+  overflow-y: hidden;
 }
 
 #user-input::placeholder {

@@ -5979,13 +5979,19 @@ function truncate(str, len) {
 }
 
 function autoResizeInput() {
+  const maxHeight = 120;
   inputEl.style.height = 'auto';
   if (!inputEl.value) {
     inputEl.style.height = '';
+    inputEl.style.overflowY = 'hidden';
     updateSlashCommandHighlight();
     return;
   }
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+  // Measure unconstrained height first; only scroll once past max-height so a
+  // single-line / empty composer does not show a dead vertical scrollbar.
+  const contentHeight = inputEl.scrollHeight;
+  inputEl.style.height = Math.min(contentHeight, maxHeight) + 'px';
+  inputEl.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
   updateSlashCommandHighlight();
 }
 
