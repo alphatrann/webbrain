@@ -118,26 +118,28 @@ python -m sglang.launch_server --model-path your-model --port 30000
 
 **提供商：**
 
-| 提供商 | Base URL | API 密钥 | 默认模型 |
-|----------|----------|---------|---------------|
-| llama.cpp | `http://localhost:8080` | 无需 | （你加载的模型） |
-| Ollama | `http://localhost:11434/v1` | 无需 | （你加载的模型） |
-| LM Studio | `http://localhost:1234/v1` | 无需 | （你加载的模型） |
-| Jan | `http://localhost:1337/v1` | 无需 | （你加载的模型） |
-| vLLM | `http://localhost:8000/v1` | 可选 | （你提供服务的模型） |
-| SGLang | `http://localhost:30000/v1` | 可选 | （你提供服务的模型） |
-| OpenAI | `https://api.openai.com/v1` | 必需 | gpt-5.5 |
-| Anthropic Claude | `https://api.anthropic.com` | 必需 | claude-sonnet-4-6 |
-| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | 必需 | gemini-3.1-flash |
-| Cloudflare Workers AI | <code>https://api.cloudflare.com/<wbr>client/v4/accounts/<wbr>{account_id}/ai/v1</code> | 必需（另需 Account ID） | @cf/zai-org/glm-5.2 |
-| Mistral AI | `https://api.mistral.ai/v1` | 必需 | mistral-large-latest |
-| DeepSeek | `https://api.deepseek.com/v1` | 必需 | deepseek-v4-flash |
-| xAI Grok | `https://api.x.ai/v1` | 必需 | grok-4.3 |
-| Nvidia NIM | `https://integrate.api.nvidia.com/v1` | 必需 | meta/llama-3.1-8b-instruct |
-| Groq | `https://api.groq.com/openai/v1` | 必需 | llama-3.3-70b-versatile |
-| MiniMax | `https://api.minimax.chat/v1` | 必需 | minimax-m2.7 |
-| 阿里云（通义千问 Qwen） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 必需 | qwen-max |
-| OpenRouter | `https://openrouter.ai/api/v1` | 必需 | openrouter/free |
+在设置中选择提供商时会预填 Base URL。本地服务使用下方默认端口。
+
+| 提供商 | API 密钥 | 默认模型 |
+|--------|----------|----------|
+| llama.cpp (`:8080`) | 无需 | （你加载的模型） |
+| Ollama (`:11434/v1`) | 无需 | （你加载的模型） |
+| LM Studio (`:1234/v1`) | 无需 | （你加载的模型） |
+| Jan (`:1337/v1`) | 无需 | （你加载的模型） |
+| vLLM (`:8000/v1`) | 可选 | （你提供服务的模型） |
+| SGLang (`:30000/v1`) | 可选 | （你提供服务的模型） |
+| OpenAI | 必需 | gpt-5.5 |
+| Anthropic Claude | 必需 | claude-sonnet-4-6 |
+| Google Gemini | 必需 | gemini-3.1-flash |
+| Cloudflare Workers AI | 必需（+ Account ID） | @cf/zai-org/glm-5.2 |
+| Mistral AI | 必需 | mistral-large-latest |
+| DeepSeek | 必需 | deepseek-v4-flash |
+| xAI Grok | 必需 | grok-4.3 |
+| Nvidia NIM | 必需 | meta/llama-3.1-8b-instruct |
+| Groq | 必需 | llama-3.3-70b-versatile |
+| MiniMax | 必需 | minimax-m2.7 |
+| 阿里云（通义千问 Qwen） | 必需 | qwen-max |
+| OpenRouter | 必需 | openrouter/free |
 
 ## 架构
 

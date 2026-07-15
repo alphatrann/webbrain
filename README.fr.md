@@ -118,26 +118,28 @@ Cliquez sur l'icône d'engrenage ou accédez à la page Options de l'extension p
 
 **Fournisseurs :**
 
-| Fournisseur | URL de base | Clé API | Modèle par défaut |
-|----------|----------|---------|---------------|
-| llama.cpp | `http://localhost:8080` | Non requise | (votre modèle chargé) |
-| Ollama | `http://localhost:11434/v1` | Non requise | (votre modèle chargé) |
-| LM Studio | `http://localhost:1234/v1` | Non requise | (votre modèle chargé) |
-| Jan | `http://localhost:1337/v1` | Non requise | (votre modèle chargé) |
-| vLLM | `http://localhost:8000/v1` | Optionnelle | (votre modèle servi) |
-| SGLang | `http://localhost:30000/v1` | Optionnelle | (votre modèle servi) |
-| OpenAI | `https://api.openai.com/v1` | Requise | gpt-5.5 |
-| Anthropic Claude | `https://api.anthropic.com` | Requise | claude-sonnet-4-6 |
-| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Requise | gemini-3.1-flash |
-| Cloudflare Workers AI | <code>https://api.cloudflare.com/<wbr>client/v4/accounts/<wbr>{account_id}/ai/v1</code> | Requise (plus Account ID) | @cf/zai-org/glm-5.2 |
-| Mistral AI | `https://api.mistral.ai/v1` | Requise | mistral-large-latest |
-| DeepSeek | `https://api.deepseek.com/v1` | Requise | deepseek-v4-flash |
-| xAI Grok | `https://api.x.ai/v1` | Requise | grok-4.3 |
-| Nvidia NIM | `https://integrate.api.nvidia.com/v1` | Requise | meta/llama-3.1-8b-instruct |
-| Groq | `https://api.groq.com/openai/v1` | Requise | llama-3.3-70b-versatile |
-| MiniMax | `https://api.minimax.chat/v1` | Requise | minimax-m2.7 |
-| Alibaba Cloud (Qwen) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Requise | qwen-max |
-| OpenRouter | `https://openrouter.ai/api/v1` | Requise | openrouter/free |
+Les URL de base sont préremplies dans les paramètres lorsque vous choisissez un fournisseur. Les serveurs locaux utilisent le port par défaut indiqué ci-dessous.
+
+| Fournisseur | Clé API | Modèle par défaut |
+|-------------|----------|-------------------|
+| llama.cpp (`:8080`) | Non requise | (votre modèle chargé) |
+| Ollama (`:11434/v1`) | Non requise | (votre modèle chargé) |
+| LM Studio (`:1234/v1`) | Non requise | (votre modèle chargé) |
+| Jan (`:1337/v1`) | Non requise | (votre modèle chargé) |
+| vLLM (`:8000/v1`) | Optionnelle | (votre modèle servi) |
+| SGLang (`:30000/v1`) | Optionnelle | (votre modèle servi) |
+| OpenAI | Requise | gpt-5.5 |
+| Anthropic Claude | Requise | claude-sonnet-4-6 |
+| Google Gemini | Requise | gemini-3.1-flash |
+| Cloudflare Workers AI | Requise (+ Account ID) | @cf/zai-org/glm-5.2 |
+| Mistral AI | Requise | mistral-large-latest |
+| DeepSeek | Requise | deepseek-v4-flash |
+| xAI Grok | Requise | grok-4.3 |
+| Nvidia NIM | Requise | meta/llama-3.1-8b-instruct |
+| Groq | Requise | llama-3.3-70b-versatile |
+| MiniMax | Requise | minimax-m2.7 |
+| Alibaba Cloud (Qwen) | Requise | qwen-max |
+| OpenRouter | Requise | openrouter/free |
 
 ## Architecture
 
