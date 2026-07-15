@@ -8325,6 +8325,9 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               } catch (_) {}
               const completedFromStats = Number(stats ? stats.completed : 0) || 0;
               const completedVideoFromStats = Number(stats ? stats.completedVideo : 0) || 0;
+              const completedRequestedFromStats = ${JSON.stringify(opts.target)} === 'image'
+                ? completedFromStats
+                : completedVideoFromStats;
               // If the MSE recorder captured bytes, save them inline rather
               // than asking the agent to call execute_js → saveMse() in a
               // follow-up step. The follow-up pattern was broken by the
@@ -8334,7 +8337,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
               let mseSavedFiles = null;
               let mseSaveError = null;
               let mseSaveCode = null;
-              if (mseBytes > 0 && completedFromStats === 0) {
+              if (mseBytes > 0 && completedRequestedFromStats === 0) {
                 try {
                   mseSavedFiles = await window.SocialMediaDownloader.saveMse({
                     prefix: (window.location && window.location.hostname || 'mse').replace(/^www\\./, ''),
@@ -8357,12 +8360,18 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 completedVideoCount,
                 pageUrl: location.href,
               });
+              const videoResultRequired = ${JSON.stringify(opts.target)} !== 'image' && (
+                ${JSON.stringify(opts.target)} === 'video'
+                || mseBytes > 0
+                || recommendation?.kind === 'youtube_video'
+              );
+              const requestedVideoMissing = videoResultRequired && completedVideoCount === 0;
               // Honest per-status counts. Roll mse-saved files into the
               // completed count so the agent sees one consistent number.
               const completedCount = completedFromStats + mseSavedCount;
               const strictMseFailure = mseSaveCode === 'split_mse_requires_server_merge';
               return {
-                success: !(strictMseFailure && completedCount === 0),
+                success: !(strictMseFailure || requestedVideoMissing),
                 site: profile,
                 mode: ${JSON.stringify(opts.mode)},
                 count: urls.length + mseSavedCount,
@@ -8378,6 +8387,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
                 ...(mseSaveError ? { mseSaveError } : {}),
                 ...(mseSaveCode ? { mseSaveCode } : {}),
                 ...(strictMseFailure ? { splitMedia: true } : {}),
+                ...(requestedVideoMissing ? { requestedMediaMissing: true } : {}),
                 recommendation,
               };
             } catch (e) {
@@ -8403,7 +8413,17 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
           return { success: false, error: `vision crop failed: ${e.message}` };
         }
       };
-      const hasCompletedDownload = (result) => result && result.success !== false && Number(result.completedCount || 0) > 0;
+      const hasCompletedDownload = (result) => {
+        if (!result || result.success === false) return false;
+        const videoResultRequired = toolArgs.target === 'video' || (
+          toolArgs.target !== 'image' && (
+            Number(result.mseBytes || 0) > 0
+            || result.recommendation?.kind === 'youtube_video'
+          )
+        );
+        const completed = videoResultRequired ? result.completedVideoCount : result.completedCount;
+        return Number(completed || 0) > 0;
+      };
 
       try {
         const strategy = ['auto', 'dom', 'vision'].includes(toolArgs.strategy) ? toolArgs.strategy : 'auto';
