@@ -305,6 +305,7 @@ export function createCloudRunController({
     if (!task) throw new Error('cloud_run requires `task`.');
     if (agent.isRunning(tabId)) throw new Error(`Tab ${tabId} already has an active WebBrain run.`);
 
+    const apiMutationsAllowed = msg.apiMutationsAllowed === true || msg.api_mutations_allowed === true;
     const outputSchema = msg.outputSchema || msg.output_schema || msg.responseFormat?.schema || msg.response_format?.schema || null;
     const createdAt = isoNow();
     const run = {
@@ -329,6 +330,7 @@ export function createCloudRunController({
 
     (async () => {
       try {
+        if (apiMutationsAllowed) agent.setApiMutationsAllowed(tabId, true);
         sendIndicator(tabId, 'WB_SHOW_AGENT_INDICATORS');
         const content = await agent.processMessage(tabId, task, (type, data) => {
           pushUpdate(run, type, data);

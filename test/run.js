@@ -4569,9 +4569,11 @@ test('cloud run controller uses the visible tab and persists terminal status', a
   let createdTabs = 0;
   let finishRun;
   let processArgs = null;
+  const apiMutationsAllowedCalls = [];
   const agent = {
     isRunning: () => false,
     abort: () => {},
+    setApiMutationsAllowed: (...args) => apiMutationsAllowedCalls.push(args),
     processMessage: (...args) => {
       processArgs = args;
       return new Promise(resolve => { finishRun = resolve; });
@@ -4604,10 +4606,12 @@ test('cloud run controller uses the visible tab and persists terminal status', a
     makeRunId: () => 'run_test',
     now: (() => { let tick = 0; return () => new Date(1700000000000 + tick++ * 1000); })(),
   });
-  const started = await controller.startRun({ task: 'Open Google' });
+  const started = await controller.startRun({ task: 'Open Google', apiMutationsAllowed: true });
   assert.equal(started.status, 'running');
   assert.equal(started.tabId, 17);
   assert.equal(createdTabs, 0, 'a loaded pendingUrl tab should be reused instead of opening about:blank');
+  assert.deepEqual(apiMutationsAllowedCalls, [[17, true]]);
+  assert.equal(processArgs[1], 'Open Google', 'hidden API allowance must not modify the task text');
   assert.equal(processArgs[3], 'act');
   assert.deepEqual(processArgs[4], []);
   assert.equal(processArgs[5].cloudRun, true);
