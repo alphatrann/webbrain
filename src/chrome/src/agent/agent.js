@@ -1152,6 +1152,20 @@ export class Agent {
     };
   }
 
+  _normalizeToolResult(fnName, result, outcomeUnknown = Agent.STATE_CHANGE_TOOLS.has(fnName)) {
+    if (result != null) return result;
+    return {
+      success: false,
+      errorCode: 'missing_tool_response',
+      missingToolResponse: true,
+      outcomeUnknown,
+      error: `${fnName || 'Tool'} returned no result${outcomeUnknown ? '; the action may still have completed' : ''}.`,
+      hint: outcomeUnknown
+        ? 'The operation may have completed even though its response was lost. Verify the current state with a safe read before retrying; do not repeat the action blindly.'
+        : 'The page may have navigated or reloaded while the result was being returned. Wait for it to settle, then retry the observation once.',
+    };
+  }
+
   _toolCallArgsWithReplayMethod(tabId, name, args) {
     if ((name !== 'fetch_url' && name !== 'research_url') || !args || args.method) return args;
     const replayRequestId = args.replayRequestId || args.apiReplayRequestId;
@@ -2152,6 +2166,11 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       if (skillCallTool?.requiresDownloadPermission && !capabilities.includes(Capability.DOWNLOAD)) {
         capabilities.push(Capability.DOWNLOAD);
       }
+      // Preserve the pre-execution classification even if the confirmation
+      // path later removes a capability whose prompt was already satisfied.
+      // A missing response after any consequential call is an unknown outcome:
+      // the side effect may have completed before its reply was lost.
+      const missingResponseOutcomeUnknown = capabilities.length > 0 || Agent.STATE_CHANGE_TOOLS.has(fnName);
       await this._ensureGateSetting();
       const skillEndpointRedirect = this._skillEndpointToolRedirect(fnName, fnArgs, tabId);
       if (skillEndpointRedirect) {
@@ -2317,7 +2336,8 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
       onUpdate('tool_call', { name: fnName, args: fnArgs });
       const _toolStart = Date.now();
-      const toolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
+      const rawToolResult = await this.executeTool(tabId, fnName, fnArgs, onUpdate);
+      const toolResult = this._normalizeToolResult(fnName, rawToolResult, missingResponseOutcomeUnknown);
       const _toolLatency = Date.now() - _toolStart;
 
       // Pin any durable download handle this tool produced, so a later
@@ -2557,6 +2577,28 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
         tool_call_id: tc.id,
         content: resultContent,
       });
+
+      // A response can disappear while the page is navigating or reloading,
+      // even for a read-only observation. Do not execute the rest of this
+      // model-produced batch against unverified page state. Preserve provider
+      // message structure with synthetic results, then let the model verify
+      // state on its next turn before choosing any follow-up action.
+      if (toolResult?.missingToolResponse) {
+        const skippedCount = this._appendSyntheticToolResults(
+          tabId, toolCalls, toolIndex + 1, messages, onUpdate, step,
+          () => ({
+            success: false,
+            skipped: true,
+            error: 'skipped: an earlier tool returned no response; verify the current state before retrying',
+          }),
+        );
+        this._injectNavNotices(messages, navNotices, onUpdate);
+        onUpdate('warning', {
+          message: `Tool response was lost; paused ${skippedCount} remaining tool call(s) for state verification.`,
+        });
+        this._persist(tabId);
+        return { action: 'continue' };
+      }
 
       // Follow-up image attachment. Vision endpoints need the image as an
       // `image_url` block on a user message — an inline dataUrl inside a
@@ -7978,7 +8020,26 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
    */
   _limitToolResult(result) {
     const maxResultChars = 8000; // ~2k tokens
-    let json = JSON.stringify(result);
+    const safeResult = result == null ? {
+      success: false,
+      errorCode: 'missing_tool_response',
+      missingToolResponse: true,
+      outcomeUnknown: false,
+      error: 'Tool returned no result.',
+    } : result;
+    let json;
+    try {
+      json = JSON.stringify(safeResult);
+    } catch {
+      json = JSON.stringify({
+        success: false,
+        errorCode: 'unserializable_tool_response',
+        error: 'Tool returned a result that could not be serialized.',
+      });
+    }
+    if (typeof json !== 'string') {
+      json = '{"success":false,"errorCode":"missing_tool_response","missingToolResponse":true,"outcomeUnknown":false,"error":"Tool returned no result."}';
+    }
     if (json.length <= maxResultChars) return json;
 
     // Try to trim the 'text' field specifically (page content)
@@ -12797,6 +12858,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
 
     this._persist(tabId);
     return finalResponse;
+    } catch (error) {
+      const message = error?.message || String(error);
+      _traceStatus = 'error';
+      finalResponse = `Error: ${message}`;
+      if (runId) trace.recordError(runId, null, 'agent', message);
+      throw error;
     } finally {
       this.currentCostState.delete(tabId);
       this._endTraceRun(tabId, runId, _traceStatus, finalResponse);
@@ -13149,6 +13216,12 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
     messages.push({ role: 'assistant', content: summary });
     onUpdate('text', { content: summary });
     return finish(summary, 'max_steps');
+    } catch (error) {
+      const message = error?.message || String(error);
+      _traceStatus = 'error';
+      finalResponse = `Error: ${message}`;
+      if (runId) trace.recordError(runId, null, 'agent', message);
+      throw error;
     } finally {
       this._endTraceRun(tabId, runId, _traceStatus, finalResponse);
     }
