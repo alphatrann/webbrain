@@ -23052,6 +23052,73 @@ test('planner validates semantic skill ids and activates approved skills before 
   });
 });
 
+test('planner clears skill activation when verbose approval text is edited', async () => {
+  await withPlannerBrowserGlobals(async () => {
+    for (const [label, AgentClass, prefix] of [
+      ['chrome', AgentCh, 'src/chrome'],
+      ['firefox', AgentFx, 'src/firefox'],
+    ]) {
+      const runReviewedPlan = async (tabId, editVerbose) => {
+        const provider = {
+          promptTier: 'full',
+          model: 'planner-edit-test',
+          name: 'planner-edit-test',
+          chat: async () => ({
+            content: plannerFixtureJson({
+              confidence: 0.99,
+              skill_ids: ['freeskillz-xyz'],
+            }),
+            usage: {},
+          }),
+        };
+        const agent = new AgentClass({ getActive: () => provider, getVisionProvider: async () => null });
+        agent.setCustomSkills([packagedFreeSkillzRecord(prefix)]);
+        agent.setPlanReviewSettings({ mode: 'always' });
+        agent._waitForPlanReview = async (_tabId, _planId, _plan, _markdown, _onUpdate, verboseMarkdown) => {
+          assert.match(verboseMarkdown, /Skills to activate[\s\S]*freeskillz-xyz/, `${label}: verbose review should expose the planned skill`);
+          return {
+            action: 'approve',
+            editedText: editVerbose(verboseMarkdown),
+            markdownMode: 'verbose',
+          };
+        };
+        const gate = await agent._runPlannerGate(
+          tabId,
+          { role: 'user', content: 'Download the public video.' },
+          () => {},
+          null,
+          null,
+          '',
+          { tabUrl: 'https://www.instagram.com/p/example/', tabTitle: 'Instagram' },
+          'try',
+          'act',
+        );
+        return { agent, gate };
+      };
+
+      const unchanged = await runReviewedPlan(label === 'chrome' ? 9193 : 9194, text => text);
+      assert.deepEqual(unchanged.gate.skillIds, ['freeskillz-xyz'], `${label}: an unchanged verbose plan should keep its approved skill`);
+
+      const changed = await runReviewedPlan(label === 'chrome' ? 9195 : 9196, text => text.replaceAll('freeskillz-xyz', 'removed-skill'));
+      assert.deepEqual(changed.gate.skillIds, [], `${label}: edited verbose approval must clear stale skill activation`);
+      assert.doesNotMatch(changed.gate.approvedScratchpadText, /freeskillz-xyz/, `${label}: edited approval should not re-pin the removed skill`);
+      changed.agent._runPlannerGate = async () => changed.gate;
+      const messages = [{ role: 'system', content: changed.agent._buildSystemPrompt('act', label === 'chrome' ? 9195 : 9196) }];
+      const outcome = await changed.agent._maybeRunPlannerGate(
+        label === 'chrome' ? 9195 : 9196,
+        messages,
+        { role: 'user', content: 'Download the public video.' },
+        () => {},
+        'act',
+        null,
+        null,
+      );
+      assert.equal(outcome.proceed, true, `${label}: edited plan should still proceed`);
+      assert.equal(changed.agent.activeSkillIds.has(label === 'chrome' ? 9195 : 9196), false, `${label}: removed verbose skill must not activate`);
+    }
+  });
+});
+
 test('plan before act: try is default while explicit off is preserved', () => {
   for (const [label, AgentClass] of [['chrome', AgentCh], ['firefox', AgentFx]]) {
     const agent = new AgentClass({});

@@ -4693,8 +4693,15 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       const approvedText = editedText && choice?.markdownMode === 'compact'
         ? `${editedText}\n\n${formatPlanExecutionMetadataMarkdown(plan)}`
         : editedText;
+      const verbosePlanEdited = choice?.markdownMode === 'verbose'
+        && editedText
+        && editedText !== String(verboseMarkdown || '').trim();
+      // Verbose review exposes the skill section. If the user changes that
+      // approved text, fail closed instead of activating IDs from the stale
+      // planner object that the edited plan may no longer authorize.
+      const approvedSkillIds = verbosePlanEdited ? [] : plan.skill_ids;
       const approvedScratchpadText = formatPlanScratchpad(plan, approvedText, verboseMarkdown);
-      return { proceed: true, approvedScratchpadText, planId, skillIds: plan.skill_ids };
+      return { proceed: true, approvedScratchpadText, planId, skillIds: approvedSkillIds };
     } catch (e) {
       if (this._isCostAllowanceError(e)) {
         return { proceed: false, message: e.message, reason: 'cost_limit' };
